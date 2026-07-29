@@ -33,7 +33,7 @@ jobs:
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: deploy
+          username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
           envs: RELEASE_SHA
@@ -52,13 +52,13 @@ jobs:
               exit 64
             fi
 
-            if git -C /opt/spyboxd rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-              repository_git() {
-                git -C /opt/spyboxd "$@"
-              }
-            elif git --git-dir=/opt/spyboxd/repository rev-parse --is-bare-repository >/dev/null 2>&1; then
+            if git --git-dir=/opt/spyboxd/repository rev-parse --is-bare-repository >/dev/null 2>&1; then
               repository_git() {
                 git --git-dir=/opt/spyboxd/repository "$@"
+              }
+            elif git -C /opt/spyboxd rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              repository_git() {
+                git -C /opt/spyboxd "$@"
               }
             else
               echo "No Spyboxd Git repository found. The first rollout requires the existing /opt/spyboxd checkout." >&2
