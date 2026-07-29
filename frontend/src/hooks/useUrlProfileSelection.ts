@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 interface UrlProfileSelectionOptions {
@@ -25,11 +25,10 @@ export function useUrlProfileSelection(
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const initialized = useRef(false);
+  const [isInitialized, setIsInitialized] = useState(false);
   const [draftProfiles, setDraftProfiles] = useState<string[]>([]);
   const [appliedProfiles, setAppliedProfiles] = useState<string[]>([]);
 
-  const availableKey = availableProfiles.join('\u0000');
   const urlProfilesKey = searchParams.getAll('profiles').join('\u0001');
   const normalizedProfiles = useMemo(() => {
     const profileMap = new Map(
@@ -44,14 +43,14 @@ export function useUrlProfileSelection(
 
     if (bounded.length >= options.minSelection) return bounded;
     return availableProfiles.slice(0, options.defaultCount);
-  }, [availableKey, availableProfiles, options.defaultCount, options.maxSelection, options.minSelection, urlProfilesKey]);
+  }, [availableProfiles, options.defaultCount, options.maxSelection, options.minSelection, urlProfilesKey]);
 
   useEffect(() => {
     if (availableProfiles.length < options.minSelection) return;
     setDraftProfiles((current) => sameProfiles(current, normalizedProfiles) ? current : normalizedProfiles);
     setAppliedProfiles((current) => sameProfiles(current, normalizedProfiles) ? current : normalizedProfiles);
-    initialized.current = true;
-  }, [availableKey, availableProfiles.length, normalizedProfiles, options.minSelection, urlProfilesKey]);
+    setIsInitialized(true);
+  }, [availableProfiles.length, normalizedProfiles, options.minSelection]);
 
   const replaceParams = useCallback((
     profiles: string[],
@@ -77,13 +76,13 @@ export function useUrlProfileSelection(
     setAppliedProfiles((current) => sameProfiles(current, bounded) ? current : bounded);
     replaceParams(bounded, applyOptions.params, applyOptions.scroll);
     return true;
-  }, [availableKey, availableProfiles, options.maxSelection, options.minSelection, replaceParams]);
+  }, [availableProfiles, options.maxSelection, options.minSelection, replaceParams]);
 
   return {
     appliedProfiles,
     applyProfiles,
     draftProfiles,
-    isInitialized: initialized.current,
+    isInitialized,
     replaceParams,
     setDraftProfiles,
   };

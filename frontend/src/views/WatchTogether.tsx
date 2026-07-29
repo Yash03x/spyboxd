@@ -139,7 +139,7 @@ export default function WatchTogether() {
     return Array.from(uniqueCodes)
       .map((code) => ({ code, label: availabilityCountryLabel(code) }))
       .sort((left, right) => availabilityCountryCollator.compare(left.label, right.label));
-  }, [draftFilters.region, providerRegionsQuery.data?.regions]);
+  }, [draftFilters.region, providerRegionsQuery.data]);
 
   const coverageQuery = useQuery({
     queryKey: ['data-coverage', [...activeProfiles].sort()],
@@ -153,7 +153,7 @@ export default function WatchTogether() {
     enabled: mode === 'list_mission' && selection.draftProfiles.length >= 2,
     staleTime: 5 * 60 * 1000,
   });
-  const publicLists = publicListsQuery.data?.lists ?? [];
+  const publicLists = useMemo(() => publicListsQuery.data?.lists ?? [], [publicListsQuery.data]);
 
   useEffect(() => {
     if (mode !== 'list_mission' || publicLists.length === 0) return;

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { Calendar, MessageCircle, Star, Ticket } from 'lucide-react';
@@ -33,7 +33,7 @@ const Analysis: React.FC = () => {
     refetchOnWindowFocus: false,
   });
 
-  const profilesArray = Array.isArray(profiles) ? profiles : [];
+  const profilesArray = useMemo(() => (Array.isArray(profiles) ? profiles : []), [profiles]);
 
   useEffect(() => {
     if (!selectedProfile && profilesArray.length > 0) {

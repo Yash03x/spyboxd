@@ -4,16 +4,18 @@ import shutil
 import stat
 import tempfile
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Query
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes.activity import router as activity_router
 from api.routes.insights import router as insights_router
 from auth import ClerkUser, get_admin_user, get_upload_user
-from database.connection import get_db, init_db
+from database.connection import engine, get_db, init_db
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
@@ -23,6 +25,7 @@ from services.data_coverage import (
 )
 from services.ingestion import unified_data_loader
 from services.profile_loader import load_profile_data
+from services.operational_health import readiness_report, rss_operational_report
 from sqlalchemy.orm import Session
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -117,10 +120,18 @@ def _record_owner_export_publication_consent(analyzer_profile, publish_owner_dat
     analyzer_profile.manifest = manifest
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    print("🎬 Spyboxd API started successfully!")
+    yield
+
+
 app = FastAPI(
     title="Spyboxd API",
     description="Analytics and insights for Letterboxd profiles",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -136,15 +147,36 @@ app.add_middleware(
 app.include_router(insights_router)
 app.include_router(activity_router)
 
-# Initialize database on startup
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    print("🎬 Spyboxd API started successfully!")
-
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/ready")
+def readiness_check():
+    """Report whether this instance can safely receive production traffic."""
+
+    report = readiness_report(engine)
+    if report["status"] != "ready":
+        return JSONResponse(status_code=503, content=report)
+    return report
+
+
+@app.get("/health/rss")
+def rss_health_check(db: Session = Depends(get_db)):
+    """Expose aggregate RSS worker freshness without profile or error details."""
+
+    try:
+        return rss_operational_report(db)
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "reason": "rss_state_unavailable",
+                "requires_attention": True,
+            },
+        )
 
 
 @app.get("/public/profile/{username}")

@@ -139,7 +139,7 @@ export default function Compare() {
     enabled: canCompare && activeTab === 'timeline',
     staleTime: 10 * 60 * 1000,
   });
-  const dateRange = useMemo(getDateRange, []);
+  const dateRange = useMemo(() => getDateRange(), []);
   const calendarQuery = useQuery({
     queryKey: ['signal-calendar', activeProfiles, windowDays, dateRange.from, dateRange.to],
     queryFn: () => insightsApi.getSignalCalendar(activeProfiles, { gapDays: windowDays, ...dateRange }),

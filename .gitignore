@@ -10,6 +10,9 @@ build/
 .env
 venv/
 env/
+!deploy/env/
+deploy/env/*
+!deploy/env/*.env.example
 
 # Database
 *.db

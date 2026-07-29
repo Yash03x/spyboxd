@@ -61,7 +61,7 @@ Frontend
 ### Prerequisites
 
 - Python 3.12+
-- Node.js 18+
+- Node.js 20.9+
 - PostgreSQL 15+
 
 ### Local development
@@ -72,7 +72,7 @@ cd letterboxd-reviewer
 
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements-dev.lock
 
 cp .env.example .env
 cp frontend/.env.example frontend/.env.local
@@ -81,7 +81,7 @@ createdb spyboxd
 PYTHONPATH=backend alembic upgrade head
 
 cd frontend
-npm install
+npm ci
 cd ..
 ```
 

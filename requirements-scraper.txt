@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Residential-only full Letterboxd loader.
+cloudscraper>=1.2.71
+curl_cffi>=0.15.0

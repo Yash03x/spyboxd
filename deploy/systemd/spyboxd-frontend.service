@@ -1,0 +1,43 @@
+[Unit]
+Description=Spyboxd frontend
+Wants=network-online.target
+After=network-online.target spyboxd-api.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=spyboxd
+Group=spyboxd
+WorkingDirectory=/opt/spyboxd/current/frontend
+EnvironmentFile=/etc/spyboxd/frontend.env
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=NODE_OPTIONS=--dns-result-order=ipv4first
+ExecStart=/usr/bin/npm run start -- --hostname localhost --port 3000
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillSignal=SIGINT
+UMask=0027
+
+CacheDirectory=spyboxd-frontend
+CacheDirectoryMode=0750
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/cache/spyboxd-frontend
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+Cmnd_Alias SPYBOXD_UNIT_INSPECT = /usr/bin/systemctl show spyboxd-api.service --property=LoadState --value, \
+    /usr/bin/systemctl show spyboxd-rss.service --property=LoadState --value, \
+    /usr/bin/systemctl show spyboxd-frontend.service --property=LoadState --value, \
+    /usr/bin/systemctl show spyboxd-frontend.service --property=ExecStart --value, \
+    /usr/bin/systemctl show spyboxd-frontend.service --property=Environment --value
+Cmnd_Alias SPYBOXD_UNIT_RELEASE = /usr/bin/systemctl restart spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service, \
+    /usr/bin/systemctl restart spyboxd-api.service spyboxd-frontend.service, \
+    /usr/bin/systemctl stop spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service, \
+    /usr/bin/systemctl stop spyboxd-rss.service
+Cmnd_Alias SPYBOXD_NGINX_VALIDATE = /usr/sbin/nginx -t
+Cmnd_Alias SPYBOXD_FIREWALL_INSPECT = /usr/sbin/ufw status verbose
+
+deploy ALL=(root) NOPASSWD: SPYBOXD_UNIT_INSPECT, SPYBOXD_UNIT_RELEASE, SPYBOXD_NGINX_VALIDATE, SPYBOXD_FIREWALL_INSPECT
