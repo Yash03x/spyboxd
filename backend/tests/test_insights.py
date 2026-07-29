@@ -257,6 +257,13 @@ class InsightCalculationTests(unittest.TestCase):
         self.assertTrue(
             all(item["pattern"] == "first_known_plus_rewatch" for item in payload["echoes"])
         )
+        self.assertEqual(
+            [item["echo_id"] for item in payload["echoes"]],
+            ["a08cdc0947e45d34", "d4ae0efd02a76ec9"],
+        )
+        self.assertTrue(
+            all(len(item["echo_id"]) == 16 for item in payload["echoes"])
+        )
         for echo in payload["echoes"]:
             by_kind = {participant["watch_kind"]: participant for participant in echo["participants"]}
             self.assertEqual(
@@ -474,6 +481,51 @@ class InsightCalculationTests(unittest.TestCase):
             {bucket["date"]: bucket["intensity"] for bucket in payload["buckets"]},
             {"2026-07-01": 4, "2026-07-03": 2},
         )
+
+    def test_signal_calendar_uses_stable_sha256_ui_event_ids(self) -> None:
+        profiles = [
+            type("ProfileRef", (), {"id": value, "username": username})()
+            for value, username in [(1, "one"), (2, "two")]
+        ]
+        rows = [
+            event(
+                event_id=index,
+                profile_id=profile.id,
+                username=profile.username,
+                watched_date=date(2026, 7, 1),
+                movie=self.movie,
+            )
+            for index, profile in enumerate(profiles, start=1)
+        ]
+        self.service._resolve_profiles = lambda *_args, **_kwargs: profiles
+        self.service._event_rows = lambda *_args, **_kwargs: rows
+        self.service._feature_coverage = lambda *_args, **_kwargs: {
+            "status": "ready",
+            "score": 100,
+            "dated_watch_events": len(rows),
+            "total_watch_events": len(rows),
+            "blockers": [],
+            "warnings": [],
+            "last_updated": None,
+        }
+
+        first = self.service.signal_calendar(
+            ["one", "two"],
+            gap_days=0,
+            from_date=date(2026, 7, 1),
+            to_date=date(2026, 7, 1),
+        )
+        second = self.service.signal_calendar(
+            ["one", "two"],
+            gap_days=0,
+            from_date=date(2026, 7, 1),
+            to_date=date(2026, 7, 1),
+        )
+
+        event_id = first["events"][0]["event_id"]
+        self.assertEqual(event_id, "b59e064945895370")
+        self.assertEqual(second["events"][0]["event_id"], event_id)
+        self.assertRegex(event_id, r"^[0-9a-f]{16}$")
 
     def test_streaming_availability_maps_to_tmdb_flatrate(self) -> None:
         provider = MovieWatchProvider(

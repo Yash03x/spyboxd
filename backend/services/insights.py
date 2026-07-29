@@ -1442,7 +1442,9 @@ class InsightsService:
                 )
                 echoes.append(
                     {
-                        "echo_id": hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16],
+                        # Stable UI identifier only; preserve the public 16-hex
+                        # shape without SHA-1 over profile-associated metadata.
+                        "echo_id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16],
                         "pattern": pattern,
                         "timing": timing,
                         "day_gap": day_gap,
@@ -1754,7 +1756,10 @@ class InsightsService:
             calendar_events.append(
                 {
                     **event,
-                    "event_id": hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16],
+                    # This is a deterministic response identifier used as a UI key,
+                    # not an authentication token. Keep its established 16-hex shape
+                    # while avoiding SHA-1 over profile-associated event metadata.
+                    "event_id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16],
                 }
             )
 

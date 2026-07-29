@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import shutil
@@ -36,6 +37,17 @@ load_dotenv(os.path.join(REPO_ROOT, ".env"))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 DATA_DIR = os.path.join(BASE_DIR, "..", "data")
 SCRAPED_DATA_DIR = os.path.join(DATA_DIR, "scraped")
+LOGGER = logging.getLogger("spyboxd.api")
+
+_OWNER_EXPORT_CONSENT_ERROR = (
+    "Owner-export publication consent is required because official exports "
+    "can contain private or deleted account data."
+)
+_UNEXPECTED_UPLOAD_ERROR = "An unexpected processing error occurred."
+
+
+class _OwnerExportPublicationConsentRequired(PermissionError):
+    """Expected upload validation failure with a fixed, public-safe message."""
 
 # Pydantic models for request/response
 class ProfileCreate(BaseModel):
@@ -105,10 +117,7 @@ def _record_owner_export_publication_consent(analyzer_profile, publish_owner_dat
     if getattr(analyzer_profile, "source_kind", None) != "letterboxd_export":
         return
     if not publish_owner_data:
-        raise PermissionError(
-            "Owner-export publication consent is required because official exports "
-            "can contain private or deleted account data."
-        )
+        raise _OwnerExportPublicationConsentRequired(_OWNER_EXPORT_CONSENT_ERROR)
 
     manifest = dict(getattr(analyzer_profile, "manifest", {}) or {})
     manifest["publication_consent"] = {
@@ -607,8 +616,18 @@ async def upload_files(
                     }
                 )
                 
-            except Exception as e:
-                errors.append(f"Failed to process {file.filename}: {str(e)}")
+            except _OwnerExportPublicationConsentRequired:
+                errors.append(
+                    f"Failed to process {file.filename}: {_OWNER_EXPORT_CONSENT_ERROR}"
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Unexpected error while processing upload %r",
+                    file.filename,
+                )
+                errors.append(
+                    f"Failed to process {file.filename}: {_UNEXPECTED_UPLOAD_ERROR}"
+                )
     
     result = {"loaded_profiles": loaded_profiles, "imports": loaded_imports}
     if errors:
