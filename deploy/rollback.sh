@@ -8,6 +8,7 @@ readonly SHARED_DIR="${SPYBOXD_SHARED_DIR:-${APP_ROOT}/shared}"
 readonly RELEASE_STATE_DIR="${SPYBOXD_RELEASE_STATE_DIR:-${SHARED_DIR}/release-state}"
 readonly CURRENT_LINK="${SPYBOXD_CURRENT_LINK:-${APP_ROOT}/current}"
 readonly DEPLOY_REF="${SPYBOXD_DEPLOY_REF:-refs/remotes/origin/main}"
+readonly EXPECTED_CURRENT_REVISION="${SPYBOXD_EXPECTED_CURRENT_REVISION:-}"
 readonly SERVICES=(spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service)
 
 ACTIVATION_LINK=""
@@ -39,7 +40,7 @@ usage() {
 [[ $# -eq 1 ]] || usage
 requested_target="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 
-for command_name in git python3 curl readlink flock stat sudo seq basename; do
+for command_name in git python3 curl readlink flock stat sudo seq basename timeout; do
     command -v "${command_name}" >/dev/null 2>&1 \
         || fail "required command is missing: ${command_name}"
 done
@@ -67,6 +68,8 @@ else
 fi
 [[ "${target_revision}" =~ ^[0-9a-f]{40}$ ]] \
     || fail "rollback target must be 'previous' or a full 40-character Git SHA"
+[[ -z "${EXPECTED_CURRENT_REVISION}" || "${EXPECTED_CURRENT_REVISION}" =~ ^[0-9a-f]{40}$ ]] \
+    || fail "expected current revision must be a full 40-character Git SHA"
 
 exec 9>"${APP_ROOT}/.release.lock"
 flock -n 9 || fail "another Spyboxd release or rollback is already running"
@@ -78,6 +81,8 @@ current_release="$(readlink -f "${CURRENT_LINK}" || true)"
 current_revision="$(basename "${current_release}")"
 [[ "${current_revision}" =~ ^[0-9a-f]{40}$ ]] \
     || fail "the active release directory does not identify an exact revision"
+[[ -z "${EXPECTED_CURRENT_REVISION}" || "${current_revision}" == "${EXPECTED_CURRENT_REVISION}" ]] \
+    || fail "the active revision changed before rollback acquired the deployment lock"
 [[ "$(read_state_revision active)" == "${current_revision}" ]] \
     || fail "trusted release state does not match the active symlink"
 
@@ -121,12 +126,13 @@ activate_release() {
 }
 
 restart_services() {
-    sudo -n systemctl restart "${SERVICES[@]}"
+    timeout --signal=TERM --kill-after=15s 4m \
+        sudo -n systemctl restart "${SERVICES[@]}"
 }
 
 wait_for_http() {
     local name="$1" url="$2" expected_status="${3:-}" expected_revision="${4:-}" response attempt
-    for attempt in $(seq 1 30); do
+    for attempt in $(seq 1 12); do
         if response="$(curl --silent --show-error --fail --max-time 5 "${url}" 2>/dev/null)"; then
             if [[ -z "${expected_status}" && -z "${expected_revision}" ]] \
                 || python3 -c '

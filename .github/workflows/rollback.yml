@@ -24,9 +24,9 @@ concurrency:
 jobs:
   rollback:
     name: Guarded retained-release rollback
-    if: github.ref_name == github.event.repository.default_branch
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     environment:
       name: production
       url: https://spyboxd.com
@@ -36,6 +36,13 @@ jobs:
       ROLLBACK_CONFIRMATION: ${{ inputs.confirmation }}
 
     steps:
+      - name: Check out exact rollback helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.ROLLBACK_SCRIPT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Verify explicit confirmation and target
         run: |
           if [[ "${ROLLBACK_CONFIRMATION}" != "ROLLBACK" ]]; then
@@ -48,18 +55,22 @@ jobs:
             exit 64
           fi
 
+      - name: Establish one pinned IPv4 production SSH connection
+        id: production_ssh
+        env:
+          SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: deploy/production-ssh.sh open
+
       - name: Activate retained release
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: spyboxd-deploy
-          key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          timeout: 2m
-          envs: ROLLBACK_TARGET,ROLLBACK_SCRIPT_SHA
-          command_timeout: 15m
-          script: |
+        run: |
+          timeout --signal=TERM --kill-after=2m 24m \
+            deploy/production-ssh.sh run sh -s -- \
+              "${ROLLBACK_SCRIPT_SHA}" "${ROLLBACK_TARGET}" <<'REMOTE'
             set -eu
+            ROLLBACK_SCRIPT_SHA="$1"
+            ROLLBACK_TARGET="$2"
 
             case "${ROLLBACK_SCRIPT_SHA}" in
               *[!0-9a-f]*|'')
@@ -89,7 +100,9 @@ jobs:
               git --git-dir=/opt/spyboxd/repository "$@"
             }
             repository_git rev-parse --is-bare-repository >/dev/null
-            repository_git fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
+            timeout --signal=TERM --kill-after=15s 2m \
+              git --git-dir=/opt/spyboxd/repository fetch \
+                --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
             resolved_script_sha="$(repository_git rev-parse --verify "${ROLLBACK_SCRIPT_SHA}^{commit}")"
             if [ "${resolved_script_sha}" != "${ROLLBACK_SCRIPT_SHA}" ]; then
               echo "Rollback workflow revision is not available on the server" >&2
@@ -102,3 +115,11 @@ jobs:
             repository_git show "${ROLLBACK_SCRIPT_SHA}:deploy/rollback.sh" >"${rollback_runner}"
             chmod 0700 "${rollback_runner}"
             "${rollback_runner}" "${ROLLBACK_TARGET}"
+          REMOTE
+
+      - name: Close production SSH and securely remove local key material
+        if: always()
+        run: |
+          if [[ -x deploy/production-ssh.sh ]]; then
+            deploy/production-ssh.sh close
+          fi

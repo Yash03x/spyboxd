@@ -61,7 +61,7 @@ readonly RELEASE_SHA="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 readonly RELEASE_BUNDLE="${2:-}"
 [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || fail "release must be a full 40-character lowercase or uppercase Git SHA"
 
-for command_name in git tar python3 node npm curl readlink flock stat sudo seq getent grep ufw find sort touch sha256sum mktemp; do
+for command_name in git tar python3 node npm curl readlink flock stat sudo seq getent grep ufw find sort touch sha256sum mktemp timeout; do
     command -v "${command_name}" >/dev/null 2>&1 || fail "required command is missing: ${command_name}"
 done
 
@@ -240,7 +240,8 @@ initialize_repository() {
     git init --bare --quiet "${repository_tmp}"
     git --git-dir="${repository_tmp}" remote add origin "${remote_url}"
     git --git-dir="${repository_tmp}" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
-    git --git-dir="${repository_tmp}" fetch --quiet --prune --tags origin
+    timeout --signal=TERM --kill-after=15s 2m \
+        git --git-dir="${repository_tmp}" fetch --quiet --prune --tags origin
     mv -- "${repository_tmp}" "${REPOSITORY_DIR}"
     TEMP_REPOSITORY=""
 }
@@ -253,7 +254,9 @@ refresh_and_require_deploy_tip() {
     local resolved_sha deploy_tip
 
     log "Fetching origin and requiring ${RELEASE_SHA} at ${DEPLOY_REF}"
-    git --git-dir="${REPOSITORY_DIR}" fetch --quiet --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+    timeout --signal=TERM --kill-after=15s 2m \
+        git --git-dir="${REPOSITORY_DIR}" fetch \
+            --quiet --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
     resolved_sha="$(git --git-dir="${REPOSITORY_DIR}" rev-parse --verify "${RELEASE_SHA}^{commit}" 2>/dev/null || true)"
     [[ "${resolved_sha}" == "${RELEASE_SHA}" ]] \
         || fail "${RELEASE_SHA} is not an available commit from origin"
@@ -659,12 +662,13 @@ activate_release() {
 }
 
 restart_services() {
-    sudo -n systemctl restart "${SERVICES[@]}"
+    timeout --signal=TERM --kill-after=15s 4m \
+        sudo -n systemctl restart "${SERVICES[@]}"
 }
 
 wait_for_http() {
     local name="$1" url="$2" expected_status="${3:-}" expected_revision="${4:-}" response attempt
-    for attempt in $(seq 1 30); do
+    for attempt in $(seq 1 12); do
         if response="$(curl --silent --show-error --fail --max-time 5 "${url}" 2>/dev/null)"; then
             if [[ -z "${expected_status}" && -z "${expected_revision}" ]] \
                 || python3 -c '
@@ -802,8 +806,10 @@ log "Health verification failed; rolling application services back"
 if [[ -n "${old_release}" && -d "${old_release}" ]]; then
     activate_release "${old_release}"
     if [[ "${legacy_rollback}" == true ]]; then
-        sudo -n systemctl restart spyboxd-api.service spyboxd-frontend.service || true
-        sudo -n systemctl stop spyboxd-rss.service || true
+        timeout --signal=TERM --kill-after=15s 4m \
+            sudo -n systemctl restart spyboxd-api.service spyboxd-frontend.service || true
+        timeout --signal=TERM --kill-after=15s 2m \
+            sudo -n systemctl stop spyboxd-rss.service || true
     else
         restart_services || true
     fi
@@ -813,7 +819,8 @@ if [[ -n "${old_release}" && -d "${old_release}" ]]; then
         log "WARNING: rollback services did not become healthy; inspect journalctl for ${SERVICES[*]}" >&2
     fi
 else
-    sudo -n systemctl stop "${SERVICES[@]}" || true
+    timeout --signal=TERM --kill-after=15s 4m \
+        sudo -n systemctl stop "${SERVICES[@]}" || true
     rm -f -- "${CURRENT_LINK}"
     log "First activation failed, so services were stopped and the current symlink was removed. Database migrations were not downgraded." >&2
 fi
