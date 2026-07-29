@@ -41,7 +41,7 @@ from services.profile_changes import capture_profile_state, record_profile_chang
 
 MAX_RSS_BYTES = 2 * 1024 * 1024
 RSS_IMPORTER_VERSION = "1"
-DEFAULT_INTERVAL_SECONDS = 2 * 60 * 60
+DEFAULT_INTERVAL_SECONDS = 10 * 60
 DEFAULT_MAX_BACKOFF_SECONDS = 24 * 60 * 60
 DEFAULT_LEASE_SECONDS = 5 * 60
 _HTTP_TIMEOUT = (5, 20)

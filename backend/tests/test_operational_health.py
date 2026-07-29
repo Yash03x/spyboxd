@@ -14,6 +14,7 @@ from services.operational_health import (
     readiness_report,
     repository_schema_heads,
     rss_operational_report,
+    rss_stale_after_seconds,
 )
 
 
@@ -132,6 +133,13 @@ def test_application_revision_reads_release_marker(monkeypatch, tmp_path):
     monkeypatch.setattr("services.operational_health.REVISION_PATH", marker)
 
     assert application_revision() == revision
+
+
+def test_default_rss_health_window_covers_four_poll_intervals(monkeypatch):
+    monkeypatch.delenv("SPYBOXD_RSS_POLL_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("SPYBOXD_RSS_HEALTH_STALE_AFTER_SECONDS", raising=False)
+
+    assert rss_stale_after_seconds() == 40 * 60
 
 
 def test_rss_report_is_healthy_when_every_active_feed_is_fresh():

@@ -381,6 +381,9 @@ def test_poll_is_additive_sanitized_and_idempotent(database):
     assert first["profile_films_created"] == 1
     assert first["ratings_created"] == 1
     assert first["reviews_created"] == 1
+    assert database.query(ProfileFeedState).one().next_poll_at == (
+        instant + timedelta(minutes=10)
+    ).replace(tzinfo=None)
     assert database.query(WatchEvent).count() == 2
     assert database.query(ProfileFilm).count() == 2
     assert database.query(Rating).count() == 2
