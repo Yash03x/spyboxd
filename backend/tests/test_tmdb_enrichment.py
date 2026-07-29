@@ -197,6 +197,70 @@ class TMDBClientTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.2])
         self.assertEqual(len(session.calls), 1)
 
+    def test_find_movie_retries_without_year_filter_for_near_year_release(self):
+        session = FakeHTTPSession(
+            [
+                FakeResponse(200, {"results": []}),
+                FakeResponse(
+                    200,
+                    {
+                        "results": [
+                            {
+                                "id": 55347,
+                                "title": "Beginners",
+                                "release_date": "2011-06-03",
+                                "popularity": 12,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+        client = TMDBClient(bearer_token="read-token", session=session)
+
+        match = client.find_movie("Beginners", release_year=2010)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["id"], 55347)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(session.calls[0]["params"]["primary_release_year"], 2010)
+        self.assertNotIn("primary_release_year", session.calls[1]["params"])
+
+    def test_find_movie_does_not_fallback_after_narrow_match(self):
+        session = FakeHTTPSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "results": [
+                            {
+                                "id": 329865,
+                                "title": "Arrival",
+                                "release_date": "2016-11-10",
+                                "popularity": 20,
+                            }
+                        ]
+                    },
+                )
+            ]
+        )
+        client = TMDBClient(bearer_token="read-token", session=session)
+
+        match = client.find_movie("Arrival", release_year=2016)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["id"], 329865)
+        self.assertEqual(len(session.calls), 1)
+
+    def test_find_movie_without_year_uses_one_unfiltered_search(self):
+        session = FakeHTTPSession([FakeResponse(200, {"results": []})])
+        client = TMDBClient(bearer_token="read-token", session=session)
+
+        self.assertIsNone(client.find_movie("Unknown Film"))
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertNotIn("primary_release_year", session.calls[0]["params"])
+
     def test_request_exception_does_not_expose_credentials_in_error_or_traceback(self):
         api_key = "super-secret-v3-key"
         bearer_token = "super-secret-bearer-token"

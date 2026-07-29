@@ -274,8 +274,22 @@ class TMDBClient:
         release_year: Optional[int] = None,
         language: str = DEFAULT_LANGUAGE,
     ) -> Optional[Dict[str, Any]]:
-        return select_best_movie_match(
+        match = select_best_movie_match(
             self.search_movies(title, release_year=release_year, language=language),
+            title=title,
+            release_year=release_year,
+        )
+        if match is not None or release_year is None:
+            return match
+
+        # Letterboxd commonly uses a festival or first-premiere year while
+        # TMDB's `primary_release_year` reflects a later theatrical release.
+        # The matcher already permits an exact title within one year, but an
+        # exact-year API filter prevents it from ever seeing that candidate.
+        # Retry without the server-side year filter only after the narrow
+        # search fails, then apply the same conservative title/year matcher.
+        return select_best_movie_match(
+            self.search_movies(title, language=language),
             title=title,
             release_year=release_year,
         )
