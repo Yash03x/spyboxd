@@ -11,6 +11,7 @@ permissions:
 
 concurrency:
   group: spyboxd-production-deploy
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -71,6 +72,7 @@ jobs:
           username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          timeout: 2m
           envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
           script: |
             set -eu
@@ -83,18 +85,142 @@ jobs:
             [ "${REMOTE_CHECKSUM}" = "${REMOTE_BUNDLE}.sha256" ] || exit 64
             rm -f -- "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}"
 
-      - name: Copy exact release artifact to Hetzner
-        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: spyboxd-deploy
-          key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          source: transfer/spyboxd-release-${{ env.RELEASE_SHA }}.tar.gz,transfer/spyboxd-release-${{ env.RELEASE_SHA }}.tar.gz.sha256
-          target: /tmp
-          strip_components: 1
-          overwrite: true
-          command_timeout: 15m
+      - name: Copy exact release artifact with pinned OpenSSH host identity
+        env:
+          SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -Eeuo pipefail
+
+          key_path="${RUNNER_TEMP}/spyboxd-deploy-key"
+          known_hosts_path="${RUNNER_TEMP}/spyboxd-known-hosts"
+          scanned_hosts_path="${RUNNER_TEMP}/spyboxd-scanned-hosts"
+
+          case "${SSH_HOST}" in
+            ''|-*|*[!A-Za-z0-9.-]*)
+              echo 'VPS_HOST must be a plain hostname or IPv4 address.' >&2
+              exit 64
+              ;;
+          esac
+          [[ "${SSH_FINGERPRINT}" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || {
+            echo 'VPS_HOST_FINGERPRINT must be an exact SHA256 fingerprint.' >&2
+            exit 64
+          }
+          [[ -n "${SSH_PRIVATE_KEY}" ]] || {
+            echo 'VPS_SSH_KEY is empty.' >&2
+            exit 64
+          }
+
+          for local_path in "${key_path}" "${known_hosts_path}" "${scanned_hosts_path}"; do
+            case "${local_path}" in
+              "${RUNNER_TEMP}"/spyboxd-*) ;;
+              *) echo 'Refusing an SSH material path outside RUNNER_TEMP.' >&2; exit 64 ;;
+            esac
+            [[ ! -e "${local_path}" && ! -L "${local_path}" ]] || {
+              echo "Refusing to overwrite an existing SSH material path: ${local_path}" >&2
+              exit 1
+            }
+          done
+
+          umask 077
+          printf '%s\n' "${SSH_PRIVATE_KEY}" >"${key_path}"
+          chmod 0600 "${key_path}"
+          [[ -s "${key_path}" ]]
+
+          scanned=false
+          for attempt in 1 2 3; do
+            if ssh-keyscan -T 10 "${SSH_HOST}" >"${scanned_hosts_path}" 2>/dev/null \
+                && grep -qv '^#' "${scanned_hosts_path}"; then
+              scanned=true
+              break
+            fi
+            sleep "$((attempt * 2))"
+          done
+          [[ "${scanned}" == true ]] || {
+            echo 'Could not scan the production SSH host key.' >&2
+            exit 1
+          }
+
+          matching_keys=0
+          while IFS= read -r key_line; do
+            case "${key_line}" in
+              \#*|'') continue ;;
+            esac
+            candidate_fingerprint="$(
+              printf '%s\n' "${key_line}" | ssh-keygen -lf - -E sha256 | awk '{print $2}'
+            )"
+            if [[ "${candidate_fingerprint}" == "${SSH_FINGERPRINT}" ]]; then
+              printf '%s\n' "${key_line}" >>"${known_hosts_path}"
+              ((matching_keys += 1))
+            fi
+          done <"${scanned_hosts_path}"
+          (( matching_keys > 0 )) || {
+            echo 'Scanned SSH host keys did not match VPS_HOST_FINGERPRINT.' >&2
+            exit 1
+          }
+          chmod 0600 "${known_hosts_path}"
+
+          ssh_options=(
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o GlobalKnownHostsFile=/dev/null
+            -o IdentitiesOnly=yes
+            -o IdentityFile="${key_path}"
+            -o LogLevel=ERROR
+            -o ServerAliveCountMax=3
+            -o ServerAliveInterval=10
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="${known_hosts_path}"
+          )
+
+          copy_with_retries() {
+            local source_path="$1" remote_path="$2" attempt
+            [[ -f "${source_path}" && ! -L "${source_path}" ]]
+            for attempt in 1 2 3; do
+              if timeout --signal=TERM --kill-after=15s 15m \
+                  scp "${ssh_options[@]}" -- \
+                    "${source_path}" "spyboxd-deploy@${SSH_HOST}:${remote_path}"; then
+                return 0
+              fi
+              if (( attempt < 3 )); then
+                sleep "$((attempt * 5))"
+              fi
+            done
+            return 1
+          }
+
+          copy_with_retries \
+            "${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz" \
+            "${REMOTE_BUNDLE}"
+          copy_with_retries \
+            "${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz.sha256" \
+            "${REMOTE_CHECKSUM}"
+
+      - name: Securely remove local SSH material
+        if: always()
+        run: |
+          set -Eeuo pipefail
+
+          cleanup_paths=(
+            "${RUNNER_TEMP}/spyboxd-deploy-key"
+            "${RUNNER_TEMP}/spyboxd-known-hosts"
+            "${RUNNER_TEMP}/spyboxd-scanned-hosts"
+          )
+          for cleanup_path in "${cleanup_paths[@]}"; do
+            case "${cleanup_path}" in
+              "${RUNNER_TEMP}"/spyboxd-*) ;;
+              *) echo 'Refusing an SSH cleanup path outside RUNNER_TEMP.' >&2; exit 64 ;;
+            esac
+            [[ ! -L "${cleanup_path}" ]] || {
+              echo "Refusing to follow an SSH cleanup symlink: ${cleanup_path}" >&2
+              exit 1
+            }
+            if [[ -f "${cleanup_path}" ]]; then
+              chmod 0600 "${cleanup_path}"
+              shred --force --iterations=1 --zero --remove -- "${cleanup_path}"
+            fi
+          done
 
       - name: Release validated commit to Hetzner
         id: activate
@@ -104,6 +230,7 @@ jobs:
           username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          timeout: 2m
           envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
           command_timeout: 45m
           script: |
@@ -196,7 +323,7 @@ jobs:
           set -Eeuo pipefail
 
           api_ready=false
-          for attempt in $(seq 1 15); do
+          for _ in {1..15}; do
             if response="$(curl --silent --show-error --fail --max-time 10 \
                 --header 'Cache-Control: no-cache' \
                 https://api.spyboxd.com/ready 2>/dev/null)" \
@@ -212,7 +339,7 @@ jobs:
           [[ "${api_ready}" == true ]]
 
           frontend_ready=false
-          for attempt in $(seq 1 15); do
+          for _ in {1..15}; do
             status_code="$(curl --silent --show-error --output /dev/null \
               --write-out '%{http_code}' --max-time 10 \
               --header 'Cache-Control: no-cache' \
@@ -235,6 +362,7 @@ jobs:
           username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          timeout: 2m
           envs: RELEASE_SHA
           command_timeout: 10m
           script: |
@@ -277,6 +405,7 @@ jobs:
           username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          timeout: 2m
           envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
           script: |
             set -eu

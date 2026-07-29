@@ -18,6 +18,7 @@ permissions:
 
 concurrency:
   group: spyboxd-production-deploy
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -54,6 +55,7 @@ jobs:
           username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          timeout: 2m
           envs: ROLLBACK_TARGET,ROLLBACK_SCRIPT_SHA
           command_timeout: 15m
           script: |
