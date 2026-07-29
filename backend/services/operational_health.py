@@ -23,6 +23,7 @@ from database.models import Profile, ProfileFeedState
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+REVISION_PATH = REPO_ROOT / "REVISION"
 ALEMBIC_CONFIG_PATH = REPO_ROOT / "alembic.ini"
 ALEMBIC_SCRIPT_PATH = REPO_ROOT / "alembic"
 DEFAULT_RSS_INTERVAL_SECONDS = 2 * 60 * 60
@@ -52,6 +53,29 @@ def _positive_int_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def application_revision() -> Optional[str]:
+    """Return the exact release revision without making health depend on Git.
+
+    Production releases write a full commit SHA to ``REVISION`` before they are
+    activated. Source checkouts intentionally report ``None`` unless an
+    explicit revision is supplied, so local development remains frictionless.
+    """
+
+    configured = os.getenv("SPYBOXD_REVISION", "").strip().lower()
+    if configured:
+        return configured if _is_full_git_revision(configured) else None
+
+    try:
+        revision = REVISION_PATH.read_text(encoding="utf-8").strip().lower()
+    except (OSError, UnicodeError):
+        return None
+    return revision if _is_full_git_revision(revision) else None
+
+
+def _is_full_git_revision(value: str) -> bool:
+    return len(value) == 40 and all(character in "0123456789abcdef" for character in value)
+
+
 def repository_schema_heads() -> set[str]:
     """Return the migration heads bundled with this application checkout."""
 
@@ -69,11 +93,13 @@ def readiness_report(database_engine: Engine, *, now: Optional[datetime] = None)
     """
 
     checked_at = _iso_utc(now or _utc_now())
+    revision = application_revision()
     try:
         expected_heads = repository_schema_heads()
     except Exception:
         return {
             "status": "not_ready",
+            "revision": revision,
             "checked_at": checked_at,
             "reason": "repository_schema_unavailable",
             "checks": {"database": "unknown", "schema": "unavailable"},
@@ -85,6 +111,7 @@ def readiness_report(database_engine: Engine, *, now: Optional[datetime] = None)
     except Exception:
         return {
             "status": "not_ready",
+            "revision": revision,
             "checked_at": checked_at,
             "reason": "database_unavailable",
             "checks": {"database": "unavailable", "schema": "unknown"},
@@ -100,6 +127,7 @@ def readiness_report(database_engine: Engine, *, now: Optional[datetime] = None)
     except Exception:
         return {
             "status": "not_ready",
+            "revision": revision,
             "checked_at": checked_at,
             "reason": "schema_revision_unavailable",
             "checks": {"database": "ok", "schema": "unavailable"},
@@ -109,6 +137,7 @@ def readiness_report(database_engine: Engine, *, now: Optional[datetime] = None)
     if current_heads != expected_heads:
         return {
             "status": "not_ready",
+            "revision": revision,
             "checked_at": checked_at,
             "reason": "schema_revision_mismatch",
             "checks": {"database": "ok", "schema": "mismatch"},
@@ -120,6 +149,7 @@ def readiness_report(database_engine: Engine, *, now: Optional[datetime] = None)
 
     return {
         "status": "ready",
+        "revision": revision,
         "checked_at": checked_at,
         "checks": {"database": "ok", "schema": "current"},
         "schema": {"current_revisions": sorted(current_heads)},

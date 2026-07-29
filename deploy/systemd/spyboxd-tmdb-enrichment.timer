@@ -1,0 +1,12 @@
+[Unit]
+Description=Run bounded Spyboxd TMDB cache enrichment daily
+
+[Timer]
+OnCalendar=*-*-* 04:17:00 UTC
+RandomizedDelaySec=45min
+Persistent=true
+AccuracySec=5min
+Unit=spyboxd-tmdb-enrichment.service
+
+[Install]
+WantedBy=timers.target
