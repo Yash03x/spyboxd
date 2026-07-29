@@ -229,6 +229,7 @@ jobs:
             'pid logs/nginx.pid;' \
             'events {}' \
             'http {' \
+            '    access_log logs/access.log;' \
             "    include ${nginx_root}/spyboxd.conf;" \
             '}' >"${nginx_root}/nginx.conf"
 
