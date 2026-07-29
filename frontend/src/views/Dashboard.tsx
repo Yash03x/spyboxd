@@ -119,7 +119,7 @@ const Dashboard: React.FC = () => {
     >
       {/* Header with Actions */}
       <motion.div 
-        className="flex items-center justify-between"
+        className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between"
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
@@ -134,7 +134,7 @@ const Dashboard: React.FC = () => {
         </div>
         
         <motion.div 
-          className="flex space-x-4"
+          className="flex flex-wrap gap-4"
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}

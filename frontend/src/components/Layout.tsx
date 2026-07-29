@@ -240,7 +240,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       </motion.nav>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-h-screen lg:min-h-auto">
+      <main className="flex min-w-0 flex-1 flex-col min-h-screen lg:min-h-auto">
         {/* Top Header */}
         <motion.header 
           className={`${isInsightWorkspace ? 'hidden' : 'hidden lg:block'} border-b border-white/10 bg-black/10 px-6 py-4 backdrop-blur-md`}
