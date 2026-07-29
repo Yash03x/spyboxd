@@ -1,0 +1,678 @@
+from __future__ import annotations
+
+import os
+import re
+from datetime import datetime, timezone
+from typing import Any, Iterable, Optional, Sequence
+
+from fastapi import HTTPException, status
+from sqlalchemy import func, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, joinedload
+
+from auth import ClerkUser
+from database.models import (
+    AppUser,
+    Profile,
+    ProfileAccessRequest,
+    UserTrackedProfile,
+)
+
+
+PROFILE_USERNAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,49}")
+REQUEST_STATUSES = {"pending", "approved", "rejected", "fulfilled"}
+ADMIN_DECISIONS = {"approved", "rejected"}
+
+
+def _positive_limit(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def normalize_profile_username(raw_username: str) -> tuple[str, str]:
+    username = (raw_username or "").strip().lstrip("@")
+    if not PROFILE_USERNAME.fullmatch(username):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a valid Letterboxd username.",
+        )
+    return username, username.casefold()
+
+
+def ensure_app_user(db: Session, clerk_user: ClerkUser) -> AppUser:
+    app_user = (
+        db.query(AppUser)
+        .filter(AppUser.clerk_user_id == clerk_user.user_id)
+        .first()
+    )
+    if app_user is not None:
+        if not app_user.is_active:
+            raise HTTPException(status_code=403, detail="User access is disabled")
+        return app_user
+
+    app_user = AppUser(clerk_user_id=clerk_user.user_id)
+    db.add(app_user)
+    try:
+        db.commit()
+        db.refresh(app_user)
+        return app_user
+    except IntegrityError:
+        # A concurrent first request may have inserted the same Clerk identity.
+        db.rollback()
+        app_user = (
+            db.query(AppUser)
+            .filter(AppUser.clerk_user_id == clerk_user.user_id)
+            .one()
+        )
+        if not app_user.is_active:
+            raise HTTPException(status_code=403, detail="User access is disabled")
+        return app_user
+
+
+def _tracked_profile_mapping(db: Session, app_user_id: int) -> dict[str, Profile]:
+    rows = (
+        db.query(Profile)
+        .join(UserTrackedProfile, UserTrackedProfile.profile_id == Profile.id)
+        .filter(UserTrackedProfile.user_id == app_user_id)
+        .all()
+    )
+    mapping: dict[str, Profile] = {}
+    for profile in rows:
+        normalized = profile.username.casefold()
+        existing = mapping.get(normalized)
+        if existing is not None and existing.id != profile.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Case-insensitive profile username collision requires admin resolution.",
+            )
+        mapping[normalized] = profile
+    return mapping
+
+
+def _single_profile_by_normalized_username(
+    db: Session,
+    normalized_username: str,
+    *,
+    tracked_by_user_id: Optional[int] = None,
+) -> Optional[Profile]:
+    query = db.query(Profile)
+    if tracked_by_user_id is not None:
+        query = query.join(
+            UserTrackedProfile,
+            UserTrackedProfile.profile_id == Profile.id,
+        ).filter(UserTrackedProfile.user_id == tracked_by_user_id)
+    matches = (
+        query.filter(func.lower(Profile.username) == normalized_username)
+        .order_by(Profile.id.asc())
+        .limit(2)
+        .all()
+    )
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Case-insensitive profile username collision requires admin resolution.",
+        )
+    return matches[0] if matches else None
+
+
+def accessible_profiles(db: Session, clerk_user: ClerkUser) -> list[Profile]:
+    app_user = ensure_app_user(db, clerk_user)
+    if clerk_user.is_admin:
+        return db.query(Profile).order_by(Profile.updated_at.desc()).all()
+    return (
+        db.query(Profile)
+        .join(UserTrackedProfile, UserTrackedProfile.profile_id == Profile.id)
+        .filter(UserTrackedProfile.user_id == app_user.id)
+        .order_by(Profile.updated_at.desc())
+        .all()
+    )
+
+
+def authorize_profile_usernames(
+    db: Session,
+    clerk_user: ClerkUser,
+    requested: Optional[Sequence[str]],
+) -> list[str]:
+    """Return a canonical, access-checked selection for an analytics request.
+
+    An omitted selection expands only to the caller's completed tracked profiles.
+    Explicit untracked names are rejected with 403 before analytics code runs.
+    """
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in requested or []:
+        username = (value or "").strip()
+        key = username.casefold()
+        if username and key not in seen:
+            cleaned.append(username)
+            seen.add(key)
+
+    app_user = ensure_app_user(db, clerk_user)
+    if clerk_user.is_admin:
+        if not cleaned:
+            return []
+        matches = (
+            db.query(Profile)
+            .filter(func.lower(Profile.username).in_(seen))
+            .all()
+        )
+        by_username: dict[str, Profile] = {}
+        for profile in matches:
+            normalized = profile.username.casefold()
+            existing = by_username.get(normalized)
+            if existing is not None and existing.id != profile.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Case-insensitive profile username collision requires admin resolution.",
+                )
+            by_username[normalized] = profile
+        return [
+            by_username[value.casefold()].username
+            if value.casefold() in by_username
+            else value
+            for value in cleaned
+        ]
+
+    tracked = _tracked_profile_mapping(db, app_user.id)
+    if cleaned:
+        forbidden = [value for value in cleaned if value.casefold() not in tracked]
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "message": "Track every requested profile before using it in analytics.",
+                    "untracked_profiles": forbidden,
+                },
+            )
+        return [tracked[value.casefold()].username for value in cleaned]
+
+    return sorted(
+        profile.username
+        for profile in tracked.values()
+        if profile.is_active and profile.scraping_status == "completed"
+    )
+
+
+def require_profile_access(
+    db: Session,
+    clerk_user: ClerkUser,
+    username: str,
+) -> Profile:
+    normalized = username.strip().casefold()
+    app_user = ensure_app_user(db, clerk_user)
+    if clerk_user.is_admin:
+        profile = _single_profile_by_normalized_username(db, normalized)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        return profile
+
+    profile = _single_profile_by_normalized_username(
+        db,
+        normalized,
+        tracked_by_user_id=app_user.id,
+    )
+    if profile is None:
+        existing = _single_profile_by_normalized_username(db, normalized)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Track this profile before accessing its analytics.",
+        )
+    return profile
+
+
+def _lock_user_access_mutations(db: Session, app_user_id: int) -> None:
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        # Transaction-scoped and stable across every process serving this DB.
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:namespace, :user_id)"),
+            {"namespace": 5_454_297, "user_id": app_user_id},
+        )
+
+
+def _add_tracking(
+    db: Session,
+    *,
+    app_user_id: int,
+    profile_id: int,
+    source: str,
+) -> UserTrackedProfile:
+    # Serialize count-and-insert for one user so concurrent requests cannot
+    # both observe a free slot and exceed the per-user tracking cap.
+    _lock_user_access_mutations(db, app_user_id)
+
+    tracked = (
+        db.query(UserTrackedProfile)
+        .filter(
+            UserTrackedProfile.user_id == app_user_id,
+            UserTrackedProfile.profile_id == profile_id,
+        )
+        .first()
+    )
+    if tracked is None:
+        tracked_count = (
+            db.query(UserTrackedProfile.id)
+            .filter(UserTrackedProfile.user_id == app_user_id)
+            .count()
+        )
+        max_tracked = _positive_limit("SPYBOXD_MAX_TRACKED_PROFILES_PER_USER", 25)
+        if tracked_count >= max_tracked:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"You can track at most {max_tracked} profiles.",
+            )
+        tracked = UserTrackedProfile(
+            user_id=app_user_id,
+            profile_id=profile_id,
+            source=source,
+        )
+        try:
+            with db.begin_nested():
+                db.add(tracked)
+                db.flush()
+        except IntegrityError:
+            # The unique constraint is the final idempotency guard during a
+            # mixed-version deploy or on databases without advisory locks.
+            tracked = (
+                db.query(UserTrackedProfile)
+                .filter(
+                    UserTrackedProfile.user_id == app_user_id,
+                    UserTrackedProfile.profile_id == profile_id,
+                )
+                .first()
+            )
+            if tracked is None:
+                raise
+    return tracked
+
+
+def profile_summary(profile: Profile) -> dict[str, Any]:
+    return {
+        "id": profile.id,
+        "username": profile.username,
+        "display_name": profile.display_name,
+        "profile_image_url": profile.profile_image_url,
+        "scraping_status": profile.scraping_status,
+        "is_active": bool(profile.is_active),
+    }
+
+
+def request_summary(
+    request: ProfileAccessRequest,
+    *,
+    include_admin_fields: bool = False,
+) -> dict[str, Any]:
+    summary = {
+        "id": request.id,
+        "requested_username": request.requested_username,
+        "status": request.status,
+        "requested_at": request.requested_at.isoformat() if request.requested_at else None,
+        "updated_at": request.updated_at.isoformat() if request.updated_at else None,
+        "resolved_at": request.resolved_at.isoformat() if request.resolved_at else None,
+        "profile": (
+            profile_summary(request.fulfilled_profile)
+            if request.fulfilled_profile is not None
+            else None
+        ),
+    }
+    if include_admin_fields:
+        summary.update(
+            {
+                "requester_user_id": (
+                    request.user.clerk_user_id if request.user else None
+                ),
+                "note": request.admin_note,
+                "resolved_by_user_id": request.resolved_by_clerk_user_id,
+            }
+        )
+    return summary
+
+
+def fulfill_pending_requests(
+    db: Session,
+    profile: Profile,
+    *,
+    resolved_by_user_id: Optional[str] = None,
+    commit: bool = True,
+) -> int:
+    if not getattr(profile, "is_active", False) or getattr(profile, "scraping_status", None) != "completed":
+        return 0
+    normalized = profile.username.casefold()
+    requests = (
+        db.query(ProfileAccessRequest)
+        .filter(
+            ProfileAccessRequest.normalized_username == normalized,
+            ProfileAccessRequest.status.in_(("pending", "approved")),
+        )
+        .order_by(ProfileAccessRequest.user_id.asc(), ProfileAccessRequest.id.asc())
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    fulfilled_count = 0
+    for request in requests:
+        try:
+            _add_tracking(
+                db,
+                app_user_id=request.user_id,
+                profile_id=profile.id,
+                source="request_fulfillment",
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+                continue
+            raise
+        request.status = "fulfilled"
+        request.fulfilled_profile_id = profile.id
+        request.resolved_at = now
+        request.resolved_by_clerk_user_id = resolved_by_user_id
+        fulfilled_count += 1
+    if commit and fulfilled_count:
+        db.commit()
+    return fulfilled_count
+
+
+def preserve_profile_tracking_requests(
+    db: Session,
+    profile: Profile,
+    *,
+    commit: bool = True,
+) -> int:
+    normalized = profile.username.casefold()
+    tracked_user_ids = {
+        user_id
+        for (user_id,) in (
+            db.query(UserTrackedProfile.user_id)
+            .filter(UserTrackedProfile.profile_id == profile.id)
+            .all()
+        )
+    }
+    requests = (
+        db.query(ProfileAccessRequest)
+        .filter(
+            ProfileAccessRequest.normalized_username == normalized,
+            (
+                ProfileAccessRequest.fulfilled_profile_id == profile.id
+            )
+            | ProfileAccessRequest.user_id.in_(tracked_user_ids),
+        )
+        .all()
+    )
+    by_user_id = {request.user_id: request for request in requests}
+    preserved_user_ids = set(tracked_user_ids)
+    preserved_user_ids.update(
+        request.user_id
+        for request in requests
+        if request.fulfilled_profile_id == profile.id
+        and request.status == "fulfilled"
+    )
+    changed = 0
+    for user_id in preserved_user_ids:
+        request = by_user_id.get(user_id)
+        if request is None:
+            request = ProfileAccessRequest(
+                user_id=user_id,
+                requested_username=profile.username,
+                normalized_username=normalized,
+                status="approved",
+            )
+            db.add(request)
+        else:
+            request.requested_username = profile.username
+            request.normalized_username = normalized
+            request.status = "approved"
+            request.fulfilled_profile_id = None
+        changed += 1
+    if commit and changed:
+        db.commit()
+    return changed
+
+
+def reopen_fulfilled_requests_for_profile(
+    db: Session,
+    profile: Profile,
+    *,
+    commit: bool = True,
+) -> int:
+    """Backward-compatible name for preserving access across destructive syncs."""
+
+    return preserve_profile_tracking_requests(db, profile, commit=commit)
+
+
+def track_or_request_profile(
+    db: Session,
+    clerk_user: ClerkUser,
+    raw_username: str,
+) -> dict[str, Any]:
+    username, normalized = normalize_profile_username(raw_username)
+    app_user = ensure_app_user(db, clerk_user)
+    _lock_user_access_mutations(db, app_user.id)
+    profile = _single_profile_by_normalized_username(db, normalized)
+    if (
+        profile is not None
+        and profile.is_active
+        and profile.scraping_status == "completed"
+    ):
+        _add_tracking(
+            db,
+            app_user_id=app_user.id,
+            profile_id=profile.id,
+            source="direct",
+        )
+        own_request = (
+            db.query(ProfileAccessRequest)
+            .filter(
+                ProfileAccessRequest.user_id == app_user.id,
+                ProfileAccessRequest.normalized_username == normalized,
+            )
+            .first()
+        )
+        if own_request is not None and own_request.status != "fulfilled":
+            own_request.status = "fulfilled"
+            own_request.fulfilled_profile_id = profile.id
+            own_request.resolved_at = datetime.now(timezone.utc)
+        db.commit()
+        return {
+            "message": f"{profile.username} is now tracked.",
+            "status": "tracked",
+            "profile": profile_summary(profile),
+            "request": request_summary(own_request) if own_request is not None else None,
+        }
+
+    request = (
+        db.query(ProfileAccessRequest)
+        .options(joinedload(ProfileAccessRequest.user))
+        .filter(
+            ProfileAccessRequest.user_id == app_user.id,
+            ProfileAccessRequest.normalized_username == normalized,
+        )
+        .first()
+    )
+    if request is None:
+        active_request_count = (
+            db.query(ProfileAccessRequest.id)
+            .filter(
+                ProfileAccessRequest.user_id == app_user.id,
+                ProfileAccessRequest.status.in_(("pending", "approved")),
+            )
+            .count()
+        )
+        max_pending = _positive_limit("SPYBOXD_MAX_PENDING_PROFILE_REQUESTS_PER_USER", 10)
+        if active_request_count >= max_pending:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"You can have at most {max_pending} active profile requests.",
+            )
+        new_request = ProfileAccessRequest(
+            user_id=app_user.id,
+            requested_username=username,
+            normalized_username=normalized,
+            status="pending",
+        )
+        try:
+            with db.begin_nested():
+                db.add(new_request)
+                db.flush()
+            request = new_request
+        except IntegrityError:
+            request = (
+                db.query(ProfileAccessRequest)
+                .options(joinedload(ProfileAccessRequest.user))
+                .filter(
+                    ProfileAccessRequest.user_id == app_user.id,
+                    ProfileAccessRequest.normalized_username == normalized,
+                )
+                .one()
+            )
+    elif request.status == "rejected":
+        active_request_count = (
+            db.query(ProfileAccessRequest.id)
+            .filter(
+                ProfileAccessRequest.user_id == app_user.id,
+                ProfileAccessRequest.status.in_(("pending", "approved")),
+            )
+            .count()
+        )
+        max_pending = _positive_limit("SPYBOXD_MAX_PENDING_PROFILE_REQUESTS_PER_USER", 10)
+        if active_request_count >= max_pending:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"You can have at most {max_pending} active profile requests.",
+            )
+        request.status = "pending"
+        request.requested_username = username
+        request.admin_note = None
+        request.resolved_at = None
+        request.resolved_by_clerk_user_id = None
+    db.commit()
+    db.refresh(request)
+    return {
+        "message": f"{username} was requested for the next residential sync.",
+        "status": "pending",
+        "profile": profile_summary(profile) if profile is not None else None,
+        "request": request_summary(request),
+    }
+
+
+def list_profile_requests(
+    db: Session,
+    clerk_user: ClerkUser,
+    *,
+    include_all: bool = False,
+    request_status: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    app_user = ensure_app_user(db, clerk_user)
+    if request_status is not None and request_status not in REQUEST_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid request status")
+    query = db.query(ProfileAccessRequest).options(
+        joinedload(ProfileAccessRequest.user),
+        joinedload(ProfileAccessRequest.fulfilled_profile),
+    )
+    if include_all:
+        if not clerk_user.is_admin:
+            raise HTTPException(status_code=403, detail="Admin role required")
+    else:
+        query = query.filter(ProfileAccessRequest.user_id == app_user.id)
+    if request_status is not None:
+        query = query.filter(ProfileAccessRequest.status == request_status)
+    requests = query.order_by(
+        ProfileAccessRequest.requested_at.desc(),
+        ProfileAccessRequest.id.desc(),
+    ).all()
+    return [
+        request_summary(request, include_admin_fields=include_all)
+        for request in requests
+    ]
+
+
+def decide_profile_request(
+    db: Session,
+    clerk_user: ClerkUser,
+    request_id: int,
+    *,
+    decision: str,
+    note: Optional[str],
+) -> dict[str, Any]:
+    ensure_app_user(db, clerk_user)
+    if not clerk_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    if decision not in ADMIN_DECISIONS:
+        raise HTTPException(status_code=400, detail="Status must be approved or rejected")
+    request = (
+        db.query(ProfileAccessRequest)
+        .options(joinedload(ProfileAccessRequest.user))
+        .filter(ProfileAccessRequest.id == request_id)
+        .first()
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Profile request not found")
+    if request.status == "fulfilled":
+        raise HTTPException(
+            status_code=409,
+            detail="Fulfilled access must be removed through profile tracking.",
+        )
+
+    request.status = decision
+    request.admin_note = (note or "").strip() or None
+    request.resolved_by_clerk_user_id = clerk_user.user_id
+    request.resolved_at = datetime.now(timezone.utc)
+    if decision == "approved":
+        profile = _single_profile_by_normalized_username(
+            db,
+            request.normalized_username,
+        )
+        if (
+            profile is not None
+            and profile.is_active
+            and profile.scraping_status == "completed"
+        ):
+            try:
+                _add_tracking(
+                    db,
+                    app_user_id=request.user_id,
+                    profile_id=profile.id,
+                    source="request_fulfillment",
+                )
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+                    raise
+            else:
+                request.status = "fulfilled"
+                request.fulfilled_profile_id = profile.id
+    db.commit()
+    db.refresh(request)
+    return request_summary(request, include_admin_fields=True)
+
+
+def untrack_profile(db: Session, clerk_user: ClerkUser, username: str) -> bool:
+    _, normalized = normalize_profile_username(username)
+    app_user = ensure_app_user(db, clerk_user)
+    _lock_user_access_mutations(db, app_user.id)
+    profile = _single_profile_by_normalized_username(
+        db,
+        normalized,
+        tracked_by_user_id=app_user.id,
+    )
+    if profile is None:
+        return False
+    deleted = (
+        db.query(UserTrackedProfile)
+        .filter(
+            UserTrackedProfile.user_id == app_user.id,
+            UserTrackedProfile.profile_id == profile.id,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted:
+        db.query(ProfileAccessRequest).filter(
+            ProfileAccessRequest.user_id == app_user.id,
+            ProfileAccessRequest.fulfilled_profile_id == profile.id,
+            ProfileAccessRequest.status == "fulfilled",
+        ).delete(synchronize_session=False)
+    db.commit()
+    return bool(deleted)

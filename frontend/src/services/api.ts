@@ -33,6 +33,7 @@ api.interceptors.request.use(async (config) => {
     }
   } catch (error) {
     console.error('Failed to fetch auth token for API request:', error);
+    headers.delete('Authorization');
   }
 
   config.headers = headers;
@@ -67,6 +68,52 @@ export interface ProfileInfo {
   scraping_status?: string;
   data_coverage?: DataCoverage;
 }
+
+export interface CurrentUser {
+  user_id: string;
+  is_admin: boolean;
+}
+
+export type ProfileRequestStatus = 'pending' | 'approved' | 'rejected' | 'fulfilled';
+
+export interface ProfileRequestProfile {
+  id: number;
+  username: string;
+  display_name: string | null;
+  profile_image_url: string | null;
+  scraping_status: string;
+  is_active: boolean;
+}
+
+export interface ProfileRequest {
+  id: number;
+  requested_username: string;
+  status: ProfileRequestStatus;
+  requested_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+  profile: ProfileRequestProfile | null;
+}
+
+export interface AdminProfileRequest extends ProfileRequest {
+  requester_user_id: string;
+  note: string | null;
+  resolved_by_user_id: string | null;
+}
+
+export interface ProfileRequestSubmission {
+  message: string;
+  status: 'tracked' | 'pending';
+  profile: ProfileRequestProfile | null;
+  request: ProfileRequest | null;
+}
+
+export const authApi = {
+  getCurrentUser: async (): Promise<CurrentUser> => {
+    const response = await api.get('/api/me');
+    return response.data;
+  },
+};
 
 export interface ProfileAnalysis {
   username: string;
@@ -163,6 +210,39 @@ export const profileApi = {
   // Delete profile
   deleteProfile: async (username: string): Promise<{ message: string }> => {
     const response = await api.delete(`/profiles/${username}`);
+    return response.data;
+  },
+
+  getRequests: async (): Promise<ProfileRequest[]> => {
+    const response = await api.get('/profiles/requests');
+    return response.data.requests || [];
+  },
+
+  requestProfile: async (username: string): Promise<ProfileRequestSubmission> => {
+    const response = await api.post('/profiles/requests', { username });
+    return response.data;
+  },
+
+  stopTracking: async (username: string): Promise<{ message: string; status: 'untracked'; username: string }> => {
+    const response = await api.delete(`/profiles/${encodeURIComponent(username)}/tracking`);
+    return response.data;
+  },
+};
+
+export const adminProfileRequestApi = {
+  getRequests: async (status?: ProfileRequestStatus): Promise<AdminProfileRequest[]> => {
+    const response = await api.get('/admin/profile-requests', {
+      params: status ? { status } : undefined,
+    });
+    return response.data.requests || [];
+  },
+
+  updateRequest: async (
+    id: number,
+    status: Extract<ProfileRequestStatus, 'approved' | 'rejected'>,
+    note?: string,
+  ): Promise<{ message: string; request: AdminProfileRequest }> => {
+    const response = await api.put(`/admin/profile-requests/${id}`, { status, note });
     return response.data;
   },
 };

@@ -16,7 +16,8 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes.activity import router as activity_router
 from api.routes.insights import router as insights_router
-from auth import ClerkUser, get_admin_user, get_upload_user
+from api.routes.profile_access import router as profile_access_router
+from auth import ClerkUser, get_admin_user, get_current_user, get_upload_user
 from database.connection import engine, get_db, init_db
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
@@ -27,6 +28,14 @@ from services.data_coverage import (
 )
 from services.ingestion import unified_data_loader
 from services.profile_loader import load_profile_data
+from services.profile_access import (
+    accessible_profiles,
+    authorize_profile_usernames,
+    ensure_app_user,
+    fulfill_pending_requests,
+    reopen_fulfilled_requests_for_profile,
+    require_profile_access,
+)
 from services.operational_health import (
     application_revision,
     readiness_report,
@@ -54,6 +63,17 @@ _PROFILE_DIRECTORY_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 class _OwnerExportPublicationConsentRequired(PermissionError):
     """Expected upload validation failure with a fixed, public-safe message."""
+
+
+def get_active_upload_user(
+    user: ClerkUser = Depends(get_upload_user),
+    db: Session = Depends(get_db),
+) -> ClerkUser:
+    """Reject disabled Clerk admins while preserving ingestion-token uploads."""
+
+    if user.user_id != "ingestion-token":
+        ensure_app_user(db, user)
+    return user
 
 
 def _remove_scraped_profile_directory(username: str) -> None:
@@ -188,6 +208,7 @@ app.add_middleware(
 # New insight surfaces are additive; all legacy endpoints above and below remain intact.
 app.include_router(insights_router)
 app.include_router(activity_router)
+app.include_router(profile_access_router)
 
 @app.get("/health")
 async def health_check():
@@ -307,12 +328,12 @@ def extract_zip_file(uploaded_file, temp_dir):
 @app.get("/profiles/")
 async def list_profiles(
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
-    """Get all active profiles with their basic information"""
-    profile_repo = ProfileRepository(db)
+    """Get active profiles visible to the signed-in user."""
     rating_repo = RatingRepository(db)
     
-    profiles = profile_repo.get_all_profiles(active_only=True)
+    profiles = [profile for profile in accessible_profiles(db, user) if profile.is_active]
     
     profile_list = []
     for profile in profiles:
@@ -343,9 +364,18 @@ async def list_profiles(
 @app.get("/api/dashboard/analytics")
 async def get_consolidated_dashboard_analytics(
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
-    """Get consolidated system-wide analytics for the main dashboard."""
+    """Get dashboard analytics over profiles visible to the signed-in user."""
+    ensure_app_user(db, user)
     analytics_repo = AnalyticsRepository(db)
+    if not user.is_admin:
+        usernames = authorize_profile_usernames(db, user, None)
+        return analytics_repo.build_dashboard_analytics_snapshot(
+            group_limit=6,
+            top_movies_limit=10,
+            usernames=usernames,
+        )
     return analytics_repo.get_dashboard_analytics_snapshot(
         group_limit=6,
         top_movies_limit=10,
@@ -358,11 +388,13 @@ async def get_spy_signals(
     gap_days: int = Query(default=1, ge=0, le=7),
     event_source: str = Query(default="ratings", pattern="^(ratings|events)$"),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Compare timing and rating signals for two or more completed profiles."""
+    profiles = authorize_profile_usernames(db, user, profiles)
     profile_repo = ProfileRepository(db)
     all_profiles = profile_repo.get_all_profiles(active_only=False)
-    profiles_by_username = {profile.username.casefold(): profile for profile in all_profiles}
+    profiles_by_username = {profile.username: profile for profile in all_profiles}
 
     requested_profiles: List[str] = []
     seen_profiles = set()
@@ -377,7 +409,7 @@ async def get_spy_signals(
         unknown_profiles = [
             username
             for username in requested_profiles
-            if username.casefold() not in profiles_by_username
+            if username not in profiles_by_username
         ]
         if unknown_profiles:
             raise HTTPException(
@@ -391,8 +423,8 @@ async def get_spy_signals(
         unavailable_profiles = [
             username
             for username in requested_profiles
-            if not profiles_by_username[username.casefold()].is_active
-            or profiles_by_username[username.casefold()].scraping_status != "completed"
+            if not profiles_by_username[username].is_active
+            or profiles_by_username[username].scraping_status != "completed"
         ]
         if unavailable_profiles:
             raise HTTPException(
@@ -404,15 +436,17 @@ async def get_spy_signals(
             )
 
         selected_profiles = [
-            profiles_by_username[username.casefold()].username
+            profiles_by_username[username].username
             for username in requested_profiles
         ]
-    else:
+    elif user.is_admin:
         selected_profiles = sorted(
             profile.username
             for profile in all_profiles
             if profile.is_active and profile.scraping_status == "completed"
         )
+    else:
+        selected_profiles = []
 
     if len(selected_profiles) < 2:
         raise HTTPException(
@@ -440,15 +474,16 @@ async def get_spy_signals(
 async def get_analysis(
     username: str,
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Get detailed analysis for a specific profile"""
     profile_repo = ProfileRepository(db)
     rating_repo = RatingRepository(db)
     review_repo = ReviewRepository(db)
     
-    profile = profile_repo.get_profile_by_username(username)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    profile = require_profile_access(db, user, username)
+    if not profile.is_active or profile.scraping_status != "completed":
+        raise HTTPException(status_code=404, detail="Profile has no available analysis")
 
     # Get rating distribution
     rating_distribution = rating_repo.get_rating_distribution(profile.id)
@@ -524,11 +559,17 @@ async def create_profile(
     _user: ClerkUser = Depends(get_admin_user),
 ):
     """Create a new profile"""
+    ensure_app_user(db, _user)
     profile_repo = ProfileRepository(db)
     
     # Check if profile already exists
     existing_profile = profile_repo.get_profile_by_username(profile_data.username)
     if existing_profile:
+        fulfill_pending_requests(
+            db,
+            existing_profile,
+            resolved_by_user_id=_user.user_id,
+        )
         raise HTTPException(status_code=409, detail="Profile already exists")
     
     profile = profile_repo.create_profile(
@@ -536,6 +577,12 @@ async def create_profile(
         bio=profile_data.bio,
         location=profile_data.location,
         website=profile_data.website
+    )
+
+    fulfill_pending_requests(
+        db,
+        profile,
+        resolved_by_user_id=_user.user_id,
     )
 
     _refresh_dashboard_snapshot_cache(db)
@@ -550,6 +597,7 @@ async def update_profile(
     _user: ClerkUser = Depends(get_admin_user),
 ):
     """Update an existing profile"""
+    ensure_app_user(db, _user)
     profile_repo = ProfileRepository(db)
     
     profile = profile_repo.get_profile_by_username(username)
@@ -559,6 +607,12 @@ async def update_profile(
     # Update profile with provided data
     update_data = profile_data.dict(exclude_unset=True)
     updated_profile = profile_repo.update_profile(profile.id, **update_data)
+
+    fulfill_pending_requests(
+        db,
+        updated_profile,
+        resolved_by_user_id=_user.user_id,
+    )
 
     _refresh_dashboard_snapshot_cache(db)
     
@@ -571,6 +625,7 @@ async def delete_profile(
     _user: ClerkUser = Depends(get_admin_user),
 ):
     """Delete a profile and all associated data"""
+    ensure_app_user(db, _user)
     profile_repo = ProfileRepository(db)
     
     profile = profile_repo.get_profile_by_username(username)
@@ -579,6 +634,7 @@ async def delete_profile(
     
     # Clean up any legacy on-disk scrape owned by this canonical profile.
     _remove_scraped_profile_directory(profile.username)
+    reopen_fulfilled_requests_for_profile(db, profile, commit=False)
     
     # Delete from database (cascades to ratings, reviews, etc.)
     profile_repo.delete_profile(profile.id)
@@ -592,7 +648,7 @@ async def upload_files(
     files: List[UploadFile] = File(...),
     publish_owner_data: bool = Form(default=False),
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_upload_user),
+    _user: ClerkUser = Depends(get_active_upload_user),
 ):
     """Upload multiple ZIP files containing Letterboxd data"""
     profile_repo = ProfileRepository(db)
@@ -638,6 +694,14 @@ async def upload_files(
                 # Use unified data loader to prevent duplicates
                 movies_loaded = unified_data_loader(analyzer_profile, profile.id, db)
                 print(f"Loaded {movies_loaded} movies for {username} via upload")
+                db.refresh(profile)
+                fulfill_pending_requests(
+                    db,
+                    profile,
+                    resolved_by_user_id=(
+                        None if _user.user_id == "ingestion-token" else _user.user_id
+                    ),
+                )
                 
                 loaded_profiles.append(username)
                 loaded_imports.append(
@@ -682,6 +746,7 @@ async def clear_profile_data(
     _user: ClerkUser = Depends(get_admin_user),
 ):
     """Clear scraped data for a user."""
+    ensure_app_user(db, _user)
     profile_repo = ProfileRepository(db)
 
     profile = profile_repo.get_profile_by_username(username)
@@ -691,6 +756,7 @@ async def clear_profile_data(
     # Validate and remove any legacy on-disk scrape before committing the
     # database clear, so a rejected path cannot leave a partial operation.
     _remove_scraped_profile_directory(profile.username)
+    reopen_fulfilled_requests_for_profile(db, profile, commit=False)
     profile_repo.clear_profile_data(profile.id)
 
     _refresh_dashboard_snapshot_cache(db)

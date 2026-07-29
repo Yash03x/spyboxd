@@ -2,7 +2,7 @@ import math
 from collections import defaultdict
 from itertools import combinations
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, and_, or_, extract
+from sqlalchemy import desc, false, func, and_, or_, extract
 from .models import (
     Movie,
     MovieList,
@@ -599,7 +599,11 @@ class ProfileRepository:
         self.db = db
     
     def get_profile_by_username(self, username: str) -> Optional[Profile]:
-        return self.db.query(Profile).filter(Profile.username == username).first()
+        return (
+            self.db.query(Profile)
+            .filter(func.lower(Profile.username) == username.strip().casefold())
+            .one_or_none()
+        )
     
     def get_profile_by_id(self, profile_id: int) -> Optional[Profile]:
         return self.db.query(Profile).filter(Profile.id == profile_id).first()
@@ -811,26 +815,37 @@ class RatingRepository:
             for year, month, count, avg_rating in results
         ]
 
-    def get_global_rating_distribution(self) -> Dict[str, int]:
-        """Get rating distribution across all profiles"""
-        results = self.db.query(
+    def get_global_rating_distribution(
+        self,
+        profile_ids: Optional[List[int]] = None,
+    ) -> Dict[str, int]:
+        """Get rating distribution across all or an explicit profile scope."""
+        query = self.db.query(
             Rating.rating,
             func.count(Rating.id).label('count')
         ).filter(
             Rating.rating.isnot(None),
             Rating.rating >= RATING_MIN,
             Rating.rating <= RATING_MAX,
-        ).group_by(Rating.rating).all()
+        )
+        if profile_ids is not None:
+            query = query.filter(
+                Rating.profile_id.in_(profile_ids) if profile_ids else false()
+            )
+        results = query.group_by(Rating.rating).all()
 
         return {str(rating): count for rating, count in results}
     
-    def get_global_monthly_activity(self) -> List[Dict]:
-        """Get monthly activity data across all profiles"""
+    def get_global_monthly_activity(
+        self,
+        profile_ids: Optional[List[int]] = None,
+    ) -> List[Dict]:
+        """Get monthly activity across all or an explicit profile scope."""
         cutoff_date = datetime.now().date() - timedelta(days=365)
         year_bucket = extract('year', Rating.watched_date)
         month_bucket = extract('month', Rating.watched_date)
 
-        results = self.db.query(
+        query = self.db.query(
             year_bucket.label('year'),
             month_bucket.label('month'),
             func.count(Rating.id).label('movies_watched'),
@@ -839,7 +854,12 @@ class RatingRepository:
             Rating.watched_date >= cutoff_date,
             Rating.watched_date.isnot(None),
             Rating.rating.is_(None) | and_(Rating.rating >= RATING_MIN, Rating.rating <= RATING_MAX),
-        ).group_by(
+        )
+        if profile_ids is not None:
+            query = query.filter(
+                Rating.profile_id.in_(profile_ids) if profile_ids else false()
+            )
+        results = query.group_by(
             year_bucket,
             month_bucket
         ).order_by(year_bucket, month_bucket).all()
@@ -889,15 +909,56 @@ class AnalyticsRepository:
     def __init__(self, db: Session):
         self.db = db
     
-    def get_system_stats(self) -> Dict[str, Any]:
-        """Get overall system statistics"""
-        total_profiles = self.db.query(func.count(Profile.id)).scalar()
+    def _profile_ids_for_usernames(
+        self,
+        usernames: Optional[List[str]],
+    ) -> Optional[List[int]]:
+        if usernames is None:
+            return None
+        canonical_usernames = {username for username in usernames if username.strip()}
+        if not canonical_usernames:
+            return []
+        return [
+            profile_id
+            for (profile_id,) in (
+                self.db.query(Profile.id)
+                .filter(
+                    Profile.username.in_(canonical_usernames),
+                    Profile.is_active.is_(True),
+                    Profile.scraping_status == "completed",
+                )
+                .all()
+            )
+        ]
 
-        total_unique_movies = self.db.query(Rating.movie_title, Rating.movie_year).distinct().count()
-        total_reviews = self.db.query(func.count(Review.id)).scalar()
+    def get_system_stats(
+        self,
+        usernames: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Get overall statistics across all or an explicit profile scope."""
+        profile_ids = self._profile_ids_for_usernames(usernames)
+        if profile_ids is None:
+            total_profiles = self.db.query(func.count(Profile.id)).scalar()
+            rating_scope = self.db.query(Rating)
+            review_scope = self.db.query(Review)
+        else:
+            total_profiles = len(profile_ids)
+            rating_scope = self.db.query(Rating).filter(
+                Rating.profile_id.in_(profile_ids) if profile_ids else false()
+            )
+            review_scope = self.db.query(Review).filter(
+                Review.profile_id.in_(profile_ids) if profile_ids else false()
+            )
+
+        total_unique_movies = rating_scope.with_entities(
+            Rating.movie_title,
+            Rating.movie_year,
+        ).distinct().count()
+        total_reviews = review_scope.with_entities(func.count(Review.id)).scalar()
         
         # Global average rating across all ratings
-        global_avg_rating = self.db.query(func.avg(Rating.rating)).filter(
+        rating_average_scope = rating_scope.with_entities(func.avg(Rating.rating))
+        global_avg_rating = rating_average_scope.filter(
             Rating.rating.isnot(None),
             Rating.rating >= RATING_MIN,
             Rating.rating <= RATING_MAX,
@@ -911,9 +972,14 @@ class AnalyticsRepository:
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
     
-    def get_top_rated_movies(self, limit: int = 50) -> List[Dict]:
-        """Get top-rated movies across all profiles"""
-        results = self.db.query(
+    def get_top_rated_movies(
+        self,
+        limit: int = 50,
+        usernames: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Get top-rated movies across all or an explicit profile scope."""
+        profile_ids = self._profile_ids_for_usernames(usernames)
+        query = self.db.query(
             Rating.movie_title,
             Rating.movie_year,
             func.avg(Rating.rating).label('avg_rating'),
@@ -922,7 +988,12 @@ class AnalyticsRepository:
             Rating.rating.isnot(None),
             Rating.rating >= RATING_MIN,
             Rating.rating <= RATING_MAX,
-        ).group_by(
+        )
+        if profile_ids is not None:
+            query = query.filter(
+                Rating.profile_id.in_(profile_ids) if profile_ids else false()
+            )
+        results = query.group_by(
             Rating.movie_title, Rating.movie_year
         ).having(
             func.count(Rating.id) >= 3  # At least 3 ratings
@@ -949,15 +1020,27 @@ class AnalyticsRepository:
         self,
         group_limit: int = 6,
         top_movies_limit: int = 10,
+        usernames: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         rating_repo = RatingRepository(self.db)
+        profile_ids = self._profile_ids_for_usernames(usernames)
 
         return {
-            "system_stats": self.get_system_stats(),
-            "top_rated_movies": self.get_top_rated_movies(limit=top_movies_limit),
-            "rating_distribution": rating_repo.get_global_rating_distribution(),
-            "activity_data": rating_repo.get_global_monthly_activity(),
-            "group_signals": self.get_group_correlation_metrics(limit=group_limit),
+            "system_stats": self.get_system_stats(usernames=usernames),
+            "top_rated_movies": self.get_top_rated_movies(
+                limit=top_movies_limit,
+                usernames=usernames,
+            ),
+            "rating_distribution": rating_repo.get_global_rating_distribution(
+                profile_ids=profile_ids,
+            ),
+            "activity_data": rating_repo.get_global_monthly_activity(
+                profile_ids=profile_ids,
+            ),
+            "group_signals": self.get_group_correlation_metrics(
+                usernames=usernames,
+                limit=group_limit,
+            ),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -1060,8 +1143,10 @@ class AnalyticsRepository:
             Profile.is_active.is_(True),
             Profile.scraping_status == "completed",
         )
-        if usernames:
-            profile_query = profile_query.filter(Profile.username.in_(usernames))
+        if usernames is not None:
+            profile_query = profile_query.filter(
+                Profile.username.in_(usernames) if usernames else false()
+            )
         selected_profiles = dict(profile_query.all())
         profile_ids = list(selected_profiles)
         if not profile_ids:
@@ -1219,7 +1304,7 @@ class AnalyticsRepository:
             raise ValueError("event_source must be 'ratings' or 'events'")
         if event_source == "events":
             normalized_event_usernames = None
-            if usernames:
+            if usernames is not None:
                 normalized_event_usernames = list(
                     dict.fromkeys(
                         username.strip()
@@ -1270,7 +1355,7 @@ class AnalyticsRepository:
         )
 
         normalized_usernames: Optional[List[str]] = None
-        if usernames:
+        if usernames is not None:
             normalized_usernames = list(
                 dict.fromkeys(
                     username.strip()
@@ -1278,8 +1363,11 @@ class AnalyticsRepository:
                     if username and username.strip()
                 )
             )
-            if normalized_usernames:
-                query = query.filter(Profile.username.in_(normalized_usernames))
+            query = query.filter(
+                Profile.username.in_(normalized_usernames)
+                if normalized_usernames
+                else false()
+            )
 
         rows = query.all()
         if not rows:

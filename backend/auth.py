@@ -16,6 +16,7 @@ import secrets
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from dataclasses import dataclass
@@ -46,6 +47,72 @@ def _resolve_clerk_jwks_url() -> str:
     return ""
 
 
+def _resolve_clerk_issuer() -> str:
+    explicit = os.environ.get("CLERK_ISSUER", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+
+    frontend_api = os.environ.get("CLERK_FRONTEND_API", "").strip().rstrip("/")
+    if frontend_api:
+        return frontend_api
+
+    jwks_url = _resolve_clerk_jwks_url()
+    suffix = "/.well-known/jwks.json"
+    if jwks_url.endswith(suffix):
+        return jwks_url[: -len(suffix)].rstrip("/")
+    return ""
+
+
+def _normalize_web_origin(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("authorized parties must be HTTP(S) origins")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("authorized party has an invalid port") from exc
+    hostname = parsed.hostname.lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    default_port = (parsed.scheme.lower() == "http" and port == 80) or (
+        parsed.scheme.lower() == "https" and port == 443
+    )
+    authority = hostname if port is None or default_port else f"{hostname}:{port}"
+    return f"{parsed.scheme.lower()}://{authority}"
+
+
+def _configured_authorized_parties() -> set[str]:
+    explicit = [
+        value.strip()
+        for value in os.environ.get("CLERK_AUTHORIZED_PARTIES", "").split(",")
+        if value.strip()
+    ]
+    if explicit:
+        values = explicit
+    else:
+        frontend_url = os.environ.get("FRONTEND_URL", "").strip()
+        if frontend_url:
+            values = [frontend_url]
+        else:
+            # A zero-config fallback is intentionally limited to local development.
+            values = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    try:
+        return {_normalize_web_origin(value) for value in values}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Clerk authorized parties configuration is invalid",
+        ) from exc
+
+
 @lru_cache(maxsize=4)
 def _get_jwks_client(jwks_url: str) -> PyJWKClient:
     return PyJWKClient(jwks_url, cache_keys=True)
@@ -56,6 +123,26 @@ class ClerkUser:
     user_id: str
     session_id: Optional[str]
     is_admin: bool = False
+
+
+def _configured_admin_user_ids() -> set[str]:
+    return {
+        value.strip()
+        for value in os.environ.get("CLERK_ADMIN_USER_IDS", "").split(",")
+        if value.strip()
+    }
+
+
+def _payload_grants_admin(payload: dict, user_id: str) -> bool:
+    metadata = (
+        payload.get("metadata")
+        or payload.get("public_metadata")
+        or payload.get("publicMetadata")
+        or {}
+    )
+    metadata_admin = isinstance(metadata, dict) and metadata.get("is_admin") is True
+    direct_admin = payload.get("is_admin") is True
+    return metadata_admin or direct_admin or user_id in _configured_admin_user_ids()
 
 
 def get_current_user(
@@ -80,12 +167,20 @@ def get_current_user(
     try:
         jwks_client = _get_jwks_client(clerk_jwks_url)
         signing_key = jwks_client.get_signing_key_from_jwt(token)
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            options={"verify_exp": True, "verify_aud": False},
-        )
+        issuer = _resolve_clerk_issuer()
+        decode_options = {
+            "verify_exp": True,
+            "verify_nbf": True,
+            "verify_aud": False,
+            "verify_iss": bool(issuer),
+        }
+        decode_kwargs = {
+            "algorithms": ["RS256"],
+            "options": decode_options,
+        }
+        if issuer:
+            decode_kwargs["issuer"] = issuer
+        payload = jwt.decode(token, signing_key.key, **decode_kwargs)
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -110,8 +205,23 @@ def get_current_user(
             detail="Token missing subject claim",
         )
 
-    metadata = payload.get("public_metadata") or payload.get("publicMetadata") or {}
-    is_admin = bool(metadata.get("is_admin", False))
+    authorized_party = payload.get("azp")
+    if authorized_party is not None:
+        try:
+            normalized_party = (
+                _normalize_web_origin(authorized_party)
+                if isinstance(authorized_party, str)
+                else None
+            )
+        except ValueError:
+            normalized_party = None
+        if normalized_party not in _configured_authorized_parties():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token authorized party is not allowed",
+            )
+
+    is_admin = _payload_grants_admin(payload, user_id)
 
     return ClerkUser(user_id=user_id, session_id=session_id, is_admin=is_admin)
 

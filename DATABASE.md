@@ -8,7 +8,9 @@ The app is centered on imported full-profile datasets, not server-side scraping 
 
 ### `profiles`
 
-One row per tracked Letterboxd profile.
+One canonical row per imported Letterboxd profile. Profile data is shared and
+deduplicated globally; user visibility is represented separately rather than by
+duplicating imports.
 
 Key columns:
 
@@ -118,6 +120,20 @@ Optional TMDB cache. `movie_enrichments` stores details such as overview, runtim
 
 No Letterboxd import depends on these tables or on a TMDB credential.
 
+### `app_users`, `user_tracked_profiles`, and `profile_access_requests`
+
+`app_users` maps a verified Clerk user ID to the local access model and supports
+local account disablement. `user_tracked_profiles` is the many-to-many access
+mapping between an app user and a completed canonical profile. It does not own
+or duplicate the profile's Letterboxd data.
+
+`profile_access_requests` stores an exact Letterboxd username requested by one
+user. A completed profile already in the database is attached immediately;
+otherwise the request remains pending or approved until a residential full sync
+successfully imports that username. Fulfillment then creates the access mapping.
+Untracking removes only the mapping, while destructive profile maintenance
+preserves approved request intent so a later re-import can restore access.
+
 ## Other Tables
 
 ### `system_metrics`
@@ -148,6 +164,10 @@ profiles
   ├─ reviews (compatibility)
   └─ scraping_jobs (legacy)
 
+app_users
+  ├─ user_tracked_profiles ── profiles
+  └─ profile_access_requests ── profiles (optional fulfilled reference)
+
 movies
   ├─ movie_enrichments
   └─ movie_watch_providers
@@ -171,9 +191,14 @@ Residential machine
 
 ## Data Integrity Notes
 
-- Read traffic should hit cached dashboard analytics, not recompute global correlations per request.
+- Admin dashboard reads use the cached global analytics snapshot. Ordinary-user
+  dashboard reads are recomputed only over that user's tracked profiles so the
+  global cache cannot leak hidden-profile aggregates.
 - `profiles.avg_rating` and `profiles.total_reviews` are derived from imported `ratings` and `reviews`.
 - `total_films` shown in the UI is computed from `ratings`, not stored directly on `profiles`.
 - During normal authoritative ingestion, missing current state is soft-removed and missing diary occurrences are superseded where those tables support history. Reprocessing an identical source fingerprint can update its sync and event records; deleting a profile or explicitly clearing its imported data physically removes profile-owned history.
 - Public HTML gaps such as tags, comments, or private account data are represented in coverage rather than fabricated.
 - Migrations `20260728_0002` and `20260728_0003` add and backfill the normalized foundation without changing legacy cardinality at migration time.
+- Migration `20260730_0008` adds the per-user access model and a case-insensitive
+  unique profile-username index. It aborts before changing the schema if legacy
+  usernames collide after case normalization.

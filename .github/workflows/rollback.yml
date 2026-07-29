@@ -111,10 +111,16 @@ jobs:
             repository_git merge-base --is-ancestor "${ROLLBACK_SCRIPT_SHA}" refs/remotes/origin/main
 
             rollback_runner="$(mktemp /tmp/spyboxd-rollback.XXXXXX)"
-            trap 'rm -f -- "${rollback_runner}"' EXIT
+            clerk_validator="$(mktemp /tmp/spyboxd-clerk-validator.XXXXXX)"
+            trap 'rm -f -- "${rollback_runner}" "${clerk_validator}"' EXIT
             repository_git show "${ROLLBACK_SCRIPT_SHA}:deploy/rollback.sh" >"${rollback_runner}"
+            repository_git show \
+              "${ROLLBACK_SCRIPT_SHA}:deploy/validate-clerk-production.py" \
+              >"${clerk_validator}"
             chmod 0700 "${rollback_runner}"
-            "${rollback_runner}" "${ROLLBACK_TARGET}"
+            chmod 0600 "${clerk_validator}"
+            SPYBOXD_CLERK_VALIDATOR="${clerk_validator}" \
+              "${rollback_runner}" "${ROLLBACK_TARGET}"
           REMOTE
 
       - name: Close production SSH and securely remove local key material

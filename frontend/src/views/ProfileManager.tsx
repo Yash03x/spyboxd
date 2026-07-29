@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { useUser } from '@clerk/nextjs';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -14,24 +13,55 @@ import {
   TrashIcon,
   UserCircleIcon,
 } from '@heroicons/react/24/outline';
-import { FileArchive, ShieldCheck, Upload, UserPlus, Users } from 'lucide-react';
-import { profileApi } from '../services/api';
+import { FileArchive, Send, ShieldCheck, Upload, UserPlus, Users } from 'lucide-react';
+import {
+  adminProfileRequestApi,
+  profileApi,
+  type ProfileRequestStatus,
+} from '../services/api';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
-import toast, { Toaster } from 'react-hot-toast';
+import toast from 'react-hot-toast';
+
+const REQUEST_STATUS_COPY: Record<ProfileRequestStatus, { label: string; description: string; className: string }> = {
+  pending: {
+    label: 'Awaiting review',
+    description: 'An admin will review this username.',
+    className: 'border-amber-400/25 bg-amber-400/10 text-amber-200',
+  },
+  approved: {
+    label: 'Accepted',
+    description: 'Queued for the next residential full sync.',
+    className: 'border-blue-400/25 bg-blue-400/10 text-blue-200',
+  },
+  fulfilled: {
+    label: 'Added',
+    description: 'The sync completed and this profile is now available.',
+    className: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-200',
+  },
+  rejected: {
+    label: 'Not approved',
+    description: 'This request will not be synced.',
+    className: 'border-red-400/25 bg-red-400/10 text-red-200',
+  },
+};
 
 
 const ProfileManager: React.FC = () => {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { user } = useUser();
-  const isAdmin = Boolean(user?.publicMetadata?.is_admin);
+  const currentUserQuery = useCurrentUser();
+  const isAdmin = currentUserQuery.data?.is_admin ?? false;
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [requestedUsername, setRequestedUsername] = useState('');
   const [isAddingProfile, setIsAddingProfile] = useState(false);
   const [newProfileUsername, setNewProfileUsername] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
+  const [untrackingProfile, setUntrackingProfile] = useState<string | null>(null);
+  const [adminNotes, setAdminNotes] = useState<Record<number, string>>({});
   const [exportFiles, setExportFiles] = useState<FileList | null>(null);
   const [hasOwnerPublishingConsent, setHasOwnerPublishingConsent] = useState(false);
   const exportInputRef = useRef<HTMLInputElement>(null);
@@ -50,6 +80,85 @@ const ProfileManager: React.FC = () => {
     queryFn: profileApi.getProfiles,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
+  });
+
+  const profileRequestsQuery = useQuery({
+    queryKey: ['profile-requests'],
+    queryFn: profileApi.getRequests,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const adminRequestsQuery = useQuery({
+    queryKey: ['admin-profile-requests'],
+    queryFn: () => adminProfileRequestApi.getRequests(),
+    enabled: isAdmin,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const refreshProfileSurfaces = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+    queryClient.invalidateQueries({ queryKey: ['profile-requests'] }),
+    queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] }),
+    queryClient.invalidateQueries({ queryKey: ['recent-changes'] }),
+  ]);
+
+  const requestProfileMutation = useMutation({
+    mutationFn: profileApi.requestProfile,
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      setRequestedUsername('');
+      toast.success(
+        result.status === 'tracked'
+          ? 'Profile added to My Profiles.'
+          : 'Request sent. You can follow its status below.',
+      );
+    },
+    onError: (requestError: Error) => {
+      toast.error(`Could not submit profile: ${requestError.message}`);
+    },
+  });
+
+  const untrackProfileMutation = useMutation({
+    mutationFn: async (username: string) => {
+      setUntrackingProfile(username);
+      return profileApi.stopTracking(username);
+    },
+    onSuccess: () => {
+      void refreshProfileSurfaces();
+      setUntrackingProfile(null);
+      toast.success('Profile removed from My Profiles. Its shared data was not deleted.');
+    },
+    onError: (untrackError: Error) => {
+      setUntrackingProfile(null);
+      toast.error(`Could not remove profile: ${untrackError.message}`);
+    },
+  });
+
+  const reviewRequestMutation = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: Extract<ProfileRequestStatus, 'approved' | 'rejected'> }) => (
+      adminProfileRequestApi.updateRequest(id, status, adminNotes[id]?.trim() || undefined)
+    ),
+    onSuccess: (result) => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['admin-profile-requests'] }),
+        queryClient.invalidateQueries({ queryKey: ['profile-requests'] }),
+      ]);
+      setAdminNotes((notes) => {
+        const next = { ...notes };
+        delete next[result.request.id];
+        return next;
+      });
+      toast.success(
+        result.request.status === 'approved'
+          ? 'Request accepted for the next residential sync.'
+          : 'Request rejected.',
+      );
+    },
+    onError: (reviewError: Error) => {
+      toast.error(`Could not update request: ${reviewError.message}`);
+    },
   });
 
   const addProfileMutation = useMutation({
@@ -100,6 +209,7 @@ const ProfileManager: React.FC = () => {
   });
 
   const profilesArray = Array.isArray(profiles) ? profiles : [];
+  const normalizedRequestedUsername = requestedUsername.trim().replace(/^@/, '');
   const filteredProfiles = profilesArray.filter((profile) => {
     const matchesSearch = profile.username.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter =
@@ -134,8 +244,8 @@ const ProfileManager: React.FC = () => {
     };
   };
 
-  if (isLoading) return <LoadingSpinner />;
-  if (error) return <ErrorMessage message="Failed to load profiles" />;
+  if (isLoading || currentUserQuery.isLoading) return <LoadingSpinner />;
+  if (error || currentUserQuery.error) return <ErrorMessage message="Failed to load your profiles" />;
 
   return (
     <motion.div
@@ -144,14 +254,6 @@ const ProfileManager: React.FC = () => {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6 }}
     >
-      <Toaster
-        position="top-right"
-        toastOptions={{
-          className: 'bg-noir-800 text-white border border-cinema-400/20',
-          duration: 4000,
-        }}
-      />
-
       <motion.div
         className="flex items-center justify-between"
         initial={{ opacity: 0, y: -20 }}
@@ -159,11 +261,13 @@ const ProfileManager: React.FC = () => {
         transition={{ delay: 0.2 }}
       >
         <div>
-          <h1 className="text-4xl font-bold text-white text-glow mb-2">Profiles</h1>
+          <h1 className="text-4xl font-bold text-white text-glow mb-2">
+            {isAdmin ? 'Profiles' : 'My Profiles'}
+          </h1>
           <p className="text-white/60">
             {isAdmin
-              ? 'Track usernames here, then sync full Letterboxd data from your residential machine.'
-              : 'Browse the shared Letterboxd profile database.'}
+              ? 'Manage the shared profile library, requests, and residential sync workflow.'
+              : 'Choose the Letterboxd profiles that power your dashboard and comparisons.'}
           </p>
         </div>
 
@@ -175,43 +279,193 @@ const ProfileManager: React.FC = () => {
             whileTap={{ scale: 0.95 }}
           >
             <UserPlus className="w-5 h-5" />
-            <span>Add Profile</span>
+            <span>Admin add placeholder</span>
           </motion.button>
         )}
       </motion.div>
 
-      <motion.div
+      <motion.section
         className="card-cinema"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.3 }}
       >
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold text-white">Repeatable Sync Workflow</h2>
-            <p className="text-sm text-white/70">
-              {isAdmin
-                ? 'VPS scraping is disabled. Full profile syncs now come only from the local residential runner.'
-                : 'Profile updates are handled by admins through the local residential sync runner.'}
-            </p>
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,.75fr)] lg:items-end">
+          <div>
+            <div className="flex items-start gap-3">
+              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cinema-400/25 bg-cinema-500/10 text-cinema-300">
+                <UserPlus className="h-5 w-5" />
+              </span>
+              <div>
+                <h2 className="text-xl font-bold text-white">Track a Letterboxd profile</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">
+                  Existing profiles are added immediately. New usernames are sent for review and, once accepted, queued for the next residential full sync.
+                </p>
+              </div>
+            </div>
           </div>
-          <div className="rounded-xl bg-noir-900/60 border border-white/10 px-4 py-3 text-sm text-white/80 max-w-2xl">
-            {isAdmin ? (
-              <>
-                <p>1. Add usernames here if you want placeholders in the UI.</p>
-                <p>2. Create `sync-profiles.json` from `scripts/sync-profiles.example.json` on your local machine.</p>
-                <p>3. Run `.venv/bin/python scripts/batch_full_sync.py --config sync-profiles.json`.</p>
-                <p>4. Schedule that command with `launchd` or `cron`.</p>
-              </>
-            ) : (
-              <>
-                <p>This view is public.</p>
-                <p>Admin-only sync operations run outside the browser and publish into this shared dataset.</p>
-              </>
-            )}
-          </div>
+          <form
+            className="flex flex-col gap-3 sm:flex-row"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (normalizedRequestedUsername) requestProfileMutation.mutate(normalizedRequestedUsername);
+            }}
+          >
+            <label className="min-w-0 flex-1">
+              <span className="sr-only">Letterboxd username</span>
+              <input
+                type="text"
+                placeholder="Letterboxd username"
+                value={requestedUsername}
+                onChange={(event) => setRequestedUsername(event.target.value)}
+                className="input-field w-full"
+                autoComplete="off"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={!normalizedRequestedUsername || requestProfileMutation.isPending}
+              className="btn-primary flex min-h-11 items-center justify-center gap-2 px-5"
+            >
+              {requestProfileMutation.isPending ? <ClockIcon className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {requestProfileMutation.isPending ? 'Submitting…' : 'Add or request'}
+            </button>
+          </form>
         </div>
-      </motion.div>
+      </motion.section>
+
+      {(profileRequestsQuery.isLoading || profileRequestsQuery.error || (profileRequestsQuery.data?.length ?? 0) > 0) && (
+        <motion.section
+          className="card-cinema"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.32 }}
+          aria-labelledby="my-request-status-title"
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 id="my-request-status-title" className="text-lg font-bold text-white">My request status</h2>
+              <p className="mt-1 text-sm text-white/55">Approval accepts a username for sync; the profile appears only after that sync finishes.</p>
+            </div>
+            {profileRequestsQuery.isFetching && <ClockIcon className="h-5 w-5 animate-spin text-white/35" />}
+          </div>
+          {profileRequestsQuery.error ? (
+            <p className="mt-4 text-sm text-red-300">Request history could not be loaded.</p>
+          ) : (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {(profileRequestsQuery.data ?? []).map((request) => {
+                const status = REQUEST_STATUS_COPY[request.status];
+                return (
+                  <article key={request.id} className="rounded-xl border border-white/10 bg-black/15 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-white">@{request.requested_username}</p>
+                        <p className="mt-1 text-xs text-white/40">Requested {new Date(request.requested_at).toLocaleDateString()}</p>
+                      </div>
+                      <span className={`rounded-lg border px-2.5 py-1 text-xs font-semibold ${status.className}`}>{status.label}</span>
+                    </div>
+                    <p className="mt-3 text-sm text-white/55">{status.description}</p>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </motion.section>
+      )}
+
+      {isAdmin && (
+        <motion.section
+          className="card-cinema"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.34 }}
+          aria-labelledby="admin-sync-workflow-title"
+        >
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-2">
+              <h2 id="admin-sync-workflow-title" className="text-xl font-bold text-white">Residential Sync Workflow</h2>
+              <p className="text-sm text-white/70">VPS scraping is disabled. Full profile syncs come only from the local residential runner.</p>
+            </div>
+            <div className="max-w-2xl rounded-xl border border-white/10 bg-noir-900/60 px-4 py-3 text-sm text-white/80">
+              <p>1. Approve pending requests that should enter the sync queue.</p>
+              <p>2. Update `sync-profiles.json` on the residential machine.</p>
+              <p>3. Run `.venv/bin/python scripts/batch_full_sync.py --config sync-profiles.json`.</p>
+              <p>4. A successful upload fulfills the request and links it to the requester.</p>
+            </div>
+          </div>
+        </motion.section>
+      )}
+
+      {isAdmin && (
+        <motion.section
+          className="card-cinema"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.35 }}
+          aria-labelledby="admin-request-queue-title"
+        >
+          <div>
+            <h2 id="admin-request-queue-title" className="text-xl font-bold text-white">Profile request queue</h2>
+            <p className="mt-1 text-sm text-white/55">Accepted requests remain visible as awaiting residential sync until an upload fulfills them.</p>
+          </div>
+          {adminRequestsQuery.isLoading ? (
+            <p className="mt-4 text-sm text-white/45">Loading requests…</p>
+          ) : adminRequestsQuery.error ? (
+            <p className="mt-4 text-sm text-red-300">The admin request queue could not be loaded.</p>
+          ) : (adminRequestsQuery.data?.length ?? 0) === 0 ? (
+            <p className="mt-4 rounded-xl border border-white/10 bg-black/15 p-4 text-sm text-white/45">No profile requests yet.</p>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {(adminRequestsQuery.data ?? []).map((request) => (
+                <article key={request.id} className="grid gap-3 rounded-xl border border-white/10 bg-black/15 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,.7fr)_auto] xl:items-center">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-white">@{request.requested_username}</p>
+                      <span className={`rounded-lg border px-2 py-0.5 text-[11px] font-semibold ${REQUEST_STATUS_COPY[request.status].className}`}>
+                        {request.status === 'approved' ? 'Awaiting residential sync' : REQUEST_STATUS_COPY[request.status].label}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-white/40">Requester {request.requester_user_id} · {new Date(request.requested_at).toLocaleString()}</p>
+                  </div>
+                  {request.status === 'pending' ? (
+                    <input
+                      value={adminNotes[request.id] ?? ''}
+                      onChange={(event) => setAdminNotes((notes) => ({ ...notes, [request.id]: event.target.value }))}
+                      placeholder="Optional note"
+                      className="input-field w-full"
+                      aria-label={`Note for ${request.requested_username}`}
+                    />
+                  ) : (
+                    <p className="text-xs text-white/45">{request.note || 'No admin note.'}</p>
+                  )}
+                  {request.status === 'pending' ? (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={reviewRequestMutation.isPending}
+                        onClick={() => reviewRequestMutation.mutate({ id: request.id, status: 'approved' })}
+                        className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:bg-emerald-400/20 disabled:opacity-50"
+                      >
+                        Accept for sync
+                      </button>
+                      <button
+                        type="button"
+                        disabled={reviewRequestMutation.isPending}
+                        onClick={() => reviewRequestMutation.mutate({ id: request.id, status: 'rejected' })}
+                        className="rounded-lg border border-red-400/25 bg-red-400/10 px-3 py-2 text-xs font-semibold text-red-200 transition-colors hover:bg-red-400/20 disabled:opacity-50"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-white/40">{REQUEST_STATUS_COPY[request.status].description}</p>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </motion.section>
+      )}
 
       {isAdmin && (
         <motion.section
@@ -310,14 +564,14 @@ const ProfileManager: React.FC = () => {
             onChange={(e) => setFilterStatus(e.target.value)}
             className="input-field"
           >
-            <option value="all">All Profiles</option>
+            <option value="all">{isAdmin ? 'All managed profiles' : 'All my profiles'}</option>
             <option value="synced">Synced</option>
             <option value="pending">Awaiting Sync</option>
             <option value="error">Error</option>
           </select>
         </div>
         <div className="text-white/60 text-sm">
-          {filteredProfiles.length} of {profilesArray.length} profiles
+          {filteredProfiles.length} of {profilesArray.length} {isAdmin ? 'managed' : 'tracked'} profiles
         </div>
       </motion.div>
 
@@ -420,7 +674,7 @@ const ProfileManager: React.FC = () => {
                           </div>
                         </div>
                       </div>
-                      {isAdmin && (
+                      {isAdmin ? (
                         <button
                           onClick={() => {
                             if (window.confirm(`Delete ${profile.username}? This cannot be undone.`)) {
@@ -432,6 +686,20 @@ const ProfileManager: React.FC = () => {
                           title="Delete profile"
                         >
                           <TrashIcon className={`w-4 h-4 text-red-400 ${deletingProfile === profile.username ? 'animate-pulse' : ''}`} />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Remove ${profile.username} from My Profiles? Shared profile data will not be deleted.`)) {
+                              untrackProfileMutation.mutate(profile.username);
+                            }
+                          }}
+                          disabled={untrackingProfile === profile.username}
+                          className="rounded-lg border border-white/10 bg-white/5 p-3 transition-colors hover:border-red-400/25 hover:bg-red-500/10 disabled:opacity-50"
+                          title="Remove from My Profiles"
+                          aria-label={`Remove ${profile.username} from My Profiles`}
+                        >
+                          <TrashIcon className={`h-4 w-4 text-white/45 ${untrackingProfile === profile.username ? 'animate-pulse' : ''}`} />
                         </button>
                       )}
                     </div>
@@ -484,12 +752,14 @@ const ProfileManager: React.FC = () => {
                 <Users className="w-12 h-12 text-cinema-400" />
               </motion.div>
               <h3 className="text-xl font-bold text-white mb-3">
-                {searchTerm ? 'No profiles match your search' : 'No profiles yet'}
+                {searchTerm ? 'No profiles match your search' : isAdmin ? 'No managed profiles yet' : 'No tracked profiles yet'}
               </h3>
               <p className="text-white/60 mb-8 max-w-md mx-auto">
                 {searchTerm
                   ? `No profiles found matching "${searchTerm}".`
-                  : 'Add usernames here or let the local sync workflow create them during upload.'}
+                  : isAdmin
+                    ? 'Add usernames here or let the residential sync workflow create them during upload.'
+                    : 'Use Add or request above to start building the profile set used by your dashboard and comparisons.'}
               </p>
               {!searchTerm && isAdmin && (
                 <motion.button

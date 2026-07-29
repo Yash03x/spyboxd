@@ -9,6 +9,9 @@ readonly RELEASE_STATE_DIR="${SPYBOXD_RELEASE_STATE_DIR:-${SHARED_DIR}/release-s
 readonly CURRENT_LINK="${SPYBOXD_CURRENT_LINK:-${APP_ROOT}/current}"
 readonly DEPLOY_REF="${SPYBOXD_DEPLOY_REF:-refs/remotes/origin/main}"
 readonly EXPECTED_CURRENT_REVISION="${SPYBOXD_EXPECTED_CURRENT_REVISION:-}"
+readonly API_ENV_FILE="${SPYBOXD_API_ENV_FILE:-/etc/spyboxd/api.env}"
+readonly FRONTEND_ENV_FILE="${SPYBOXD_FRONTEND_ENV_FILE:-/etc/spyboxd/frontend.env}"
+readonly CLERK_VALIDATOR="${SPYBOXD_CLERK_VALIDATOR:-}"
 readonly SERVICES=(spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service)
 
 ACTIVATION_LINK=""
@@ -103,6 +106,17 @@ fi
     || fail "rollback target is incomplete"
 [[ -f "${current_release}/.revision-health-v1" ]] \
     || fail "the active release cannot be safely restored if rollback health verification fails"
+[[ -n "${CLERK_VALIDATOR}" ]] \
+    && [[ -f "${CLERK_VALIDATOR}" && ! -L "${CLERK_VALIDATOR}" ]] \
+    || fail "trusted production Clerk configuration validator is unavailable"
+target_manifest="${target_release}/.spyboxd-release-manifest.json"
+[[ -f "${target_manifest}" && ! -L "${target_manifest}" ]] \
+    || fail "rollback target has no immutable release manifest"
+python3 "${CLERK_VALIDATOR}" runtime \
+    --frontend-env "${FRONTEND_ENV_FILE}" \
+    --api-env "${API_ENV_FILE}" \
+    --manifest "${target_manifest}" \
+    || fail "rollback target is incompatible with production Clerk configuration"
 
 [[ -d "${REPOSITORY_DIR}" ]] \
     && git --git-dir="${REPOSITORY_DIR}" rev-parse --is-bare-repository >/dev/null 2>&1 \
@@ -162,17 +176,17 @@ check_release() {
     local revision="$1" label="$2" release_path="$3"
     if [[ -f "${release_path}/.revision-health-v1" ]]; then
         wait_for_http "${label} API revision ${revision}" "http://127.0.0.1:8000/health" ok "${revision}" \
-            && wait_for_http "${label} frontend" "http://127.0.0.1:3000/" \
+            && wait_for_http "${label} frontend" "http://127.0.0.1:3000/sign-in" \
             && wait_for_http "${label} public API revision ${revision}" "https://api.spyboxd.com/health" ok "${revision}" \
-            && wait_for_http "${label} public frontend" "https://spyboxd.com/"
+            && wait_for_http "${label} public frontend" "https://spyboxd.com/sign-in"
         return
     fi
 
     log "${label} release predates revision-aware health; verifying its exact symlink target and liveness"
     wait_for_http "${label} API" "http://127.0.0.1:8000/health" ok \
-        && wait_for_http "${label} frontend" "http://127.0.0.1:3000/" \
+        && wait_for_http "${label} frontend" "http://127.0.0.1:3000/sign-in" \
         && wait_for_http "${label} public API" "https://api.spyboxd.com/health" ok \
-        && wait_for_http "${label} public frontend" "https://spyboxd.com/"
+        && wait_for_http "${label} public frontend" "https://spyboxd.com/sign-in"
 }
 
 write_release_state() {

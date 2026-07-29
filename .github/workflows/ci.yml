@@ -172,6 +172,9 @@ jobs:
           bash -n "${deploy_scripts[@]}"
           shellcheck --severity=error "${deploy_scripts[@]}"
 
+      - name: Test production Clerk configuration guard
+        run: python3 -m unittest -v deploy/test_validate_clerk_production.py
+
       - name: Validate systemd units
         run: |
           shopt -s nullglob
@@ -243,6 +246,12 @@ jobs:
         run: |
           grep -Fq 'readonly SERVICES=(spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service)' deploy/release.sh
           grep -Fq 'sudo -n nginx -t' deploy/release.sh
+          grep -Fq 'validate-clerk-production.py' deploy/release.sh
+          grep -Fq 'SPYBOXD_CLERK_VALIDATOR' deploy/rollback.sh
+          if grep -R -n -F 'SPYBOXD_E2E_AUTH_BYPASS=' deploy/env; then
+            echo 'Deployment environment examples must never enable the browser-test auth bypass.' >&2
+            exit 1
+          fi
           grep -Fq 'SPYBOXD_NGINX_VALIDATE = /usr/sbin/nginx -t' deploy/sudoers/spyboxd-deploy
           # This assertion intentionally matches a literal shell expression.
           # shellcheck disable=SC2016
@@ -274,7 +283,8 @@ jobs:
       API_URL: https://api.spyboxd.com
       NEXT_PUBLIC_API_BASE_URL: https://api.spyboxd.com
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.PRODUCTION_CLERK_PUBLISHABLE_KEY }}
-      CLERK_SECRET_KEY: sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      # Build-only sentinel. The real live secret remains only in the VPS runtime env.
+      CLERK_SECRET_KEY: ${{ format('sk_{0}_{1}', 'live', 'ci_build_only_not_a_secret') }}
       NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
       NEXT_PUBLIC_CLERK_SIGN_UP_URL: /sign-up
       NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: /
@@ -307,17 +317,7 @@ jobs:
             exit 0
           fi
 
-          case "${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}" in
-            "${ci_publishable_key}"|'')
-              echo 'Repository variable PRODUCTION_CLERK_PUBLISHABLE_KEY must contain the real production Clerk publishable key.' >&2
-              exit 1
-              ;;
-            pk_test_*|pk_live_*) ;;
-            *)
-              echo 'Repository variable PRODUCTION_CLERK_PUBLISHABLE_KEY is not a valid Clerk publishable key.' >&2
-              exit 1
-              ;;
-          esac
+          python3 deploy/validate-clerk-production.py build
 
       - name: Build locked Python wheelhouse
         run: |

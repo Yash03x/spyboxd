@@ -33,6 +33,7 @@ export default defineConfig({
     env: {
       ...process.env,
       NEXT_PUBLIC_API_BASE_URL: 'http://127.0.0.1:8000',
+      SPYBOXD_E2E_AUTH_BYPASS: '1',
       ...(isCI ? {
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: `pk_live_${testClerkKey}`,
         CLERK_SECRET_KEY: `sk_live_${testClerkKey}`,

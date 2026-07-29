@@ -197,7 +197,7 @@ export default function WatchTogether() {
 
   if (profilesQuery.isLoading) return <FeatureState title="Loading profiles" message="Preparing the group picker." loading />;
   if (profilesQuery.error) return <FeatureState title="Profiles unavailable" message="The profile directory could not be loaded." />;
-  if (completedProfiles.length < 2) return <FeatureState title="Two profiles are required" message="Sync at least two profiles before asking for a group movie pick." />;
+  if (completedProfiles.length < 2) return <FeatureState title="Track two profiles for a group pick" message="Add or request at least two Letterboxd profiles in My Profiles before asking for a group movie pick." actionHref="/profiles" actionLabel="Open My Profiles" />;
 
   return (
     <motion.div

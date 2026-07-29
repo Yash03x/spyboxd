@@ -13,6 +13,7 @@ readonly RSS_ENV_FILE="${SPYBOXD_RSS_ENV_FILE:-/etc/spyboxd/rss.env}"
 readonly DEPLOY_REF="${SPYBOXD_DEPLOY_REF:-refs/remotes/origin/main}"
 readonly RUNTIME_USER="${SPYBOXD_RUNTIME_USER:-spyboxd}"
 readonly RELEASE_RETENTION="${SPYBOXD_RELEASE_RETENTION:-5}"
+readonly CLERK_BRIDGE_EDGE="${SPYBOXD_CLERK_BRIDGE_EDGE:-}"
 readonly RELEASE_MANIFEST_NAME=".spyboxd-release-manifest.json"
 readonly MAX_BUNDLE_MEMBERS="${SPYBOXD_MAX_BUNDLE_MEMBERS:-150000}"
 readonly MAX_BUNDLE_UNCOMPRESSED_BYTES="${SPYBOXD_MAX_BUNDLE_UNCOMPRESSED_BYTES:-4294967296}"
@@ -61,7 +62,21 @@ readonly RELEASE_SHA="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 readonly RELEASE_BUNDLE="${2:-}"
 [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || fail "release must be a full 40-character lowercase or uppercase Git SHA"
 
-for command_name in git tar python3 node npm curl readlink flock stat sudo seq getent grep ufw find sort touch sha256sum mktemp timeout; do
+bridge_from_revision=""
+bridge_to_revision=""
+if [[ -n "${CLERK_BRIDGE_EDGE}" ]]; then
+    if [[ ! "${CLERK_BRIDGE_EDGE}" =~ ^([0-9a-f]{40}):([0-9a-f]{40})$ ]]; then
+        fail "SPYBOXD_CLERK_BRIDGE_EDGE must be two lowercase full Git SHAs separated by one colon"
+    fi
+    bridge_from_revision="${BASH_REMATCH[1]}"
+    bridge_to_revision="${BASH_REMATCH[2]}"
+    [[ "${bridge_to_revision}" == "${RELEASE_SHA}" ]] \
+        || fail "SPYBOXD_CLERK_BRIDGE_EDGE does not authorize this release SHA"
+    [[ "${bridge_from_revision}" != "${bridge_to_revision}" ]] \
+        || fail "SPYBOXD_CLERK_BRIDGE_EDGE must identify a real source-to-target transition"
+fi
+
+for command_name in git tar python3 node npm curl readlink basename flock stat sudo seq getent grep ufw find sort touch sha256sum mktemp timeout; do
     command -v "${command_name}" >/dev/null 2>&1 || fail "required command is missing: ${command_name}"
 done
 
@@ -168,6 +183,10 @@ frontend_environment="$(
 )"
 if [[ "${frontend_environment}" != *"NODE_OPTIONS=--dns-result-order=ipv4first"* ]]; then
     fail "spyboxd-frontend.service must prefer IPv4 localhost for Clerk/Next proxy compatibility"
+fi
+if grep -Eq '(^|[[:space:]])SPYBOXD_E2E_AUTH_BYPASS=([^[:space:]]+)' \
+    <<<"${frontend_environment}"; then
+    fail "spyboxd-frontend.service must not enable the browser-test auth bypass"
 fi
 
 if ! sudo -n nginx -t >/dev/null 2>&1; then
@@ -559,6 +578,98 @@ if [[ "${release_is_complete}" != true ]]; then
     TEMP_RELEASE=""
 fi
 
+readonly clerk_validator="${FINAL_RELEASE}/deploy/validate-clerk-production.py"
+[[ -f "${clerk_validator}" && ! -L "${clerk_validator}" ]] \
+    || fail "release is missing the production Clerk configuration validator"
+clerk_validation_args=(
+    runtime
+    --frontend-env "${FRONTEND_ENV_FILE}"
+    --api-env "${API_ENV_FILE}"
+    --verify-remote
+)
+if [[ -f "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}" ]] \
+    && [[ ! -L "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}" ]]; then
+    clerk_validation_args+=(
+        --manifest "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}"
+    )
+fi
+"${FINAL_RELEASE}/.venv/bin/python" \
+    "${clerk_validator}" \
+    "${clerk_validation_args[@]}"
+
+old_release=""
+old_revision=""
+legacy_rollback=false
+clerk_bridge_mode=false
+if [[ -L "${CURRENT_LINK}" ]]; then
+    old_release="$(readlink -f "${CURRENT_LINK}" || true)"
+    [[ -n "${old_release}" ]] \
+        || fail "current release symlink does not resolve to an existing release"
+    if [[ "${old_release}" == "${APP_ROOT}" ]]; then
+        legacy_rollback=true
+    elif [[ -n "${old_release}" && "${old_release}" != "${RELEASES_DIR}/"* ]]; then
+        fail "current release target is outside ${RELEASES_DIR}: ${old_release}"
+    elif [[ -n "${old_release}" ]]; then
+        old_revision="$(basename "${old_release}")"
+        if [[ ! "${old_revision}" =~ ^[0-9a-f]{40}$ ]] \
+            || [[ ! -f "${old_release}/REVISION" ]] \
+            || [[ "$(<"${old_release}/REVISION")" != "${old_revision}" ]]; then
+            fail "current release does not have a trustworthy revision marker: ${old_release}"
+        fi
+    fi
+elif [[ -x "${APP_ROOT}/.venv/bin/uvicorn" && -f "${APP_ROOT}/frontend/.next/BUILD_ID" ]]; then
+    old_release="${APP_ROOT}"
+    legacy_rollback=true
+    log "A healthy-checkable legacy in-place release is available for first-rollout rollback"
+fi
+
+if [[ -n "${old_release}" ]]; then
+    [[ "${legacy_rollback}" != true ]] \
+        || fail "legacy in-place release cannot be retained as a Clerk-compatible rollback target"
+    previous_manifest="${old_release}/${RELEASE_MANIFEST_NAME}"
+    [[ -f "${previous_manifest}" && ! -L "${previous_manifest}" ]] \
+        || fail "current release has no immutable Clerk-compatible release manifest"
+    if [[ -n "${CLERK_BRIDGE_EDGE}" ]]; then
+        [[ "${old_revision}" == "${bridge_from_revision}" ]] \
+            || fail "SPYBOXD_CLERK_BRIDGE_EDGE does not identify the active source release"
+        candidate_manifest="${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}"
+        [[ -f "${candidate_manifest}" && ! -L "${candidate_manifest}" ]] \
+            || fail "one-time Clerk bridge requires an immutable candidate release manifest"
+
+        if "${FINAL_RELEASE}/.venv/bin/python" \
+            "${clerk_validator}" \
+            runtime \
+            --frontend-env "${FRONTEND_ENV_FILE}" \
+            --api-env "${API_ENV_FILE}" \
+            --manifest "${previous_manifest}"; then
+            fail "SPYBOXD_CLERK_BRIDGE_EDGE was supplied but the active release is already Clerk-compatible"
+        fi
+        "${FINAL_RELEASE}/.venv/bin/python" \
+            "${clerk_validator}" \
+            development-manifest \
+            --manifest "${previous_manifest}" \
+            --expected-revision "${old_revision}" \
+            || fail "one-time Clerk bridge is limited to an exact development-key source artifact"
+
+        clerk_bridge_mode=true
+        log "WARNING: authorizing exact one-time Clerk development-to-live bridge ${bridge_from_revision} -> ${bridge_to_revision}; automatic rollback is unavailable"
+        old_release=""
+        old_revision=""
+        legacy_rollback=false
+    else
+        log "Validating the automatic rollback target against production Clerk configuration"
+        "${FINAL_RELEASE}/.venv/bin/python" \
+            "${clerk_validator}" \
+            runtime \
+            --frontend-env "${FRONTEND_ENV_FILE}" \
+            --api-env "${API_ENV_FILE}" \
+            --manifest "${previous_manifest}" \
+            || fail "current release is incompatible with production Clerk configuration and cannot be retained for automatic rollback"
+    fi
+elif [[ -n "${CLERK_BRIDGE_EDGE}" ]]; then
+    fail "SPYBOXD_CLERK_BRIDGE_EDGE was supplied but there is no versioned active source release"
+fi
+
 "${FINAL_RELEASE}/.venv/bin/python" - "${FRONTEND_ENV_FILE}" <<'PY'
 import sys
 
@@ -596,7 +707,14 @@ api_env_file, rss_env_file, release_dir = sys.argv[1:]
 api_values = {key: value for key, value in dotenv_values(api_env_file).items() if value is not None}
 rss_values = {key: value for key, value in dotenv_values(rss_env_file).items() if value is not None}
 
-required_api = ("DATABASE_URL", "FRONTEND_URL", "CORS_ALLOWED_ORIGINS", "INGESTION_API_TOKEN")
+required_api = (
+    "DATABASE_URL",
+    "FRONTEND_URL",
+    "CORS_ALLOWED_ORIGINS",
+    "INGESTION_API_TOKEN",
+    "CLERK_ISSUER",
+    "CLERK_AUTHORIZED_PARTIES",
+)
 invalid = [
     key
     for key in required_api
@@ -627,29 +745,6 @@ command = [
 os.execvpe(command[0], command, environment)
 PY
 )
-
-old_release=""
-old_revision=""
-legacy_rollback=false
-if [[ -L "${CURRENT_LINK}" ]]; then
-    old_release="$(readlink -f "${CURRENT_LINK}" || true)"
-    if [[ "${old_release}" == "${APP_ROOT}" ]]; then
-        legacy_rollback=true
-    elif [[ -n "${old_release}" && "${old_release}" != "${RELEASES_DIR}/"* ]]; then
-        fail "current release target is outside ${RELEASES_DIR}: ${old_release}"
-    elif [[ -n "${old_release}" ]]; then
-        old_revision="$(basename "${old_release}")"
-        if [[ ! "${old_revision}" =~ ^[0-9a-f]{40}$ ]] \
-            || [[ ! -f "${old_release}/REVISION" ]] \
-            || [[ "$(<"${old_release}/REVISION")" != "${old_revision}" ]]; then
-            fail "current release does not have a trustworthy revision marker: ${old_release}"
-        fi
-    fi
-elif [[ -x "${APP_ROOT}/.venv/bin/uvicorn" && -f "${APP_ROOT}/frontend/.next/BUILD_ID" ]]; then
-    old_release="${APP_ROOT}"
-    legacy_rollback=true
-    log "A healthy-checkable legacy in-place release is available for first-rollout rollback"
-fi
 
 activate_release() {
     local release_path="$1"
@@ -696,15 +791,15 @@ if expected_revision and payload.get("revision") != expected_revision:
 
 check_readiness() {
     wait_for_http "API revision ${RELEASE_SHA}" "http://127.0.0.1:8000/ready" ready "${RELEASE_SHA}" \
-        && wait_for_http "frontend" "http://127.0.0.1:3000/" \
+        && wait_for_http "frontend sign-in" "http://127.0.0.1:3000/sign-in" \
         && wait_for_http "public API revision ${RELEASE_SHA}" "https://api.spyboxd.com/ready" ready "${RELEASE_SHA}" \
-        && wait_for_http "public frontend" "https://spyboxd.com/"
+        && wait_for_http "public frontend sign-in" "https://spyboxd.com/sign-in"
 }
 
 check_rollback_liveness() {
     if [[ -f "${old_release}/.revision-health-v1" ]]; then
         wait_for_http "rolled-back API" "http://127.0.0.1:8000/health" ok "${old_revision}" \
-            && wait_for_http "rolled-back frontend" "http://127.0.0.1:3000/"
+            && wait_for_http "rolled-back frontend" "http://127.0.0.1:3000/sign-in"
         return
     fi
 
@@ -712,7 +807,7 @@ check_rollback_liveness() {
     # SHA. This one-time transition still has an exact, validated symlink target
     # plus successful local liveness after systemd restarts both services.
     wait_for_http "rolled-back legacy API" "http://127.0.0.1:8000/health" ok \
-        && wait_for_http "rolled-back legacy frontend" "http://127.0.0.1:3000/"
+        && wait_for_http "rolled-back legacy frontend" "http://127.0.0.1:3000/sign-in"
 }
 
 write_release_state() {
@@ -819,10 +914,20 @@ if [[ -n "${old_release}" && -d "${old_release}" ]]; then
         log "WARNING: rollback services did not become healthy; inspect journalctl for ${SERVICES[*]}" >&2
     fi
 else
-    timeout --signal=TERM --kill-after=15s 4m \
-        sudo -n systemctl stop "${SERVICES[@]}" || true
+    if [[ "${clerk_bridge_mode}" == true ]]; then
+        timeout --signal=TERM --kill-after=15s 4m \
+            sudo -n systemctl stop "${SERVICES[@]}" \
+            || fail "Clerk bridge candidate is unhealthy and its services could not be stopped"
+    else
+        timeout --signal=TERM --kill-after=15s 4m \
+            sudo -n systemctl stop "${SERVICES[@]}" || true
+    fi
     rm -f -- "${CURRENT_LINK}"
-    log "First activation failed, so services were stopped and the current symlink was removed. Database migrations were not downgraded." >&2
+    if [[ "${clerk_bridge_mode}" == true ]]; then
+        log "Clerk bridge activation failed, so services were stopped and no incompatible rollback was activated. Database migrations were not downgraded." >&2
+    else
+        log "First activation failed, so services were stopped and the current symlink was removed. Database migrations were not downgraded." >&2
+    fi
 fi
 
 exit 1

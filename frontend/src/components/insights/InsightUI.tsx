@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { AlertTriangle, CheckCircle2, CircleSlash, Film, Info, Loader2 } from 'lucide-react';
 
 import type { FeatureCoverage, MovieSummary, ProfileInfo } from '../../services/api';
@@ -182,10 +183,14 @@ export function FeatureState({
   title,
   message,
   loading = false,
+  actionHref,
+  actionLabel,
 }: {
   title: string;
   message: string;
   loading?: boolean;
+  actionHref?: string;
+  actionLabel?: string;
 }) {
   return (
     <section className="flex min-h-72 flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-white/[0.025] px-6 text-center">
@@ -194,6 +199,11 @@ export function FeatureState({
       </span>
       <h2 className="mt-4 text-lg font-semibold text-white">{title}</h2>
       <p className="mt-2 max-w-lg text-sm leading-6 text-white/50">{message}</p>
+      {actionHref && actionLabel && (
+        <Link href={actionHref} className="btn-primary mt-5 px-5 py-2 text-sm">
+          {actionLabel}
+        </Link>
+      )}
     </section>
   );
 }

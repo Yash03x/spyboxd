@@ -31,6 +31,7 @@ jobs:
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
       REMOTE_BUNDLE: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz
       REMOTE_CHECKSUM: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz.sha256
+      CLERK_BRIDGE_EDGE: ${{ vars.PRODUCTION_CLERK_BRIDGE_EDGE }}
 
     steps:
       - name: Reject a stale deployable CI result before loading SSH credentials
@@ -169,18 +170,30 @@ jobs:
           if [[ "${previous_target}" != legacy && "${previous_target}" != none ]]; then
             [[ "${#previous_target}" -eq 40 ]]
           fi
+          bridge_mode=false
+          if [[ -n "${CLERK_BRIDGE_EDGE}" ]]; then
+            [[ "${previous_target}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${CLERK_BRIDGE_EDGE}" == "${previous_target}:${RELEASE_SHA}" ]] || {
+              echo 'PRODUCTION_CLERK_BRIDGE_EDGE does not identify this exact deployment edge.' >&2
+              exit 1
+            }
+            bridge_mode=true
+          fi
           printf 'target=%s\n' "${previous_target}" >>"${GITHUB_OUTPUT}"
+          printf 'clerk_bridge=%s\n' "${bridge_mode}" >>"${GITHUB_OUTPUT}"
 
       - name: Release validated commit to Hetzner
         id: activate
         run: |
           timeout --signal=TERM --kill-after=2m 30m \
             deploy/production-ssh.sh run sh -s -- \
-              "${RELEASE_SHA}" "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}" <<'REMOTE'
+              "${RELEASE_SHA}" "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}" \
+              "${CLERK_BRIDGE_EDGE}" <<'REMOTE'
             set -eu
             RELEASE_SHA="$1"
             REMOTE_BUNDLE="$2"
             REMOTE_CHECKSUM="$3"
+            CLERK_BRIDGE_EDGE="$4"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'')
@@ -269,7 +282,8 @@ jobs:
             release_runner="$(mktemp /tmp/spyboxd-release.XXXXXX)"
             repository_git show "${RELEASE_SHA}:deploy/release.sh" >"${release_runner}"
             chmod 0700 "${release_runner}"
-            "${release_runner}" "${RELEASE_SHA}" "${REMOTE_BUNDLE}"
+            SPYBOXD_CLERK_BRIDGE_EDGE="${CLERK_BRIDGE_EDGE}" \
+              "${release_runner}" "${RELEASE_SHA}" "${REMOTE_BUNDLE}"
           REMOTE
 
       - name: Reconcile an interrupted or failed activation
@@ -280,13 +294,15 @@ jobs:
           steps.activate.outcome == 'failure'
         env:
           PREVIOUS_TARGET: ${{ steps.pre_activation.outputs.target }}
+          CLERK_BRIDGE_MODE: ${{ steps.pre_activation.outputs.clerk_bridge }}
         run: |
           timeout --signal=TERM --kill-after=2m 25m \
             deploy/production-ssh.sh run sh -s -- \
-              "${RELEASE_SHA}" "${PREVIOUS_TARGET}" <<'REMOTE'
+              "${RELEASE_SHA}" "${PREVIOUS_TARGET}" "${CLERK_BRIDGE_MODE}" <<'REMOTE'
           set -eu
           release_sha="$1"
           previous_target="$2"
+          clerk_bridge_mode="$3"
           app_root=/opt/spyboxd
           current_link="${app_root}/current"
           releases_dir="${app_root}/releases"
@@ -304,6 +320,7 @@ jobs:
           if [ "${previous_target}" != legacy ] && [ "${previous_target}" != none ]; then
             [ "${#previous_target}" -eq 40 ] || exit 64
           fi
+          case "${clerk_bridge_mode}" in true|false) ;; *) exit 64 ;; esac
 
           for command_name in curl flock git id python3 readlink seq stat sudo timeout; do
             command -v "${command_name}" >/dev/null 2>&1 || {
@@ -391,12 +408,12 @@ jobs:
                     http://127.0.0.1:8000/health 2>/dev/null)" \
                   && printf '%s' "${local_api}" | check_json_health "${expected_revision}" \
                   && curl --silent --show-error --fail --max-time 5 \
-                    --output /dev/null http://127.0.0.1:3000/ 2>/dev/null \
+                    --output /dev/null http://127.0.0.1:3000/sign-in 2>/dev/null \
                   && public_api="$(curl --silent --show-error --fail --max-time 5 \
                     https://api.spyboxd.com/health 2>/dev/null)" \
                   && printf '%s' "${public_api}" | check_json_health "${expected_revision}" \
                   && curl --silent --show-error --fail --max-time 5 \
-                    --output /dev/null https://spyboxd.com/ 2>/dev/null
+                    --output /dev/null https://spyboxd.com/sign-in 2>/dev/null
               then
                 return 0
               fi
@@ -406,6 +423,52 @@ jobs:
           }
 
           active_target="$(readlink -f "${current_link}" 2>/dev/null || true)"
+
+          if [ "${clerk_bridge_mode}" = true ]; then
+            previous_release="${releases_dir}/${previous_target}"
+            case "${active_target}" in
+              "${previous_release}")
+                echo 'The Clerk bridge failed before activation; the unchanged source process remains active.'
+                exit 0
+                ;;
+              "${expected_target}")
+                [ -d "${expected_target}" ] && [ ! -L "${expected_target}" ]
+                [ -f "${expected_target}/REVISION" ] && [ ! -L "${expected_target}/REVISION" ]
+                [ "$(cat "${expected_target}/REVISION")" = "${release_sha}" ]
+                [ -f "${expected_target}/.revision-health-v1" ] \
+                  && [ ! -L "${expected_target}/.revision-health-v1" ]
+                [ -x "${expected_target}/.venv/bin/uvicorn" ]
+                [ -f "${expected_target}/frontend/.next/BUILD_ID" ]
+                [ -f "${expected_target}/frontend/node_modules/next/dist/bin/next" ]
+                if check_release_health "${release_sha}"; then
+                  validate_state_dir
+                  touch "${expected_target}/.activated-at"
+                  write_state_revision active "${release_sha}"
+                  clear_state_marker previous
+                  echo 'Recovered the healthy live-key candidate after an interrupted Clerk bridge.'
+                  exit 0
+                fi
+                ;;
+              "") ;;
+              *) echo 'Clerk bridge recovery found an unexpected active target.' >&2; exit 1 ;;
+            esac
+
+            [ ! -e "${current_link}" ] || [ -L "${current_link}" ] || {
+              echo 'Clerk bridge recovery refuses to remove a non-symlink current path.' >&2
+              exit 1
+            }
+            timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl stop \
+              spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service || {
+                echo 'Failed to stop the unhealthy Clerk bridge services.' >&2
+                exit 1
+              }
+            rm -f -- "${current_link}"
+            validate_state_dir
+            clear_state_marker active
+            clear_state_marker previous
+            echo 'Stopped the failed Clerk bridge without activating the incompatible development artifact.'
+            exit 0
+          fi
 
           if [ "${previous_target}" = none ]; then
             case "${active_target}" in
@@ -687,7 +750,7 @@ jobs:
             status_code="$(curl --silent --show-error --output /dev/null \
               --write-out '%{http_code}' --max-time 10 \
               --header 'Cache-Control: no-cache' \
-              https://spyboxd.com/ 2>/dev/null || true)"
+              https://spyboxd.com/sign-in 2>/dev/null || true)"
             case "${status_code}" in
               2??)
                 frontend_ready=true
@@ -698,18 +761,82 @@ jobs:
           done
           [[ "${frontend_ready}" == true ]]
 
+          read -r root_status root_redirect < <(
+            curl --silent --show-error --output /dev/null \
+              --write-out '%{http_code} %{redirect_url}' --max-time 10 \
+              --header 'Cache-Control: no-cache' \
+              https://spyboxd.com/ 2>/dev/null || true
+          )
+          [[ "${root_status}" =~ ^30[1278]$ ]]
+          [[ "${root_redirect}" == https://spyboxd.com/sign-in* ]]
+
+          protected_api_status="$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' --max-time 10 \
+            --header 'Cache-Control: no-cache' \
+            https://api.spyboxd.com/profiles/ 2>/dev/null || true)"
+          [[ "${protected_api_status}" == 401 ]]
+
       - name: Roll back externally unhealthy activation
         if: always() && steps.activate.outcome == 'success' && steps.external_smoke.outcome == 'failure'
+        env:
+          CLERK_BRIDGE_MODE: ${{ steps.pre_activation.outputs.clerk_bridge }}
         run: |
           timeout --signal=TERM --kill-after=2m 24m \
-            deploy/production-ssh.sh run sh -s -- "${RELEASE_SHA}" <<'REMOTE'
+            deploy/production-ssh.sh run sh -s -- \
+              "${RELEASE_SHA}" "${CLERK_BRIDGE_MODE}" <<'REMOTE'
             set -eu
             RELEASE_SHA="$1"
+            CLERK_BRIDGE_MODE="$2"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'') exit 64 ;;
             esac
             [ "${#RELEASE_SHA}" -eq 40 ] || exit 64
+            case "${CLERK_BRIDGE_MODE}" in true|false) ;; *) exit 64 ;; esac
+
+            if [ "${CLERK_BRIDGE_MODE}" = true ]; then
+              app_root=/opt/spyboxd
+              current_link="${app_root}/current"
+              expected_target="${app_root}/releases/${RELEASE_SHA}"
+              state_dir="${app_root}/shared/release-state"
+              for command_name in flock id readlink stat sudo timeout; do
+                command -v "${command_name}" >/dev/null 2>&1 || exit 1
+              done
+              exec 9>"${app_root}/.release.lock"
+              flock -w 180 9 || {
+                echo 'Could not acquire the release lock for Clerk bridge shutdown.' >&2
+                exit 1
+              }
+              [ -L "${current_link}" ] \
+                && [ "$(readlink -f "${current_link}" || true)" = "${expected_target}" ] || {
+                  echo 'Clerk bridge shutdown found an unexpected active target.' >&2
+                  exit 1
+                }
+              [ -d "${state_dir}" ] && [ ! -L "${state_dir}" ] \
+                && [ "$(stat -c '%u' "${state_dir}")" = "$(id -u)" ] \
+                && [ "$(stat -c '%a' "${state_dir}")" = 750 ] || {
+                  echo 'Clerk bridge shutdown found unsafe release state.' >&2
+                  exit 1
+                }
+              [ -f "${state_dir}/active" ] && [ ! -L "${state_dir}/active" ] \
+                && [ "$(cat "${state_dir}/active")" = "${RELEASE_SHA}" ] || {
+                  echo 'Clerk bridge shutdown found an unexpected active marker.' >&2
+                  exit 1
+                }
+              if [ -L "${state_dir}/previous" ] \
+                  || { [ -e "${state_dir}/previous" ] && [ ! -f "${state_dir}/previous" ]; }; then
+                echo 'Clerk bridge shutdown found an unsafe previous marker.' >&2
+                exit 1
+              fi
+              timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl stop \
+                spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service || {
+                  echo 'Failed to stop the externally unhealthy Clerk bridge services.' >&2
+                  exit 1
+                }
+              rm -f -- "${current_link}" "${state_dir}/active" "${state_dir}/previous"
+              echo 'Stopped the externally unhealthy Clerk bridge; no incompatible rollback was activated.'
+              exit 0
+            fi
 
             if git --git-dir=/opt/spyboxd/repository rev-parse --is-bare-repository >/dev/null 2>&1; then
               repository_git() {

@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useUser } from '@clerk/nextjs';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
@@ -31,12 +30,13 @@ import ProfileCard from '../components/ProfileCard';
 import RatingDistributionChart from '../components/Charts/RatingDistributionChart';
 import ActivityChart from '../components/Charts/ActivityChart';
 import RecentChangesCard from '../components/insights/RecentChangesCard';
+import { useCurrentUser } from '../hooks/useCurrentUser';
 
 const Dashboard: React.FC = () => {
   const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
   const router = useRouter();
-  const { user } = useUser();
-  const isAdmin = Boolean(user?.publicMetadata?.is_admin);
+  const currentUserQuery = useCurrentUser();
+  const isAdmin = currentUserQuery.data?.is_admin ?? false;
   
   const { data: profiles, isLoading, error, refetch } = useQuery({
     queryKey: ['profiles'],
@@ -79,11 +79,52 @@ const Dashboard: React.FC = () => {
     void Promise.all([refetch(), refetchAnalytics(), recentChangesQuery.refetch()]);
   };
 
-  if (isLoading) return <LoadingSpinner />;
-  if (error) return <ErrorMessage message="Failed to load profiles" />;
+  if (isLoading || currentUserQuery.isLoading) return <LoadingSpinner />;
+  if (error || currentUserQuery.error) return <ErrorMessage message="Failed to load your profiles" />;
 
   // Ensure profiles is an array
   const profilesArray = Array.isArray(profiles) ? profiles : [];
+
+  if (profilesArray.length === 0) {
+    return (
+      <motion.div
+        className="space-y-8"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6 }}
+      >
+        <div>
+          <h1 className="mb-2 text-4xl font-bold text-white text-glow">Dashboard</h1>
+          <p className="text-white/60">
+            {isAdmin ? 'Analytics across the Letterboxd profiles you manage.' : 'Analytics across the Letterboxd profiles you track.'}
+          </p>
+        </div>
+        <section className="card-cinema flex min-h-80 flex-col items-center justify-center px-6 text-center">
+          <motion.div
+            className="grid h-20 w-20 place-items-center rounded-full bg-cinema-500/20"
+            animate={{ scale: [1, 1.05, 1] }}
+            transition={{ duration: 2, repeat: Infinity }}
+          >
+            <FilmIcon className="h-10 w-10 text-cinema-400" />
+          </motion.div>
+          <h2 className="mt-6 text-2xl font-bold text-white">{isAdmin ? 'Add the first managed profile' : 'Choose your first profile'}</h2>
+          <p className="mt-3 max-w-lg text-sm leading-6 text-white/60">
+            {isAdmin
+              ? 'Create a placeholder or publish the first residential full sync to start the managed library.'
+              : 'Add an existing Letterboxd profile instantly, or request a new username for the next residential sync. Your dashboard and analysis will use only the profiles you track.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => router.push('/profiles')}
+            className="btn-primary mt-6 flex items-center gap-2"
+          >
+            <PlusIcon className="h-5 w-5" />
+            {isAdmin ? 'Manage profiles' : 'Add or request a profile'}
+          </button>
+        </section>
+      </motion.div>
+    );
+  }
 
   // Data from analytics query is now the single source of truth for dashboard stats
   const totalProfiles = analytics?.system_stats?.total_profiles ?? 0;
@@ -129,7 +170,7 @@ const Dashboard: React.FC = () => {
             Dashboard
           </h1>
           <p className="text-white/60">
-            Analytics over the latest shared Letterboxd dataset
+            {isAdmin ? 'Analytics across the Letterboxd profiles you manage' : 'Analytics across the Letterboxd profiles you track'}
           </p>
         </div>
         
@@ -156,7 +197,7 @@ const Dashboard: React.FC = () => {
             whileTap={{ scale: 0.95 }}
           >
             <PlusIcon className="w-5 h-5" />
-            <span>{isAdmin ? 'Manage Profiles' : 'Browse Profiles'}</span>
+            <span>{isAdmin ? 'Manage Profiles' : 'Add or manage profiles'}</span>
           </motion.button>
         </motion.div>
       </motion.div>
@@ -169,35 +210,35 @@ const Dashboard: React.FC = () => {
         transition={{ delay: 0.4 }}
       >
         <StatsCard
-          title="Total Profiles"
+          title={isAdmin ? 'Managed Profiles' : 'Your Profiles'}
           value={totalProfiles}
-          subtitle="Active community members"
+          subtitle={`${activeProfiles} ready for analysis`}
           icon={Users}
           delay={0}
         />
         
         <StatsCard
-          title="Movies Tracked"
+          title={isAdmin ? 'Films in Managed Set' : 'Films in Your Set'}
           value={totalMovies}
-          subtitle="Across all profiles"
+          subtitle={`Across ${isAdmin ? 'managed' : 'tracked'} profiles`}
           icon={Film}
           gradient="from-blue-500/20 to-blue-600/10"
           delay={0.1}
         />
         
         <StatsCard
-          title="Total Reviews"
+          title={isAdmin ? 'Reviews in Managed Set' : 'Reviews in Your Set'}
           value={totalReviews}
-          subtitle="Community insights"
+          subtitle={`Across ${isAdmin ? 'managed' : 'tracked'} profiles`}
           icon={MessageCircle}
           gradient="from-purple-500/20 to-purple-600/10"
           delay={0.2}
         />
         
         <StatsCard
-          title="Average Rating"
+          title="Group Average"
           value={avgRating.toFixed(1)}
-          subtitle={`${activeProfiles} profiles completed`}
+          subtitle={`${activeProfiles} ${isAdmin ? 'managed' : 'tracked'} profiles synced`}
           icon={Star}
           gradient="from-yellow-500/20 to-yellow-600/10"
           delay={0.3}
@@ -235,13 +276,13 @@ const Dashboard: React.FC = () => {
         />
         
         <StatsCard
-          title="Top Reviewer"
+          title="Most Active Profile"
           value={profilesArray.length > 0 ? 
             profilesArray.reduce((prev, current) => 
               (current.total_reviews || 0) > (prev.total_reviews || 0) ? current : prev
             ).username : 'N/A'
           }
-          subtitle="Most active reviewer"
+          subtitle="Most reviews in your set"
           icon={Award}
           gradient="from-pink-500/20 to-pink-600/10"
           delay={0.1}
@@ -264,54 +305,73 @@ const Dashboard: React.FC = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.9 }}
       >
-        <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex items-start gap-4">
-            <div className="rounded-2xl border border-cinema-400/30 bg-cinema-500/15 p-3 text-cinema-300">
-              <Radar className="h-7 w-7" />
-            </div>
-            <div>
-              <h2 className="text-2xl font-bold text-white">Spy Signals</h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">
-                Find who watched the same film on the same day, within a one-day gap,
-                or across a custom set of profiles.
-              </p>
-              {strongestPair && (
-                <p className="mt-3 text-sm text-cinema-300">
-                  Strongest current pair: {strongestPair.profiles.join(' + ')}
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 xl:min-w-[420px]">
-            <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
-              <p className="text-2xl font-bold text-white">{signalSummary?.same_day_events ?? 0}</p>
-              <p className="mt-1 text-xs text-white/50">Same-day alerts</p>
-            </div>
-            <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <Clock3 className="h-4 w-4 text-cinema-300" />
-                <p className="text-2xl font-bold text-white">{signalSummary?.one_day_gap_events ?? 0}</p>
+        {profilesArray.length < 2 ? (
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="rounded-2xl border border-cinema-400/30 bg-cinema-500/15 p-3 text-cinema-300">
+                <Radar className="h-7 w-7" />
               </div>
-              <p className="mt-1 text-xs text-white/50">1-day echoes</p>
+              <div>
+                <h2 className="text-2xl font-bold text-white">Add one more profile for Spy Signals</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">
+                  Same-day watches, close-watch gaps, comparison, and group picks need at least two tracked profiles.
+                </p>
+              </div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
-              <p className="text-2xl font-bold text-white">{signalSummary?.shared_titles ?? 0}</p>
-              <p className="mt-1 text-xs text-white/50">Shared titles</p>
-            </div>
+            <button type="button" onClick={() => router.push('/profiles')} className="btn-primary shrink-0">
+              Add or request a profile
+            </button>
           </div>
+        ) : (
+          <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="rounded-2xl border border-cinema-400/30 bg-cinema-500/15 p-3 text-cinema-300">
+                <Radar className="h-7 w-7" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold text-white">Spy Signals</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">
+                  Find who watched the same film on the same day, within a one-day gap,
+                  or across a custom set of profiles.
+                </p>
+                {strongestPair && (
+                  <p className="mt-3 text-sm text-cinema-300">
+                    Strongest current pair: {strongestPair.profiles.join(' + ')}
+                  </p>
+                )}
+              </div>
+            </div>
 
-          <motion.button
-            type="button"
-            onClick={() => router.push('/spy-signals')}
-            className="btn-primary flex shrink-0 items-center justify-center gap-2"
-            whileHover={{ scale: 1.03 }}
-            whileTap={{ scale: 0.97 }}
-          >
-            Open Spy Signals
-            <ArrowRight className="h-5 w-5" />
-          </motion.button>
-        </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 xl:min-w-[420px]">
+              <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
+                <p className="text-2xl font-bold text-white">{signalSummary?.same_day_events ?? 0}</p>
+                <p className="mt-1 text-xs text-white/50">Same-day alerts</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Clock3 className="h-4 w-4 text-cinema-300" />
+                  <p className="text-2xl font-bold text-white">{signalSummary?.one_day_gap_events ?? 0}</p>
+                </div>
+                <p className="mt-1 text-xs text-white/50">1-day echoes</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
+                <p className="text-2xl font-bold text-white">{signalSummary?.shared_titles ?? 0}</p>
+                <p className="mt-1 text-xs text-white/50">Shared titles</p>
+              </div>
+            </div>
+
+            <motion.button
+              type="button"
+              onClick={() => router.push('/spy-signals')}
+              className="btn-primary flex shrink-0 items-center justify-center gap-2"
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+            >
+              Open Spy Signals
+              <ArrowRight className="h-5 w-5" />
+            </motion.button>
+          </div>
+        )}
         <RecentChangesCard
           data={recentChangesQuery.data}
           loading={recentChangesQuery.isLoading}
@@ -329,7 +389,7 @@ const Dashboard: React.FC = () => {
       >
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-white">
-            Community Profiles
+            {isAdmin ? 'Managed Profiles' : 'Your Profiles'}
           </h2>
           <span className="text-white/60 text-sm">
             {profilesArray.length} {profilesArray.length === 1 ? 'profile' : 'profiles'} loaded
@@ -378,7 +438,7 @@ const Dashboard: React.FC = () => {
                 No profiles loaded yet
               </h3>
               <p className="text-white/60 mb-8 max-w-md mx-auto">
-                Start building your Letterboxd community by adding profiles for analysis and tracking.
+                Add or request profiles to build the set used for your analysis.
               </p>
               
               <div className="flex justify-center space-x-4">
@@ -389,7 +449,7 @@ const Dashboard: React.FC = () => {
                   whileTap={{ scale: 0.95 }}
                 >
                   <PlusIcon className="w-5 h-5" />
-                  <span>{isAdmin ? 'Manage Profiles' : 'Browse Profiles'}</span>
+                  <span>{isAdmin ? 'Manage Profiles' : 'Add or request a profile'}</span>
                 </motion.button>
                 
                 <motion.button 
