@@ -10,6 +10,9 @@ build/
 .env
 venv/
 env/
+!deploy/env/
+deploy/env/*
+!deploy/env/*.env.example
 
 # Database
 *.db
@@ -20,6 +23,8 @@ env/
 data/scraped/
 data/exports/
 data/backups/
+/data/local-sync-cache/
+/sync-profiles.json
 
 # Frontend
 frontend/node_modules/
@@ -27,6 +32,7 @@ frontend/.env.local
 frontend/.env.production.local
 frontend/build/
 frontend/.next/
+*.tsbuildinfo
 
 # IDEs
 .vscode/

@@ -1,0 +1,11 @@
+{
+  "api_base_url": "https://api.spyboxd.com",
+  "output_root": "./data/local-sync-cache",
+  "pause_seconds": 2,
+  "continue_on_error": true,
+  "timeout_seconds": 180,
+  "usernames": [
+    "exampleuser1",
+    "exampleuser2"
+  ]
+}

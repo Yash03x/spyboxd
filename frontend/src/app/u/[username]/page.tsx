@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 const API_URL = process.env.API_URL ?? 'http://localhost:8000';
@@ -78,9 +79,9 @@ export default async function PublicProfilePage({ params }: Props) {
 
         <p className="text-center text-xs text-white/30">
           Powered by{' '}
-          <a href="/" className="text-cinema-400 font-medium hover:text-cinema-300 transition-colors">
+          <Link href="/" className="text-cinema-400 font-medium hover:text-cinema-300 transition-colors">
             Spyboxd
-          </a>
+          </Link>
         </p>
       </div>
     </main>

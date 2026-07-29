@@ -10,20 +10,28 @@ A comprehensive scraper for Letterboxd user profiles that extracts:
 - Advanced analytics and viewing patterns
 """
 
-import requests
 import cloudscraper
+try:
+    from curl_cffi import requests as curl_requests
+except ImportError:  # Kept for a clear local error before dependencies are installed.
+    curl_requests = None
 import csv
 import json
 import argparse
 import time
 import sys
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import re
 from dataclasses import dataclass, asdict
+
+
+class ScrapeValidationError(RuntimeError):
+    """Raised when a full scrape cannot prove a dataset was fetched completely."""
 
 
 @dataclass
@@ -87,8 +95,8 @@ class EnhancedLetterboxdScraper:
         self.urls = {
             'profile': f"https://letterboxd.com/{username}/",
             'films': f"https://letterboxd.com/{username}/films/",
-            'diary': f"https://letterboxd.com/{username}/films/diary/",
-            'reviews': f"https://letterboxd.com/{username}/films/reviews/",
+            'diary': f"https://letterboxd.com/{username}/diary/",
+            'reviews': f"https://letterboxd.com/{username}/reviews/",
             'watchlist': f"https://letterboxd.com/{username}/watchlist/",
             'lists': f"https://letterboxd.com/{username}/lists/",
             'following': f"https://letterboxd.com/{username}/following/",
@@ -96,10 +104,16 @@ class EnhancedLetterboxdScraper:
             'stats': f"https://letterboxd.com/{username}/films/stats/",
         }
         
-        # Session setup - use cloudscraper to bypass bot detection
-        self.session = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'darwin', 'mobile': False}
-        )
+        # Letterboxd currently challenges ordinary requests/cloudscraper on paginated
+        # profile pages. curl_cffi's browser impersonation is required for a complete sync.
+        if curl_requests is not None:
+            self.session = curl_requests.Session(impersonate='chrome')
+            self._curl_impersonation = True
+        else:
+            self.session = cloudscraper.create_scraper(
+                browser={'browser': 'chrome', 'platform': 'darwin', 'mobile': False}
+            )
+            self._curl_impersonation = False
         self.session.headers.update({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -124,18 +138,34 @@ class EnhancedLetterboxdScraper:
         self.reviews_data = []
         self.watchlist_data = []
         self.lists_data = []
+        self.list_items_data = []
         self.social_data = {
             'following': [],
             'followers': [],
             'activity': []
         }
         self.movies_seen = set()  # To track duplicates
+        self.completed_datasets = set()
+        self.requested_datasets = set()
+        self.unavailable_datasets = {}
     
-    def fetch_with_retry(self, url: str, max_retries: int = 5) -> Optional[requests.Response]:
+    def fetch_with_retry(
+        self,
+        url: str,
+        max_retries: int = 5,
+        *,
+        allow_private_forbidden: bool = False,
+    ):
         """Fetch URL with exponential backoff retry logic."""
         for attempt in range(max_retries):
             try:
-                response = self.session.get(url, timeout=15)
+                request_kwargs = {'timeout': 30}
+                if self._curl_impersonation:
+                    request_kwargs['impersonate'] = 'chrome'
+                response = self.session.get(url, **request_kwargs)
+
+                if allow_private_forbidden and self._is_private_forbidden_response(response):
+                    return response
                 
                 # Handle rate limiting specifically
                 if response.status_code == 429:
@@ -147,7 +177,7 @@ class EnhancedLetterboxdScraper:
                 response.raise_for_status()
                 return response
                 
-            except requests.exceptions.RequestException as e:
+            except Exception as e:
                 wait_time = (2 ** attempt) + 1  # Exponential backoff
                 print(f"Attempt {attempt + 1} failed for {url}: {e}")
                 
@@ -157,26 +187,169 @@ class EnhancedLetterboxdScraper:
                 else:
                     print(f"Failed to fetch {url} after {max_retries} attempts")
                     return None
+
+    @staticmethod
+    def _next_page_url(soup: BeautifulSoup, current_url: str) -> Optional[str]:
+        next_link = soup.select_one('a[rel="next"], a.next, .paginate-next a, a.next-page')
+        href = next_link.get('href') if next_link else None
+        return urljoin(current_url, href) if href else None
+
+    @staticmethod
+    def _lazy_posters(soup: BeautifulSoup) -> List:
+        posters = soup.select(
+            'div.react-component[data-component-class="LazyPoster"][data-item-name], '
+            'div.react-component[data-item-name][data-item-link]'
+        )
+        seen = set()
+        unique = []
+        for poster in posters:
+            marker = id(poster)
+            if marker not in seen:
+                unique.append(poster)
+                seen.add(marker)
+        return unique
+
+    @staticmethod
+    def _poster_identity(poster) -> Dict:
+        item_name = poster.get('data-item-name', '').strip()
+        year_match = re.search(r'\((\d{4})\)\s*$', item_name)
+        year = int(year_match.group(1)) if year_match else None
+        title = item_name[:year_match.start()].strip() if year_match else item_name
+        href = poster.get('data-item-link', '')
+        slug = poster.get('data-item-slug', '')
+        film_id = poster.get('data-film-id', '')
+        raw_identifier = poster.get('data-postered-identifier', '')
+        if raw_identifier:
+            try:
+                identifier = json.loads(raw_identifier)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                identifier = {}
+            uid_match = re.search(r'film:(\d+)', str(identifier.get('uid') or ''))
+            film_id = film_id or (uid_match.group(1) if uid_match else '') or str(identifier.get('lid') or '')
+        if not slug:
+            slug_match = re.search(r'/film/([^/]+)/?', href)
+            slug = slug_match.group(1) if slug_match else ''
+        image = poster.find('img')
+        if image is None and poster.find_parent() is not None:
+            image = poster.find_parent().find('img')
+        poster_url = poster.get('data-poster-url', '')
+        if image:
+            poster_url = poster_url or image.get('src', '') or image.get('data-src', '')
+            title = title or image.get('alt', '').strip()
+        poster_url = urljoin('https://letterboxd.com/', poster_url) if poster_url else ''
+        return {
+            'title': title,
+            'year': year,
+            'film_id': film_id,
+            'slug': slug,
+            'film_url': href,
+            'poster_url': poster_url,
+        }
+
+    @staticmethod
+    def _declares_empty(soup: BeautifulSoup, dataset: str) -> bool:
+        text = ' '.join(' '.join(soup.stripped_strings).casefold().split())
+        phrases = {
+            'films': ('no films', 'no films yet', 'hasn\u2019t watched any films', "hasn't watched any films"),
+            'diary': ('no diary entries', 'hasn\u2019t logged any films', "hasn't logged any films"),
+            'reviews': ('no reviews', 'hasn\u2019t reviewed any films', "hasn't reviewed any films"),
+            'watchlist': (
+                'watchlist is empty',
+                'no films in this watchlist',
+                'empty watchlist',
+                'wants to see 0 films',
+                'no films yet',
+            ),
+            'lists': ('no lists', 'hasn\u2019t made any lists', "hasn't made any lists"),
+            'favorites': (
+                'no favorite films',
+                'no favourite films',
+                'hasn\u2019t selected any favorite films',
+                "hasn't selected any favorite films",
+                'hasn\u2019t selected any favourite films',
+                "hasn't selected any favourite films",
+            ),
+        }
+        return any(phrase in text for phrase in phrases.get(dataset, ()))
+
+    def _require_response(self, response, dataset: str, url: str):
+        if response is None:
+            raise ScrapeValidationError(f"Could not fetch required {dataset} page: {url}")
+        return response
+
+    def _finish_dataset(self, dataset: str) -> None:
+        if dataset in self.unavailable_datasets:
+            raise ScrapeValidationError(
+                f"Dataset {dataset} cannot be both completed and unavailable"
+            )
+        self.completed_datasets.add(dataset)
+
+    def _mark_unavailable(self, dataset: str, reason: str) -> None:
+        if dataset in self.completed_datasets:
+            raise ScrapeValidationError(
+                f"Dataset {dataset} cannot be both completed and unavailable"
+            )
+        self.unavailable_datasets[dataset] = reason
+
+    @staticmethod
+    def _is_private_forbidden_response(response) -> bool:
+        if response is None or getattr(response, 'status_code', None) != 403:
+            return False
+        body = str(getattr(response, 'text', '') or '').casefold()
+        return (
+            'letterboxd - forbidden' in body
+            and ('correct clearance' in body or 'attempting to access is classified' in body)
+        )
+
+    def _extract_rating(self, container) -> Optional[float]:
+        if container is None:
+            return None
+        marker = container.select_one('span.rating, svg.glyph.-rating, .inline-rating svg')
+        if marker is None:
+            return None
+        stars_text = marker.get('aria-label', '') or marker.get_text()
+        return self.convert_stars_to_rating(stars_text)
+
+    @staticmethod
+    def _extract_rewatch(rewatch_cell) -> bool:
+        if rewatch_cell is None:
+            return False
+        cell_classes = set(rewatch_cell.get('class', []))
+        return 'icon-status-on' in cell_classes or 'icon-status-off' not in cell_classes
+
+    @staticmethod
+    def _extract_display_name(soup: BeautifulSoup) -> str:
+        label = soup.select_one(
+            'h1.person-display-name .displayname .label, '
+            '.profile-header-person .displayname .label, '
+            'h1.person-display-name .displayname'
+        )
+        if label is not None:
+            return label.get_text(' ', strip=True)
+        heading = soup.select_one('.profile-header-person h1, h1.title-1, main h1')
+        return heading.get_text(' ', strip=True) if heading is not None else ''
     
     def scrape_profile_info(self) -> ProfileInfo:
         """Scrape basic profile information and statistics."""
         print(f"🔍 Scraping profile info for {self.username}...")
         
-        response = self.fetch_with_retry(self.urls['profile'])
-        if not response:
-            return self.profile_info
+        response = self._require_response(
+            self.fetch_with_retry(self.urls['profile']),
+            'profile',
+            self.urls['profile'],
+        )
             
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Extract profile information
         try:
             # Display name
-            profile_name = soup.find('h1', class_='title-1')
-            if profile_name:
-                self.profile_info.display_name = profile_name.get_text().strip()
+            display_name = self._extract_display_name(soup)
+            if display_name:
+                self.profile_info.display_name = display_name
             
             # Bio
-            bio_element = soup.find('div', class_='profile-text')
+            bio_element = soup.select_one('.profile-text, .profile-summary .bio, .profile-bio')
             if bio_element:
                 self.profile_info.bio = bio_element.get_text().strip()
             
@@ -192,538 +365,506 @@ class EnhancedLetterboxdScraper:
                     self.profile_info.website = website.get('href', '')
             
             # Avatar URL
-            avatar = soup.find('img', class_='avatar')
+            avatar = soup.select_one('.profile-avatar img, img.avatar, .avatar img')
             if avatar:
-                self.profile_info.avatar_url = avatar.get('src', '')
+                self.profile_info.avatar_url = avatar.get('src', '') or avatar.get('data-src', '')
             
             # Statistics from profile page
-            stats = soup.find_all('a', class_='has-icon')
+            stats = soup.select(
+                f'a[href="/{self.username}/films/"], '
+                f'a[href="/{self.username}/following/"], '
+                f'a[href="/{self.username}/followers/"]'
+            )
             for stat in stats:
                 stat_text = stat.get_text().strip()
-                if 'films' in stat_text.lower():
-                    # Extract number from text like "1,234 films"
-                    numbers = re.findall(r'[\d,]+', stat_text)
-                    if numbers:
-                        self.profile_info.total_films = int(numbers[0].replace(',', ''))
-                elif 'reviews' in stat_text.lower():
-                    numbers = re.findall(r'[\d,]+', stat_text)
-                    if numbers:
-                        self.profile_info.total_reviews = int(numbers[0].replace(',', ''))
-                elif 'lists' in stat_text.lower():
-                    numbers = re.findall(r'[\d,]+', stat_text)
-                    if numbers:
-                        self.profile_info.total_lists = int(numbers[0].replace(',', ''))
+                href = stat.get('href', '')
+                numbers = re.findall(r'[\d,]+', stat_text)
+                if href == f'/{self.username}/films/' and 'film' in stat_text.casefold() and numbers:
+                    self.profile_info.total_films = int(numbers[0].replace(',', ''))
+                elif href == f'/{self.username}/following/' and numbers:
+                    self.profile_info.following_count = int(numbers[0].replace(',', ''))
+                elif href == f'/{self.username}/followers/' and numbers:
+                    self.profile_info.followers_count = int(numbers[0].replace(',', ''))
             
             # Favorite films (top 4)
-            favorite_films = soup.find_all('li', class_='poster-container')[:4]
-            for film in favorite_films:
-                film_link = film.find('a')
-                if film_link:
-                    film_img = film.find('img')
-                    if film_img:
-                        self.profile_info.favorite_films.append({
-                            'title': film_img.get('alt', ''),
-                            'url': film_link.get('href', ''),
-                            'poster': film_img.get('src', '')
-                        })
+            favorite_root = soup.select_one('#favourites, #favorites, .profile-favorites, .profile-favourites')
+            if favorite_root is not None:
+                for poster in self._lazy_posters(favorite_root)[:4]:
+                    identity = self._poster_identity(poster)
+                    if not identity['title'] or not identity['film_url']:
+                        raise ScrapeValidationError(
+                            "Recognized favorite-film poster lacked title or URL"
+                        )
+                    self.profile_info.favorite_films.append({
+                        'title': identity['title'],
+                        'year': identity['year'],
+                        'film_id': identity['film_id'],
+                        'slug': identity['slug'],
+                        'url': identity['film_url'],
+                        'poster': identity['poster_url'],
+                    })
+            elif not self._declares_empty(soup, 'favorites'):
+                raise ScrapeValidationError(
+                    "Profile page returned no recognized favorites container or explicit empty state"
+                )
             
-        except Exception as e:
-            print(f"Error scraping profile info: {e}")
+        except Exception as exc:
+            raise ScrapeValidationError(f"Could not parse required profile data: {exc}") from exc
         
+        self._finish_dataset('profile')
+        self._finish_dataset('favorites')
         return self.profile_info
     
     def scrape_all_films(self) -> List[Dict]:
         """Scrape all films from the user's films page."""
         print(f"🎬 Scraping all films for {self.username}...")
-        
+
         films = []
+        page_url = self.urls['films']
         page_num = 1
-        
+
         while True:
-            if page_num == 1:
-                page_url = self.urls['films']
-            else:
-                page_url = f"{self.urls['films']}page/{page_num}/"
-            
-            response = self.fetch_with_retry(page_url)
-            if not response:
-                break
-                
+            response = self._require_response(self.fetch_with_retry(page_url), 'films', page_url)
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Find film poster containers (using correct selector)
-            # Films are in li.griditem elements, each containing a div.poster.film-poster
-            film_elements = soup.find_all('li', class_='griditem')
-            
-            if not film_elements:
-                break
-            
-            for film_elem in film_elements:
+            posters = self._lazy_posters(soup)
+            if not posters:
+                if page_num == 1 and self._declares_empty(soup, 'films'):
+                    break
+                raise ScrapeValidationError(
+                    f"Films page {page_num} returned HTML but no recognized film posters"
+                )
+
+            for poster in posters:
                 try:
-                    # Find the poster div within the griditem
-                    poster_div = film_elem.find('div', class_='poster film-poster')
-                    if not poster_div:
-                        continue
-                    
-                    # Get film info from poster
-                    img = poster_div.find('img')
-                    if not img:
-                        continue
-                    
-                    # Get the link from the react-component div
-                    react_component = film_elem.find('div', class_='react-component')
-                    if not react_component:
-                        continue
-                    
-                    # Extract film data from data attributes
-                    film_link = react_component.get('data-item-link', '')
-                    if not film_link:
-                        continue
-                    
-                    title = img.get('alt', '').strip()
-                    href = film_link  # film_link is already the href string
-                    poster_url = img.get('src', '')
-                    
-                    # Extract year from data-item-name attribute (e.g., "Weapons (2025)")
-                    item_name = react_component.get('data-item-name', '')
-                    year_match = re.search(r'\((\d{4})\)', item_name)
-                    year = int(year_match.group(1)) if year_match else None
-                    
-                    # Extract film ID and slug from data attributes
-                    film_id = react_component.get('data-film-id', '')
-                    slug = react_component.get('data-item-slug', '')
-                    
-                    # Check for rating and review status in poster-viewingdata
+                    identity = self._poster_identity(poster)
+                    if not identity['title'] or not identity['film_url']:
+                        raise ScrapeValidationError("Recognized film poster lacked title or URL")
+                    container = poster.find_parent('li') or poster.parent
                     rating = None
                     is_liked = False
                     has_review = False
-                    
-                    viewing_data = film_elem.find('p', class_='poster-viewingdata')
+                    viewing_data = container.select_one('.poster-viewingdata') if container else None
                     if viewing_data:
-                        # Check for rating
-                        rating_elem = viewing_data.find('span', class_='rating')
-                        if rating_elem:
-                            stars_text = rating_elem.get_text()
-                            rating = self.convert_stars_to_rating(stars_text)
-                        
-                        # Check for like status
-                        like_elem = viewing_data.find('span', class_='like')
-                        is_liked = like_elem is not None
-                        
-                        # Check for review status
-                        review_elem = viewing_data.find('a', class_='review-micro')
-                        has_review = review_elem is not None
-                    
-                    film_data = {
-                        'title': title,
-                        'year': year,
+                        rating = self._extract_rating(viewing_data)
+                        is_liked = viewing_data.select_one('.like, .icon-liked') is not None
+                        has_review = viewing_data.select_one('a.review-micro, .icon-review') is not None
+
+                    films.append({
+                        'title': identity['title'],
+                        'year': identity['year'],
                         'rating': rating,
-                        'film_id': film_id,
-                        'slug': slug,
-                        'poster_url': poster_url,
-                        'film_url': href,
+                        'film_id': identity['film_id'],
+                        'slug': identity['slug'],
+                        'poster_url': identity['poster_url'],
+                        'film_url': identity['film_url'],
                         'is_liked': is_liked,
                         'has_review': has_review,
-                        'movie_id': film_id  # For compatibility
-                    }
-                    
-                    films.append(film_data)
-                    
-                except Exception as e:
-                    if self.debug:
-                        print(f"Error processing film: {e}")
-                    continue
-            
-            # Check for next page
-            next_link = soup.find('a', class_='next')
-            if not next_link:
+                        'movie_id': identity['film_id'],
+                    })
+                except Exception as exc:
+                    raise ScrapeValidationError(
+                        f"Could not parse film record on page {page_num}: {exc}"
+                    ) from exc
+
+            next_page_url = self._next_page_url(soup, page_url)
+            if not next_page_url:
                 break
-                
             page_num += 1
+            page_url = next_page_url
             time.sleep(1)  # Be respectful
-        
+
+        if not films and not self._declares_empty(soup, 'films'):
+            raise ScrapeValidationError("Full film history resolved to zero without an explicit empty state")
         self.films_data = films
+        self._finish_dataset('films')
         print(f"✓ Found {len(films)} films")
         return films
 
     def scrape_diary_entries(self) -> List[Dict]:
         """Scrape complete diary entries with watch dates."""
         print(f"📅 Scraping diary entries for {self.username}...")
-        
+
         diary_entries = []
+        page_url = self.urls['diary']
         page_num = 1
         current_month = None
         current_year = None
-        
+
         while True:
-            if page_num == 1:
-                page_url = self.urls['diary']
-            else:
-                page_url = f"{self.urls['diary']}page/{page_num}/"
-            
-            response = self.fetch_with_retry(page_url)
-            if not response:
-                break
-                
+            response = self._require_response(self.fetch_with_retry(page_url), 'diary', page_url)
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Find diary table rows (new structure)
-            diary_table = soup.find('table', class_='diary-table')
+
+            diary_table = soup.select_one('table.diary-table, main table')
             if not diary_table:
-                break
-                
-            diary_rows = diary_table.find_all('tr', class_='diary-entry-row')
-            
+                if page_num == 1 and self._declares_empty(soup, 'diary'):
+                    break
+                raise ScrapeValidationError("Diary page returned no recognized diary table")
+            diary_rows = [
+                row for row in diary_table.select('tbody tr')
+                if row.select_one('div.react-component[data-item-name][data-item-link]')
+            ]
             if not diary_rows:
-                break
-            
+                if page_num == 1 and self._declares_empty(soup, 'diary'):
+                    break
+                raise ScrapeValidationError(
+                    f"Diary page {page_num} returned a table but no recognized diary rows"
+                )
+
             for row in diary_rows:
                 try:
-                    # Extract month, year, and day from date cells
-                    month_cell = row.find('td', class_='col-monthdate')
-                    day_cell = row.find('td', class_='col-daydate')
-                    
-                    # Check if month_cell has month/year info (not empty)
-                    month_link = month_cell.find('a', class_='month') if month_cell else None
-                    year_link = month_cell.find('a', class_='year') if month_cell else None
-                    day_link = day_cell.find('a', class_='daydate') if day_cell else None
-                    
-                    # Update current month/year if new month info is found
+                    month_cell = row.select_one('td.col-monthdate, td.td-calendar')
+                    day_cell = row.select_one('td.col-daydate, td.td-day')
+                    month_link = month_cell.select_one('a.month') if month_cell else None
+                    year_link = month_cell.select_one('a.year') if month_cell else None
+                    day_link = day_cell.select_one('a.daydate, a') if day_cell else None
                     if month_link and year_link:
                         current_month = month_link.get_text().strip()
                         current_year = year_link.get_text().strip()
-                    
-                    # Create watch date using current month/year and day
+
                     watch_date = ''
-                    if current_month and current_year and day_link:
+                    time_element = row.select_one('time[datetime]')
+                    if time_element:
+                        watch_date = time_element.get('datetime', '')
+                    elif current_month and current_year and day_link:
                         day_text = day_link.get_text().strip()
                         if day_text:
                             watch_date = f"{current_month} {current_year} {day_text}"
-                    
-                    # Extract film info from production cell
-                    production_cell = row.find('td', class_='col-production')
-                    if not production_cell:
-                        continue
-                    
-                    # Find react-component for film data
-                    react_component = production_cell.find('div', class_='react-component')
-                    if not react_component:
-                        continue
-                    
-                    # Extract title and year from data attributes
-                    item_name = react_component.get('data-item-name', '')
-                    title = item_name.split(' (')[0] if ' (' in item_name else ''
-                    href = react_component.get('data-item-link', '')
-                    
-                    # Extract year from data-item-name attribute (e.g., "Together (2025)")
-                    year = None
-                    if item_name:
-                        year_match = re.search(r'\((\d{4})\)', item_name)
-                        year = int(year_match.group(1)) if year_match else None
-                    
-                    # Extract rating
-                    rating_cell = row.find('td', class_='col-rating')
+
+                    poster = row.select_one('div.react-component[data-item-name][data-item-link]')
+                    identity = self._poster_identity(poster)
+                    rating_cell = row.select_one('td.col-rating, .td-rating')
                     rating = None
                     if rating_cell:
-                        rating_elem = rating_cell.find('span', class_='rating')
-                        if rating_elem:
-                            stars_text = rating_elem.get_text()
-                            rating = self.convert_stars_to_rating(stars_text)
-                    
-                    # Check for rewatch
-                    rewatch_cell = row.find('td', class_='col-rewatch')
-                    is_rewatch = False
-                    if rewatch_cell and 'icon-status-off' not in rewatch_cell.get('class', []):
-                        is_rewatch = True
-                    
-                    # Check for like
-                    like_cell = row.find('td', class_='col-like')
-                    is_liked = False
-                    if like_cell:
-                        like_icon = like_cell.find('span', class_='icon-liked')
-                        is_liked = like_icon is not None
-                    
-                    # Check for review
-                    review_cell = row.find('td', class_='col-review')
-                    has_review = False
-                    if review_cell:
-                        review_link = review_cell.find('a')
-                        has_review = review_link is not None
-                    
-                    diary_entry = {
-                        'title': title,
-                        'year': year,
+                        rating = self._extract_rating(rating_cell)
+
+                    rewatch_cell = row.select_one('td.col-rewatch, .td-rewatch')
+                    is_rewatch = self._extract_rewatch(rewatch_cell)
+                    is_liked = row.select_one('td.col-like .icon-liked, .td-like .icon-liked, .icon-liked') is not None
+                    has_review = row.select_one('td.col-review a, .td-review a, a.icon-review') is not None
+                    source_entry_id = (
+                        row.get('data-viewing-id', '')
+                        or row.get('data-entry-id', '')
+                        or row.get('id', '')
+                    )
+
+                    diary_entries.append({
+                        'title': identity['title'],
+                        'year': identity['year'],
                         'watch_date': watch_date,
                         'rating': rating,
                         'is_rewatch': is_rewatch,
                         'is_liked': is_liked,
                         'has_review': has_review,
-                        'film_url': href
-                    }
-                    
-                    diary_entries.append(diary_entry)
-                    
-                except Exception as e:
-                    if self.debug:
-                        print(f"Error processing diary entry: {e}")
-                    continue
-            
-            # Check for next page
-            next_link = soup.find('a', class_='next')
-            if not next_link:
+                        'film_url': identity['film_url'],
+                        'film_id': identity['film_id'],
+                        'slug': identity['slug'],
+                        'source_entry_id': source_entry_id,
+                    })
+                except Exception as exc:
+                    raise ScrapeValidationError(
+                        f"Could not parse diary record on page {page_num}: {exc}"
+                    ) from exc
+
+            next_page_url = self._next_page_url(soup, page_url)
+            if not next_page_url:
                 break
-                
             page_num += 1
+            page_url = next_page_url
             time.sleep(1)  # Be respectful
-        
+
+        if not diary_entries and not self._declares_empty(soup, 'diary'):
+            raise ScrapeValidationError("Diary resolved to zero without an explicit empty state")
         self.diary_entries = diary_entries
+        self._finish_dataset('diary')
         print(f"✓ Found {len(diary_entries)} diary entries")
         return diary_entries
     
     def scrape_reviews(self) -> List[Dict]:
         """Scrape all reviews with full text content."""
         print(f"📝 Scraping reviews for {self.username}...")
-        
+
         reviews = []
+        page_url = self.urls['reviews']
         page_num = 1
-        
+
         while True:
-            if page_num == 1:
-                page_url = self.urls['reviews']
-            else:
-                page_url = f"{self.urls['reviews']}page/{page_num}/"
-            
-            response = self.fetch_with_retry(page_url)
-            if not response:
-                break
-                
+            response = self._require_response(self.fetch_with_retry(page_url), 'reviews', page_url)
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Find review articles (new structure)
-            review_elements = soup.find_all('article', class_='production-viewing')
-            
-            if not review_elements:
-                break
-            
-            for review_elem in review_elements:
+
+            main = soup.select_one('main') or soup
+            posters = self._lazy_posters(main)
+            if not posters:
+                if page_num == 1 and self._declares_empty(soup, 'reviews'):
+                    break
+                raise ScrapeValidationError(
+                    f"Reviews page {page_num} returned HTML but no recognized review posters"
+                )
+
+            parsed_on_page = 0
+            for poster in posters:
                 try:
-                    # Film title and year from react-component data
-                    react_component = review_elem.find('div', class_='react-component')
-                    if not react_component:
+                    review_elem = (
+                        poster.find_parent('article')
+                        or poster.find_parent('li', class_=re.compile(r'film-detail|production-viewing'))
+                        or poster.find_parent(class_=re.compile(r'film-detail|production-viewing'))
+                    )
+                    if review_elem is None:
                         continue
-                    
-                    title = react_component.get('data-item-name', '').split(' (')[0]  # Remove year from title
-                    href = react_component.get('data-item-link', '')
-                    
-                    # Extract year from data-item-name attribute (e.g., "Together (2025)")
-                    item_name = react_component.get('data-item-name', '')
-                    year_match = re.search(r'\((\d{4})\)', item_name)
-                    year = int(year_match.group(1)) if year_match else None
-                    
-                    # Rating
-                    rating_elem = review_elem.find('span', class_='rating')
-                    rating = None
-                    if rating_elem:
-                        stars_text = rating_elem.get_text()
-                        rating = self.convert_stars_to_rating(stars_text)
-                    
-                    # Review text
-                    review_text_elem = review_elem.find('div', class_='body-text')
+                    identity = self._poster_identity(poster)
+                    rating = self._extract_rating(review_elem)
+
+                    review_text_elem = review_elem.select_one('.js-review-body, .body-text, .review-text')
                     review_text = ""
                     if review_text_elem:
-                        # Remove any nested elements and get clean text
                         for script in review_text_elem(["script", "style"]):
                             script.decompose()
                         review_text = review_text_elem.get_text().strip()
-                    
-                    # Review date from timestamp
-                    date_elem = review_elem.find('time', class_='timestamp')
+
+                    date_elem = review_elem.select_one('time.timestamp, time[datetime]')
                     review_date = date_elem.get('datetime', '') if date_elem else ""
                     if not review_date:
-                        # Fallback to text content
-                        date_elem = review_elem.find('span', class_='date')
+                        date_elem = review_elem.select_one('span.date')
                         review_date = date_elem.get_text().strip() if date_elem else ""
-                    
-                    # Check for likes from data-count attribute
-                    likes_elem = review_elem.find('p', class_='like-link-target')
+
+                    likes_elem = review_elem.select_one('.like-link-target, [data-count].like-link-target')
                     review_likes = 0
                     if likes_elem:
                         likes_count = likes_elem.get('data-count', '0')
                         review_likes = int(likes_count) if likes_count.isdigit() else 0
-                    
-                    review_data = {
-                        'title': title,
-                        'year': year,
+
+                    reviews.append({
+                        'title': identity['title'],
+                        'year': identity['year'],
                         'rating': rating,
                         'review_text': review_text,
                         'review_date': review_date,
                         'review_likes': review_likes,
-                        'film_url': href
-                    }
-                    
-                    reviews.append(review_data)
-                    
-                except Exception as e:
-                    if self.debug:
-                        print(f"Error processing review: {e}")
-                    continue
-            
-            # Check for next page
-            next_link = soup.find('a', class_='next')
-            if not next_link:
+                        'film_url': identity['film_url'],
+                        'film_id': identity['film_id'],
+                        'slug': identity['slug'],
+                    })
+                    parsed_on_page += 1
+                except Exception as exc:
+                    raise ScrapeValidationError(
+                        f"Could not parse review record on page {page_num}: {exc}"
+                    ) from exc
+
+            if parsed_on_page == 0:
+                raise ScrapeValidationError(
+                    f"Reviews page {page_num} contained posters but no recognized review records"
+                )
+            next_page_url = self._next_page_url(soup, page_url)
+            if not next_page_url:
                 break
-                
             page_num += 1
+            page_url = next_page_url
             time.sleep(1)  # Be respectful
-        
+
+        if not reviews and not self._declares_empty(soup, 'reviews'):
+            raise ScrapeValidationError("Reviews resolved to zero without an explicit empty state")
         self.reviews_data = reviews
+        self._finish_dataset('reviews')
         print(f"✓ Found {len(reviews)} reviews")
         return reviews
     
     def scrape_watchlist(self) -> List[Dict]:
         """Scrape complete watchlist."""
         print(f"📋 Scraping watchlist for {self.username}...")
-        
+
         watchlist = []
+        page_url = self.urls['watchlist']
         page_num = 1
-        
+
         while True:
-            if page_num == 1:
-                page_url = self.urls['watchlist']
-            else:
-                page_url = f"{self.urls['watchlist']}page/{page_num}/"
-            
-            response = self.fetch_with_retry(page_url)
-            if not response:
-                break
-                
+            response = self.fetch_with_retry(page_url, allow_private_forbidden=True)
+            if self._is_private_forbidden_response(response):
+                self.watchlist_data = []
+                self._mark_unavailable('watchlist', 'forbidden/private')
+                print("⚠ Watchlist is private or forbidden; preserving prior imported state")
+                return []
+            response = self._require_response(response, 'watchlist', page_url)
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Find film posters
-            film_elements = soup.find_all('li', class_='poster-container')
-            
-            if not film_elements:
-                break
-            
-            for film_elem in film_elements:
+
+            main = soup.select_one('main') or soup
+            posters = self._lazy_posters(main)
+            if not posters:
+                if page_num == 1 and self._declares_empty(soup, 'watchlist'):
+                    break
+                raise ScrapeValidationError(
+                    f"Watchlist page {page_num} returned HTML but no recognized film posters"
+                )
+
+            for poster in posters:
                 try:
-                    film_link = film_elem.find('a')
-                    if not film_link:
-                        continue
-                    
-                    # Get film info from poster
-                    img = film_elem.find('img')
-                    if not img:
-                        continue
-                    
-                    title = img.get('alt', '').strip()
-                    href = film_link.get('href', '')
-                    poster_url = img.get('src', '')
-                    
-                    # Extract year from data-item-name if available
-                    react_component = film_elem.find('div', class_='react-component')
-                    year = None
-                    if react_component:
-                        item_name = react_component.get('data-item-name', '')
-                        year_match = re.search(r'\((\d{4})\)', item_name)
-                        year = int(year_match.group(1)) if year_match else None
-                    
-                    # Fallback to URL extraction
-                    if year is None:
-                        year_match = re.search(r'/(\d{4})/', href)
-                        year = int(year_match.group(1)) if year_match else None
-                    
-                    watchlist_item = {
-                        'title': title,
-                        'year': year,
-                        'film_url': href,
-                        'poster_url': poster_url
-                    }
-                    
-                    watchlist.append(watchlist_item)
-                    
-                except Exception as e:
-                    if self.debug:
-                        print(f"Error processing watchlist item: {e}")
-                    continue
-            
-            # Check for next page
-            next_link = soup.find('a', class_='next')
-            if not next_link:
+                    identity = self._poster_identity(poster)
+                    if not identity['title'] or not identity['film_url']:
+                        raise ScrapeValidationError("Recognized watchlist poster lacked title or URL")
+                    watchlist.append(identity)
+                except Exception as exc:
+                    raise ScrapeValidationError(
+                        f"Could not parse watchlist record on page {page_num}: {exc}"
+                    ) from exc
+
+            next_page_url = self._next_page_url(soup, page_url)
+            if not next_page_url:
                 break
-                
             page_num += 1
+            page_url = next_page_url
             time.sleep(1)  # Be respectful
-        
+
+        if not watchlist and not self._declares_empty(soup, 'watchlist'):
+            raise ScrapeValidationError("Watchlist resolved to zero without an explicit empty state")
         self.watchlist_data = watchlist
+        self._finish_dataset('watchlist')
         print(f"✓ Found {len(watchlist)} watchlist items")
         return watchlist
     
     def scrape_custom_lists(self) -> List[Dict]:
         """Scrape user's custom lists."""
         print(f"📝 Scraping custom lists for {self.username}...")
-        
+
         lists = []
-        
-        response = self.fetch_with_retry(self.urls['lists'])
-        if not response:
-            return lists
-            
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Find list elements
-        list_elements = soup.find_all('section', class_='list-set')
-        
-        for list_elem in list_elements:
-            try:
-                # List title and URL
-                title_elem = list_elem.find('h2', class_='title')
-                if not title_elem:
-                    continue
-                
-                list_link = title_elem.find('a')
-                if not list_link:
-                    continue
-                
-                list_title = list_link.get_text().strip()
-                list_url = list_link.get('href', '')
-                
-                # List description
-                desc_elem = list_elem.find('div', class_='body-text')
-                description = desc_elem.get_text().strip() if desc_elem else ""
-                
-                # Film count
-                count_elem = list_elem.find('span', class_='list-count')
-                film_count = 0
-                if count_elem:
-                    count_text = count_elem.get_text()
-                    count_match = re.search(r'(\d+)', count_text)
-                    if count_match:
-                        film_count = int(count_match.group(1))
-                
-                list_data = {
-                    'title': list_title,
-                    'description': description,
-                    'film_count': film_count,
-                    'url': list_url
-                }
-                
-                lists.append(list_data)
-                
-            except Exception as e:
-                if self.debug:
-                    print(f"Error processing list: {e}")
-                continue
-        
+        page_url = self.urls['lists']
+        page_num = 1
+        seen_urls = set()
+        while True:
+            response = self.fetch_with_retry(page_url, allow_private_forbidden=True)
+            if self._is_private_forbidden_response(response):
+                self.lists_data = []
+                self.list_items_data = []
+                self._mark_unavailable('lists', 'forbidden/private')
+                self._mark_unavailable('list_items', 'forbidden/private')
+                print("⚠ Lists are private or forbidden; preserving prior imported state")
+                return []
+            response = self._require_response(response, 'lists', page_url)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            main = soup.select_one('main') or soup
+            list_elements = main.select('article.list-summary, section.list-set, li.list-item')
+            if not list_elements:
+                if page_num == 1 and self._declares_empty(soup, 'lists'):
+                    break
+                raise ScrapeValidationError(
+                    f"Lists page {page_num} returned HTML but no recognized list summaries"
+                )
+
+            parsed_on_page = 0
+            for list_elem in list_elements:
+                try:
+                    list_link = list_elem.select_one('h2.name a, h2.title a')
+                    if list_link is None:
+                        list_link = list_elem.select_one(
+                            f'a[href^="/{self.username}/list/"]'
+                        )
+                    if not list_link:
+                        continue
+                    list_title = list_link.get_text(' ', strip=True)
+                    list_url = list_link.get('href', '')
+                    if not list_title or not list_url or list_url in seen_urls:
+                        continue
+                    seen_urls.add(list_url)
+                    desc_elem = list_elem.select_one('.body-text, .description')
+                    description = desc_elem.get_text(' ', strip=True) if desc_elem else ""
+                    count_elem = list_elem.select_one('.list-count, .value')
+                    count_match = re.search(r'([\d,]+)', count_elem.get_text() if count_elem else '')
+                    film_count = int(count_match.group(1).replace(',', '')) if count_match else 0
+                    lists.append({
+                        'title': list_title,
+                        'description': description,
+                        'film_count': film_count,
+                        'url': list_url,
+                    })
+                    parsed_on_page += 1
+                except Exception as exc:
+                    raise ScrapeValidationError(
+                        f"Could not parse list record on page {page_num}: {exc}"
+                    ) from exc
+
+            if parsed_on_page == 0:
+                raise ScrapeValidationError(
+                    f"Lists page {page_num} contained summaries but no usable list records"
+                )
+            next_page_url = self._next_page_url(soup, page_url)
+            if not next_page_url:
+                break
+            page_num += 1
+            page_url = next_page_url
+            time.sleep(1)
+
+        if not lists and not self._declares_empty(soup, 'lists'):
+            raise ScrapeValidationError("Custom lists resolved to zero without an explicit empty state")
         self.lists_data = lists
+        self.list_items_data = self._scrape_list_memberships(lists)
+        self._finish_dataset('lists')
+        if 'list_items' not in self.unavailable_datasets:
+            self._finish_dataset('list_items')
         print(f"✓ Found {len(lists)} custom lists")
         return lists
+
+    def _scrape_list_memberships(self, lists: List[Dict]) -> List[Dict]:
+        """Fetch every public list page and retain ordered canonical film identity."""
+        all_items = []
+        for list_data in lists:
+            list_url = urljoin('https://letterboxd.com/', list_data.get('url', ''))
+            expected_count = int(list_data.get('film_count') or 0)
+            page_url = list_url
+            page_num = 1
+            position = 0
+            seen_movie_keys = set()
+
+            while page_url:
+                response = self.fetch_with_retry(page_url, allow_private_forbidden=True)
+                if self._is_private_forbidden_response(response):
+                    self._mark_unavailable(
+                        'list_items',
+                        f"forbidden/private list: {list_data.get('title', '')}",
+                    )
+                    return []
+                response = self._require_response(
+                    response, f"list {list_data.get('title', '')}", page_url
+                )
+                soup = BeautifulSoup(response.content, 'html.parser')
+                main = soup.select_one('main') or soup
+                posters = main.select(
+                    'ul.poster-list div.react-component[data-component-class="LazyPoster"], '
+                    'ul.posterlist div.react-component[data-component-class="LazyPoster"]'
+                )
+                if not posters:
+                    if page_num == 1 and expected_count == 0:
+                        break
+                    raise ScrapeValidationError(
+                        f"List {list_data.get('title', '')!r} page {page_num} "
+                        "returned no recognized list films"
+                    )
+
+                for poster in posters:
+                    identity = self._poster_identity(poster)
+                    movie_key = identity['film_id'] or identity['slug'] or identity['film_url']
+                    if not identity['title'] or not movie_key or movie_key in seen_movie_keys:
+                        continue
+                    seen_movie_keys.add(movie_key)
+                    position += 1
+                    all_items.append({
+                        'list_name': list_data.get('title', ''),
+                        'list_url': list_data.get('url', ''),
+                        'position': position,
+                        **identity,
+                        'notes': '',
+                    })
+
+                page_url = self._next_page_url(soup, page_url)
+                page_num += 1
+                if page_url:
+                    time.sleep(1)
+
+            if expected_count and position != expected_count:
+                raise ScrapeValidationError(
+                    f"List {list_data.get('title', '')!r} reported {expected_count} films "
+                    f"but only {position} were captured"
+                )
+        return all_items
     
     def _write_csv(self, file_path: str, data: List[Dict], fieldnames: List[str]):
         """Helper function to write data to a CSV file."""
-        if not data:
-            return
-        
         full_path = os.path.join(self.output_dir, file_path)
         with open(full_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -732,6 +873,8 @@ class EnhancedLetterboxdScraper:
 
     def _save_profile_info(self):
         """Saves the main profile information."""
+        if 'profile' not in self.completed_datasets:
+            return
         fieldnames = [
             'Username', 'Display_Name', 'Bio', 'Location', 'Website', 'Join_Date',
             'Avatar_URL', 'Total_Films', 'Total_Reviews', 'Total_Lists',
@@ -755,36 +898,54 @@ class EnhancedLetterboxdScraper:
 
     def _save_diary_entries(self):
         """Saves diary entries."""
-        fieldnames = ['Name', 'Year', 'Watched Date', 'Rating', 'Is_Rewatch', 'Is_Liked', 'Has_Review', 'Film_URL']
+        if 'diary' not in self.completed_datasets:
+            return
+        fieldnames = [
+            'Name', 'Year', 'Watched Date', 'Rating', 'Is_Rewatch', 'Is_Liked',
+            'Has_Review', 'Film_ID', 'Slug', 'Diary_Entry_ID', 'Film_URL'
+        ]
         data = [{
             'Name': entry['title'], 'Year': entry['year'], 'Watched Date': entry['watch_date'],
             'Rating': entry['rating'], 'Is_Rewatch': 'Yes' if entry['is_rewatch'] else 'No',
             'Is_Liked': 'Yes' if entry['is_liked'] else 'No', 'Has_Review': 'Yes' if entry['has_review'] else 'No',
+            'Film_ID': entry.get('film_id', ''), 'Slug': entry.get('slug', ''),
+            'Diary_Entry_ID': entry.get('source_entry_id', ''),
             'Film_URL': entry['film_url']
         } for entry in self.diary_entries]
         self._write_csv("diary.csv", data, fieldnames)
 
     def _save_reviews(self):
         """Saves reviews."""
-        fieldnames = ['Name', 'Year', 'Rating', 'Review', 'Review_Date', 'Review_Likes', 'Film_URL']
+        if 'reviews' not in self.completed_datasets:
+            return
+        fieldnames = [
+            'Name', 'Year', 'Rating', 'Review', 'Review_Date', 'Review_Likes',
+            'Film_ID', 'Slug', 'Film_URL'
+        ]
         data = [{
             'Name': review['title'], 'Year': review['year'], 'Rating': review['rating'],
             'Review': review['review_text'], 'Review_Date': review['review_date'],
-            'Review_Likes': review['review_likes'], 'Film_URL': review['film_url']
+            'Review_Likes': review['review_likes'], 'Film_ID': review.get('film_id', ''),
+            'Slug': review.get('slug', ''), 'Film_URL': review['film_url']
         } for review in self.reviews_data]
         self._write_csv("reviews.csv", data, fieldnames)
 
     def _save_watchlist(self):
         """Saves the watchlist."""
-        fieldnames = ['Name', 'Year', 'Film_URL', 'Poster_URL']
+        if 'watchlist' not in self.completed_datasets:
+            return
+        fieldnames = ['Name', 'Year', 'Film_ID', 'Slug', 'Film_URL', 'Poster_URL']
         data = [{
-            'Name': item['title'], 'Year': item['year'], 'Film_URL': item['film_url'],
+            'Name': item['title'], 'Year': item['year'], 'Film_ID': item.get('film_id', ''),
+            'Slug': item.get('slug', ''), 'Film_URL': item['film_url'],
             'Poster_URL': item['poster_url']
         } for item in self.watchlist_data]
         self._write_csv("watchlist.csv", data, fieldnames)
 
     def _save_custom_lists(self):
         """Saves custom lists."""
+        if 'lists' not in self.completed_datasets:
+            return
         fieldnames = ['Title', 'Description', 'Film_Count', 'URL']
         data = [{
             'Title': li['title'], 'Description': li['description'],
@@ -792,8 +953,70 @@ class EnhancedLetterboxdScraper:
         } for li in self.lists_data]
         self._write_csv("lists.csv", data, fieldnames)
 
+    def _save_list_items(self):
+        """Save normalized ordered memberships for all custom lists."""
+        if 'list_items' not in self.completed_datasets:
+            return
+        fieldnames = [
+            'List_Name', 'List_URL', 'Position', 'Name', 'Year', 'Film_ID',
+            'Slug', 'Film_URL', 'Poster_URL', 'Notes'
+        ]
+        data = [{
+            'List_Name': item.get('list_name', ''),
+            'List_URL': item.get('list_url', ''),
+            'Position': item.get('position', ''),
+            'Name': item.get('title', ''),
+            'Year': item.get('year', ''),
+            'Film_ID': item.get('film_id', ''),
+            'Slug': item.get('slug', ''),
+            'Film_URL': item.get('film_url', ''),
+            'Poster_URL': item.get('poster_url', ''),
+            'Notes': item.get('notes', ''),
+        } for item in self.list_items_data]
+        self._write_csv("list_items.csv", data, fieldnames)
+
+    def _save_favorites(self):
+        if 'favorites' not in self.completed_datasets:
+            return
+        fieldnames = ['Position', 'Name', 'Year', 'Film_ID', 'Slug', 'Film_URL', 'Poster_URL']
+        data = [{
+            'Position': position,
+            'Name': item.get('title', ''),
+            'Year': item.get('year', ''),
+            'Film_ID': item.get('film_id', ''),
+            'Slug': item.get('slug', ''),
+            'Film_URL': item.get('url', ''),
+            'Poster_URL': item.get('poster', ''),
+        } for position, item in enumerate(self.profile_info.favorite_films, start=1)]
+        self._write_csv("favorites.csv", data, fieldnames)
+
+    def _remove_stale_unavailable_files(self) -> None:
+        """Remove only managed CSVs contradicted by the new manifest state."""
+        dataset_files = {
+            'watchlist': ('watchlist.csv',),
+            'lists': ('lists.csv',),
+            'list_items': ('list_items.csv',),
+            'favorites': ('favorites.csv',),
+        }
+        output_root = Path(self.output_dir)
+        for dataset_name in self.unavailable_datasets:
+            for filename in dataset_files.get(dataset_name, ()):
+                artifact = output_root / filename
+                if artifact.is_file() or artifact.is_symlink():
+                    artifact.unlink()
+        if 'list_items' in self.unavailable_datasets:
+            legacy_lists_dir = output_root / 'lists'
+            if legacy_lists_dir.is_dir() and not legacy_lists_dir.is_symlink():
+                for artifact in legacy_lists_dir.iterdir():
+                    if artifact.name.casefold().endswith('.csv') and (
+                        artifact.is_file() or artifact.is_symlink()
+                    ):
+                        artifact.unlink()
+
     def _save_enriched_ratings(self) -> int:
         """Enriches and saves the ratings file, returning the count of rated films."""
+        if 'films' not in self.completed_datasets:
+            return 0
         diary_lookup = {f"{e['title']}_{e['year'] or 'no_year'}": e for e in self.diary_entries if e['title']}
         review_lookup = {f"{r['title']}_{r['year'] or 'no_year'}": r for r in self.reviews_data if r['title']}
         
@@ -819,35 +1042,68 @@ class EnhancedLetterboxdScraper:
         self._write_csv("ratings.csv", all_ratings, ['Name', 'Year', 'Rating'])
         return len(all_ratings)
 
-    def _save_likes(self):
-        """Saves liked films."""
+    def _build_like_rows(self) -> List[Dict]:
+        """Build one stable-identity row per liked film from complete source surfaces."""
         all_likes = []
         seen_likes = set()
 
+        def add_like(item: Dict, watched_date: str = '') -> None:
+            like_key = (
+                item.get('film_id')
+                or item.get('slug')
+                or f"{item.get('title', '')}_{item.get('year') or 'no_year'}"
+            )
+            if not item.get('title') or like_key in seen_likes:
+                return
+            all_likes.append({
+                'Name': item.get('title', ''),
+                'Year': item.get('year') or '',
+                'Date': watched_date,
+                'Is_Liked': 'Yes',
+                'Film_ID': item.get('film_id', ''),
+                'Slug': item.get('slug', ''),
+                'Film_URL': item.get('film_url', ''),
+                'Poster_URL': item.get('poster_url', ''),
+            })
+            seen_likes.add(like_key)
+
         for film in self.films_data:
-            if film['title'] and film.get('is_liked', False):
-                like_key = f"{film['title']}_{film['year'] or 'no_year'}"
-                if like_key not in seen_likes:
-                    all_likes.append({'Name': film['title'], 'Year': film['year'] or '', 'Date': ''})
-                    seen_likes.add(like_key)
+            if film.get('is_liked', False):
+                add_like(film)
 
         for entry in self.diary_entries:
-            if entry['title'] and entry.get('is_liked', False):
-                like_key = f"{entry['title']}_{entry['year'] or 'no_year'}"
-                if like_key not in seen_likes:
-                    all_likes.append({'Name': entry['title'], 'Year': entry['year'] or '', 'Date': entry.get('watch_date', '')})
-                    seen_likes.add(like_key)
-        
-        self._write_csv("likes.csv", all_likes, ['Name', 'Year', 'Date'])
+            if entry.get('is_liked', False):
+                add_like(entry, entry.get('watch_date', ''))
+
+        return all_likes
+
+    def _save_likes(self) -> int:
+        """Saves liked films and returns the authoritative unique-film count."""
+        if 'likes' not in self.completed_datasets:
+            return 0
+        all_likes = self._build_like_rows()
+        self._write_csv(
+            "likes.csv",
+            all_likes,
+            ['Name', 'Year', 'Date', 'Is_Liked', 'Film_ID', 'Slug', 'Film_URL', 'Poster_URL'],
+        )
+        return len(all_likes)
 
     def _save_comprehensive_films(self):
         """Saves the comprehensive film data."""
-        fieldnames = ['Title', 'Year', 'Rating', 'Film_ID', 'Slug', 'Poster_URL', 'Film_URL', 'Has_Review', 'Movie_ID']
+        if 'films' not in self.completed_datasets:
+            return
+        fieldnames = [
+            'Title', 'Year', 'Rating', 'Film_ID', 'Slug', 'Poster_URL',
+            'Film_URL', 'Has_Review', 'Is_Liked', 'Movie_ID'
+        ]
         data = [{
             'Title': film.get('title', ''), 'Year': film.get('year', ''), 'Rating': film.get('rating', ''),
             'Film_ID': film.get('film_id', ''), 'Slug': film.get('slug', ''),
             'Poster_URL': film.get('poster_url', ''), 'Film_URL': film.get('film_url', ''),
-            'Has_Review': 'Yes' if film.get('has_review') else 'No', 'Movie_ID': film.get('movie_id', '')
+            'Has_Review': 'Yes' if film.get('has_review') else 'No',
+            'Is_Liked': 'Yes' if film.get('is_liked') else 'No',
+            'Movie_ID': film.get('movie_id', '')
         } for film in self.films_data]
         self._write_csv("films_comprehensive.csv", data, fieldnames)
 
@@ -860,9 +1116,43 @@ class EnhancedLetterboxdScraper:
         self._save_reviews()
         self._save_watchlist()
         self._save_custom_lists()
+        self._save_list_items()
+        self._save_favorites()
         rated_films_count = self._save_enriched_ratings()
-        self._save_likes()
+        liked_films_count = self._save_likes()
         self._save_comprehensive_films()
+
+        # A retained output directory may contain a CSV from an earlier public
+        # sync even when that surface is private/unavailable now. Remove only
+        # scraper-owned files for unavailable surfaces after all current data
+        # files are written; unrelated files are untouched.
+        self._remove_stale_unavailable_files()
+
+        counts = {
+            'films': len(self.films_data),
+            'diary': len(self.diary_entries),
+            'likes': liked_films_count,
+            'reviews': len(self.reviews_data),
+            'watchlist': len(self.watchlist_data),
+            'lists': len(self.lists_data),
+            'list_items': len(self.list_items_data),
+            'favorites': len(self.profile_info.favorite_films),
+        }
+        for dataset_name in self.unavailable_datasets:
+            counts.pop(dataset_name, None)
+
+        manifest = {
+            'schema_version': 2,
+            'username': self.username,
+            'source_kind': 'full_html_upload',
+            'requested_datasets': sorted(self.requested_datasets),
+            'completed_datasets': sorted(self.completed_datasets),
+            'unavailable_datasets': dict(sorted(self.unavailable_datasets.items())),
+            'counts': counts,
+            'completed_at': datetime.now().astimezone().isoformat(),
+        }
+        with open(os.path.join(self.output_dir, 'manifest.json'), 'w', encoding='utf-8') as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
         
         print(f"✅ All data saved to {self.output_dir}/")
         print(f"   - Profile info, Diary, Reviews, Watchlist, Lists, Ratings, Likes, and Comprehensive films.")
@@ -871,12 +1161,18 @@ class EnhancedLetterboxdScraper:
         print(f"   - Films with ratings: {rated_films_count}")
         print(f"   - Diary entries: {len(self.diary_entries)}")
         print(f"   - Reviews: {len(self.reviews_data)}")
+        print(f"   - List memberships: {len(self.list_items_data)}")
     
     def scrape_all(self):
         """Main method to scrape all available data."""
         print(f"🎬 Starting comprehensive scrape for {self.username}")
         print("=" * 50)
         
+        self.requested_datasets = {
+            'profile', 'favorites', 'films', 'diary', 'likes', 'reviews',
+            'watchlist', 'lists', 'list_items'
+        }
+
         # Scrape all sections
         self.scrape_profile_info()
         self.scrape_all_films()  # Add this line to scrape films
@@ -884,6 +1180,20 @@ class EnhancedLetterboxdScraper:
         self.scrape_reviews()
         self.scrape_watchlist()
         self.scrape_custom_lists()
+
+        # These source-of-truth counts are only known after their complete surfaces
+        # have passed pagination and parse validation.
+        self.profile_info.total_films = len(self.films_data)
+        self.profile_info.total_reviews = len(self.reviews_data)
+        self.profile_info.total_lists = len(self.lists_data)
+        self._finish_dataset('likes')
+
+        accounted_datasets = self.completed_datasets | set(self.unavailable_datasets)
+        missing_datasets = self.requested_datasets - accounted_datasets
+        if missing_datasets:
+            raise ScrapeValidationError(
+                f"Full scrape incomplete; missing datasets: {', '.join(sorted(missing_datasets))}"
+            )
         
         # Save all data
         self.save_all_data()
@@ -895,7 +1205,8 @@ class EnhancedLetterboxdScraper:
             'diary_entries': self.diary_entries,
             'reviews': self.reviews_data,
             'watchlist': self.watchlist_data,
-            'lists': self.lists_data
+            'lists': self.lists_data,
+            'list_items': self.list_items_data,
         }
         
     def convert_stars_to_rating(self, stars_text: str) -> Optional[float]:

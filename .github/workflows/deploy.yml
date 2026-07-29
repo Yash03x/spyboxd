@@ -1,36 +1,80 @@
-name: Deploy
+name: Deploy Production
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: [Production CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spyboxd-production-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    name: Exact-SHA release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 50
+    environment:
+      name: production
+      url: https://spyboxd.com
+    env:
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1
+    steps:
+      - name: Release validated commit to Hetzner
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: deploy
+          username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: RELEASE_SHA
+          command_timeout: 45m
           script: |
-            set -e
-            cd /opt/spyboxd
-            git pull origin main
+            set -eu
 
-            # Backend
-            source .venv/bin/activate
-            pip install -r requirements.txt --quiet
-            PYTHONPATH=/opt/spyboxd/backend alembic upgrade head
-            sudo systemctl restart spyboxd-api spyboxd-worker spyboxd-beat
+            case "${RELEASE_SHA}" in
+              *[!0-9a-f]*|'')
+                echo "Invalid release SHA" >&2
+                exit 64
+                ;;
+            esac
+            if [ "${#RELEASE_SHA}" -ne 40 ]; then
+              echo "Release SHA must contain exactly 40 hexadecimal characters" >&2
+              exit 64
+            fi
 
-            # Frontend
-            cd /opt/spyboxd/frontend
-            npm ci --quiet
-            npm run build
-            sudo systemctl restart spyboxd-frontend
+            if git --git-dir=/opt/spyboxd/repository rev-parse --is-bare-repository >/dev/null 2>&1; then
+              repository_git() {
+                git --git-dir=/opt/spyboxd/repository "$@"
+              }
+            elif git -C /opt/spyboxd rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              repository_git() {
+                git -C /opt/spyboxd "$@"
+              }
+            else
+              echo "No Spyboxd Git repository found. The first rollout requires the existing /opt/spyboxd checkout." >&2
+              exit 1
+            fi
 
-            echo "Deploy complete"
+            repository_git fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
+            resolved_sha="$(repository_git rev-parse --verify "${RELEASE_SHA}^{commit}")"
+            if [ "${resolved_sha}" != "${RELEASE_SHA}" ]; then
+              echo "Fetched commit does not match the CI-validated SHA" >&2
+              exit 1
+            fi
+            repository_git merge-base --is-ancestor "${RELEASE_SHA}" refs/remotes/origin/main
+
+            release_runner="$(mktemp /tmp/spyboxd-release.XXXXXX)"
+            trap 'rm -f -- "${release_runner}"' EXIT
+            repository_git show "${RELEASE_SHA}:deploy/release.sh" >"${release_runner}"
+            chmod 0700 "${release_runner}"
+            "${release_runner}" "${RELEASE_SHA}"

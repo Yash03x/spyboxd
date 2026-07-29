@@ -9,18 +9,41 @@ from .connection import (
     get_db,
     init_db,
 )
-from .models import Profile, Rating, Review, MovieList, ScrapingJob, SystemMetrics
+from .models import (
+    Movie,
+    MovieEnrichment,
+    MovieList,
+    MovieListItem,
+    MovieWatchProvider,
+    Profile,
+    ProfileDataChange,
+    ProfileFeedState,
+    ProfileFavoriteMovie,
+    ProfileFilm,
+    ProfileSourceActivity,
+    ProfileSync,
+    Rating,
+    Review,
+    ScrapingJob,
+    SyncDataset,
+    SystemMetrics,
+    WatchEvent,
+    WatchlistItem,
+)
 from .repository import (
     ProfileRepository, 
     RatingRepository, 
     ReviewRepository, 
-    ScrapingJobRepository,
     AnalyticsRepository
 )
 
 __all__ = [
     'DATABASE_URL', 'engine', 'SessionLocal', 'get_db', 'get_database_url', 'init_db',
-    'Profile', 'Rating', 'Review', 'MovieList', 'ScrapingJob', 'SystemMetrics',
+    'Profile', 'ProfileSync', 'ProfileFeedState', 'SyncDataset', 'Movie', 'ProfileFilm',
+    'ProfileDataChange', 'ProfileSourceActivity',
+    'WatchEvent', 'WatchlistItem', 'MovieList', 'MovieListItem',
+    'ProfileFavoriteMovie', 'MovieEnrichment', 'MovieWatchProvider',
+    'Rating', 'Review', 'ScrapingJob', 'SystemMetrics',
     'ProfileRepository', 'RatingRepository', 'ReviewRepository', 
-    'ScrapingJobRepository', 'AnalyticsRepository'
+    'AnalyticsRepository'
 ]

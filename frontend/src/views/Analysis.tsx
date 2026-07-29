@@ -1,227 +1,312 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
-import { profileApi } from '../services/api';
-import { UserIcon } from '@heroicons/react/24/outline';
+import { Calendar, MessageCircle, Star, Ticket } from 'lucide-react';
+
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import ActivityChart from '../components/Charts/ActivityChart';
+import RatingDistributionChart from '../components/Charts/RatingDistributionChart';
+import StatsCard from '../components/Charts/StatsCard';
+import { profileApi } from '../services/api';
+
+function formatMovieTitle(title: string, year: number | null): string {
+  return year ? `${title} (${year})` : title;
+}
+
+function formatDate(value: string | null | undefined): string {
+  if (!value) {
+    return 'Unknown';
+  }
+  return new Date(value).toLocaleDateString();
+}
 
 const Analysis: React.FC = () => {
-  const [selectedProfile, setSelectedProfile] = useState<string>('');
-  
-  // Get all profiles
-  const { data: profiles, isLoading: loadingProfiles } = useQuery({
+  const [selectedProfile, setSelectedProfile] = useState('');
+
+  const { data: profiles, isLoading: loadingProfiles, error: profilesError } = useQuery({
     queryKey: ['profiles'],
     queryFn: profileApi.getProfiles,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
-  // Get analysis for selected profile
-  const { data: analysis, isLoading: loadingAnalysis, error: analysisError } = useQuery({
+  const profilesArray = useMemo(() => (Array.isArray(profiles) ? profiles : []), [profiles]);
+
+  useEffect(() => {
+    if (!selectedProfile && profilesArray.length > 0) {
+      setSelectedProfile(profilesArray[0].username);
+    }
+  }, [profilesArray, selectedProfile]);
+
+  const {
+    data: analysis,
+    isLoading: loadingAnalysis,
+    error: analysisError,
+  } = useQuery({
     queryKey: ['analysis', selectedProfile],
     queryFn: () => profileApi.getAnalysis(selectedProfile),
-    enabled: !!selectedProfile,
+    enabled: Boolean(selectedProfile),
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
-  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
+  if (loadingProfiles) {
+    return <LoadingSpinner message="Loading profiles..." />;
+  }
 
-  // Prepare rating distribution data for charts
-  const ratingData = analysis?.rating_distribution 
-    ? Object.entries(analysis.rating_distribution).map(([rating, count]) => ({
-        rating: `${rating} stars`,
-        count: count as number,
-      }))
-    : [];
-
-  if (loadingProfiles) return <LoadingSpinner message="Loading profiles..." />;
+  if (profilesError) {
+    return <ErrorMessage message="Failed to load profiles." />;
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <motion.div
+      className="space-y-8"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6 }}
+    >
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Analysis</h1>
-        <p className="mt-2 text-gray-600">
-          Detailed analysis and insights from Letterboxd profiles
+        <h1 className="text-4xl font-bold text-white text-glow mb-2">Analysis</h1>
+        <p className="text-white/60">
+          Single-profile deep dives over the current shared dataset.
         </p>
       </div>
 
-      {/* Profile Selection */}
-      <div className="card">
-        <h2 className="text-xl font-semibold text-gray-900 mb-4">
-          Select Profile to Analyze
-        </h2>
-        {profiles && profiles.length > 0 ? (
-          <select
-            value={selectedProfile}
-            onChange={(e) => setSelectedProfile(e.target.value)}
-            className="block w-full border border-gray-300 rounded-md px-3 py-2 focus:ring-primary-500 focus:border-primary-500"
-          >
-            <option value="">Choose a profile...</option>
-            {profiles.map((profile) => (
-              <option key={profile.username} value={profile.username}>
-                {profile.username} ({profile.total_films} movies, {profile.total_reviews} reviews)
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="text-center py-6">
-            <UserIcon className="mx-auto h-12 w-12 text-gray-400" />
-            <p className="mt-2 text-gray-500">No profiles available for analysis</p>
-            <p className="text-sm text-gray-400">Upload data or scrape profiles first</p>
+      <motion.div
+        className="card-cinema"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+      >
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-white">Select Profile</h2>
+            <p className="mt-1 text-sm text-white/60">
+              Choose any synced profile to inspect ratings, diary activity, and recent reviews.
+            </p>
           </div>
-        )}
-      </div>
+          <div className="w-full lg:w-96">
+            <select
+              value={selectedProfile}
+              onChange={(event) => setSelectedProfile(event.target.value)}
+              className="input-field w-full"
+            >
+              {profilesArray.length === 0 && <option value="">No profiles available</option>}
+              {profilesArray.map((profile) => (
+                <option key={profile.username} value={profile.username}>
+                  {profile.username}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </motion.div>
 
-      {/* Analysis Results */}
-      {selectedProfile && (
+      {selectedProfile && loadingAnalysis && (
+        <LoadingSpinner message={`Loading analysis for @${selectedProfile}...`} />
+      )}
+
+      {analysisError && (
+        <ErrorMessage message="Failed to load profile analysis." />
+      )}
+
+      {analysis && (
         <>
-          {loadingAnalysis && (
-            <LoadingSpinner message="Analyzing profile data..." />
-          )}
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+            <StatsCard
+              title="Films Tracked"
+              value={analysis.total_films}
+              subtitle={`${analysis.rated_films} rated / ${analysis.liked_films} liked`}
+              icon={Ticket}
+              delay={0}
+            />
+            <StatsCard
+              title="Average Rating"
+              value={analysis.avg_rating.toFixed(1)}
+              subtitle={`Last synced ${formatDate(analysis.last_scraped_at)}`}
+              icon={Star}
+              gradient="from-yellow-500/20 to-yellow-600/10"
+              delay={0.1}
+            />
+            <StatsCard
+              title="Reviews"
+              value={analysis.total_reviews}
+              subtitle={analysis.join_date ? `Member since ${new Date(analysis.join_date).getFullYear()}` : 'Join date unavailable'}
+              icon={MessageCircle}
+              gradient="from-pink-500/20 to-pink-600/10"
+              delay={0.2}
+            />
+            <StatsCard
+              title="Coverage"
+              value={analysis.data_coverage?.stats_label ?? 'Unknown'}
+              subtitle={analysis.data_coverage?.summary ?? 'No coverage metadata available'}
+              icon={Calendar}
+              gradient="from-blue-500/20 to-blue-600/10"
+              delay={0.3}
+            />
+          </div>
 
-          {analysisError && (
-            <ErrorMessage message="Failed to load analysis data" />
-          )}
+          <div className="grid grid-cols-1 gap-8 xl:grid-cols-2">
+            <RatingDistributionChart
+              data={analysis.rating_distribution}
+              title={`Rating Distribution for @${analysis.username}`}
+              globalAverage={analysis.avg_rating}
+            />
+            <ActivityChart
+              data={analysis.monthly_stats}
+              title={`Diary Activity for @${analysis.username}`}
+            />
+          </div>
 
-          {analysis && (
-            <div className="space-y-6">
-              {/* Profile Summary */}
-              <div className="card">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                  Profile Summary: {analysis.username}
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                  <div className="text-center">
-                    <p className="text-3xl font-bold text-primary-600">{analysis.total_films}</p>
-                    <p className="text-sm text-gray-600">Movies Watched</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-3xl font-bold text-green-600">{analysis.total_reviews}</p>
-                    <p className="text-sm text-gray-600">Reviews Written</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-3xl font-bold text-yellow-600">{analysis.avg_rating.toFixed(1)}</p>
-                    <p className="text-sm text-gray-600">Average Rating</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-3xl font-bold text-purple-600">
-                      {analysis.join_date 
-                        ? new Date(analysis.join_date).getFullYear()
-                        : 'Unknown'
-                      }
-                    </p>
-                    <p className="text-sm text-gray-600">Member Since</p>
-                  </div>
-                </div>
-              </div>
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+            <motion.div
+              className="card-cinema xl:col-span-2"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+            >
+              <h2 className="text-xl font-semibold text-white">Recent Watches</h2>
+              <p className="mt-1 text-sm text-white/60">
+                Latest diary-visible films and ratings in the current imported dataset.
+              </p>
 
-              {/* Rating Distribution Chart */}
-              {ratingData.length > 0 && (
-                <div className="card">
-                  <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                    Rating Distribution
-                  </h2>
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* Bar Chart */}
-                    <div>
-                      <h3 className="text-lg font-medium text-gray-700 mb-2">Bar Chart</h3>
-                      <ResponsiveContainer width="100%" height={300}>
-                        <BarChart data={ratingData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="rating" />
-                          <YAxis />
-                          <Tooltip />
-                          <Bar dataKey="count" fill="#3B82F6" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-
-                    {/* Pie Chart */}
-                    <div>
-                      <h3 className="text-lg font-medium text-gray-700 mb-2">Distribution</h3>
-                      <ResponsiveContainer width="100%" height={300}>
-                        <PieChart>
-                          <Pie
-                            data={ratingData}
-                            cx="50%"
-                            cy="50%"
-                            labelLine={false}
-                            label={({ rating, percent }) => `${rating}: ${((percent || 0) * 100).toFixed(0)}%`}
-                            outerRadius={80}
-                            fill="#8884d8"
-                            dataKey="count"
-                          >
-                            {ratingData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Enhanced Metrics */}
-              {analysis.enhanced_metrics && (
-                <div className="card">
-                  <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                    Enhanced Metrics
-                  </h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {Object.entries(analysis.enhanced_metrics).map(([key, value]) => (
-                      <div key={key} className="p-4 bg-gray-50 rounded-lg">
-                        <p className="text-sm font-medium text-gray-600 capitalize">
-                          {key.replace(/_/g, ' ')}
-                        </p>
-                        <p className="text-lg font-semibold text-gray-900">
-                          {typeof value === 'number' ? value.toFixed(2) : String(value)}
-                        </p>
+              <div className="mt-5 space-y-3">
+                {analysis.recent_watching_trend.length > 0 ? (
+                  analysis.recent_watching_trend.map((entry) => (
+                    <div
+                      key={`${entry.movie_title}-${entry.movie_year ?? 'na'}-${entry.watched_date ?? 'na'}`}
+                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-medium text-white">
+                            {formatMovieTitle(entry.movie_title, entry.movie_year)}
+                          </p>
+                          <p className="mt-1 text-xs text-white/60">
+                            Watched {formatDate(entry.watched_date)}
+                            {entry.is_rewatch ? ' / Rewatch' : ''}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-cinema-400/20 bg-cinema-500/10 px-3 py-1 text-xs font-medium text-cinema-300">
+                          {entry.rating !== null ? `${entry.rating.toFixed(1)} stars` : 'Unrated'}
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                    </div>
+                  ))
+                ) : (
+                  <p className="mt-5 text-sm text-white/50">No watched-date entries available.</p>
+                )}
+              </div>
+            </motion.div>
 
-              {/* Advanced Statistics */}
-              {analysis.advanced_stats && analysis.advanced_stats.length > 0 && (
-                <div className="card">
-                  <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                    Advanced Statistics
-                  </h2>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          {Object.keys(analysis.advanced_stats[0]).map((key) => (
-                            <th key={key} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              {key.replace(/_/g, ' ')}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {analysis.advanced_stats.map((stat, index) => (
-                          <tr key={index}>
-                            {Object.values(stat).map((value, valueIndex) => (
-                              <td key={valueIndex} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                {typeof value === 'number' ? value.toFixed(2) : String(value)}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+            <motion.div
+              className="card-cinema"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.25 }}
+            >
+              <h2 className="text-xl font-semibold text-white">Coverage Notes</h2>
+              <p className="mt-1 text-sm text-white/60">
+                This profile’s current import quality and missing surfaces.
+              </p>
+
+              <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-sm text-white/80">
+                  {analysis.data_coverage?.summary ?? 'No coverage metadata available for this profile.'}
+                </p>
+                {analysis.data_coverage?.limitations?.length ? (
+                  <ul className="mt-4 space-y-2 text-sm text-white/55">
+                    {analysis.data_coverage.limitations.map((item) => (
+                      <li key={item}>- {item}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-4 text-sm text-white/50">No explicit limitations recorded.</p>
+                )}
+              </div>
+            </motion.div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <motion.div
+              className="card-cinema"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+            >
+              <h2 className="text-xl font-semibold text-white">Recent Ratings</h2>
+              <div className="mt-5 space-y-3">
+                {analysis.recent_ratings.length > 0 ? (
+                  analysis.recent_ratings.map((entry) => (
+                    <div
+                      key={`${entry.movie_title}-${entry.movie_year ?? 'na'}-${entry.watched_date ?? 'na'}-rating`}
+                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-medium text-white">
+                            {formatMovieTitle(entry.movie_title, entry.movie_year)}
+                          </p>
+                          <p className="mt-1 text-xs text-white/60">
+                            {entry.watched_date ? `Watched ${formatDate(entry.watched_date)}` : 'No watch date'}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-cinema-400/20 bg-cinema-500/10 px-3 py-1 text-xs font-medium text-cinema-300">
+                          {entry.rating !== null ? `${entry.rating.toFixed(1)} stars` : 'Unrated'}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-white/50">No rating entries available.</p>
+                )}
+              </div>
+            </motion.div>
+
+            <motion.div
+              className="card-cinema"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.35 }}
+            >
+              <h2 className="text-xl font-semibold text-white">Recent Reviews</h2>
+              <div className="mt-5 space-y-3">
+                {analysis.recent_reviews.length > 0 ? (
+                  analysis.recent_reviews.map((review) => (
+                    <div
+                      key={`${review.movie_title}-${review.movie_year ?? 'na'}-${review.published_date ?? 'na'}`}
+                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-medium text-white">
+                            {formatMovieTitle(review.movie_title, review.movie_year)}
+                          </p>
+                          <p className="mt-1 text-xs text-white/60">
+                            Published {formatDate(review.published_date)}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-cinema-400/20 bg-cinema-500/10 px-3 py-1 text-xs font-medium text-cinema-300">
+                          {review.rating !== null ? `${review.rating.toFixed(1)} stars` : 'No rating'}
+                        </div>
+                      </div>
+                      {review.review_text && (
+                        <p className="mt-3 text-sm leading-6 text-white/70">{review.review_text}</p>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-white/50">No reviews available.</p>
+                )}
+              </div>
+            </motion.div>
+          </div>
         </>
       )}
-    </div>
+    </motion.div>
   );
 };
 

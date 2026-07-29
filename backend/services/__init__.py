@@ -1,1 +1,1 @@
-"""Service-layer modules shared by API and workers."""
+"""Service-layer modules shared by API and local sync ingestion."""
