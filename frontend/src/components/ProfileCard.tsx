@@ -15,20 +15,14 @@ import { ProfileInfo } from '../services/api';
 interface ProfileCardProps {
   profile: ProfileInfo;
   index: number;
-  onRefresh?: (username: string) => void;
   onDelete?: (username: string) => void;
-  onStartScraping?: (username: string) => void;
-  isRefreshing?: boolean;
   isDeleting?: boolean;
 }
 
 const ProfileCard: React.FC<ProfileCardProps> = ({ 
   profile, 
   index, 
-  onRefresh,
   onDelete,
-  onStartScraping,
-  isRefreshing = false,
   isDeleting = false 
 }) => {
   const handleDelete = () => {
@@ -37,13 +31,7 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
     }
   };
 
-  const handleStartScraping = () => {
-    if (onStartScraping && !isRefreshing) {
-      onStartScraping(profile.username);
-    }
-  };
-
-  const getScrapingStatusColor = (status: string) => {
+  const getSyncStatusColor = (status: string) => {
     switch (status) {
       case 'completed':
         return 'bg-green-500/20 text-green-400 border-green-500/30';
@@ -56,16 +44,16 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
     }
   };
 
-  const getScrapingStatusText = (status: string) => {
+  const getSyncStatusText = (status: string) => {
     switch (status) {
       case 'completed':
-        return 'Up to date';
+        return 'Synced';
       case 'in_progress':
-        return 'Updating...';
+        return 'Syncing...';
       case 'error':
         return 'Error';
       default:
-        return 'Pending';
+        return 'Awaiting sync';
     }
   };
 
@@ -106,52 +94,37 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
               @{profile.username}
             </motion.h3>
             <motion.div 
-              className={`inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium border ${getScrapingStatusColor(profile.scraping_status || 'pending')}`}
+              className={`inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium border ${getSyncStatusColor(profile.scraping_status || 'pending')}`}
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
               transition={{ delay: index * 0.1 + 0.3 }}
             >
               {profile.scraping_status === 'in_progress' && (
-                <ArrowPathIcon className={`w-3 h-3 mr-1 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <ArrowPathIcon className="w-3 h-3 mr-1 animate-spin" />
               )}
-              {getScrapingStatusText(profile.scraping_status || 'pending')}
+              {getSyncStatusText(profile.scraping_status || 'pending')}
             </motion.div>
           </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-center space-x-2">
-          {/* Start Scraping Button */}
-          <motion.button
-            onClick={handleStartScraping}
-            disabled={isRefreshing}
-            className={`p-2 rounded-lg transition-all duration-300 ${
-              isRefreshing 
-                ? 'bg-cinema-500/20 cursor-not-allowed' 
-                : 'bg-cinema-500/20 hover:bg-cinema-500/30 hover:scale-110'
-            }`}
-            whileHover={!isRefreshing ? { scale: 1.1 } : {}}
-            whileTap={!isRefreshing ? { scale: 0.95 } : {}}
-            title="Start scraping"
-          >
-            <ArrowPathIcon className={`w-4 h-4 text-cinema-400 ${isRefreshing ? 'animate-spin' : ''}`} />
-          </motion.button>
-
-          {/* Delete Button */}
-          <motion.button
-            onClick={handleDelete}
-            disabled={isDeleting || isRefreshing}
-            className={`p-2 rounded-lg transition-all duration-300 ${
-              isDeleting || isRefreshing
-                ? 'bg-red-500/20 cursor-not-allowed' 
-                : 'bg-red-500/20 hover:bg-red-500/30 hover:scale-110'
-            }`}
-            whileHover={!(isDeleting || isRefreshing) ? { scale: 1.1 } : {}}
-            whileTap={!(isDeleting || isRefreshing) ? { scale: 0.95 } : {}}
-            title="Delete profile"
-          >
-            <TrashIcon className={`w-4 h-4 text-red-400 ${isDeleting ? 'animate-pulse' : ''}`} />
-          </motion.button>
+      {/* Action Buttons */}
+      <div className="flex items-center space-x-2">
+          {onDelete && (
+            <motion.button
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className={`p-2 rounded-lg transition-all duration-300 ${
+                isDeleting
+                  ? 'bg-red-500/20 cursor-not-allowed'
+                  : 'bg-red-500/20 hover:bg-red-500/30 hover:scale-110'
+              }`}
+              whileHover={!isDeleting ? { scale: 1.1 } : {}}
+              whileTap={!isDeleting ? { scale: 0.95 } : {}}
+              title="Delete profile"
+            >
+              <TrashIcon className={`w-4 h-4 text-red-400 ${isDeleting ? 'animate-pulse' : ''}`} />
+            </motion.button>
+          )}
         </div>
       </div>
 

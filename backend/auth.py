@@ -12,11 +12,12 @@ Usage:
 """
 
 import os
+import secrets
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from dataclasses import dataclass
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
@@ -30,6 +31,7 @@ load_dotenv(REPO_ROOT / ".env")
 load_dotenv(BACKEND_DIR / ".env", override=False)
 
 bearer_scheme = HTTPBearer(auto_error=False)
+upload_token_scheme = APIKeyHeader(name="X-Upload-Token", auto_error=False)
 
 
 def _resolve_clerk_jwks_url() -> str:
@@ -124,3 +126,40 @@ def get_optional_user(
         return get_current_user(credentials)
     except HTTPException:
         return None
+
+
+def get_admin_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> ClerkUser:
+    user = get_current_user(credentials)
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required",
+        )
+    return user
+
+
+def get_upload_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    upload_token: Optional[str] = Depends(upload_token_scheme),
+) -> ClerkUser:
+    """
+    Allow uploads via the normal Clerk bearer token or a trusted ingestion token.
+    The ingestion token exists to support a residential-IP companion scraper.
+    """
+    expected_upload_token = os.environ.get("INGESTION_API_TOKEN", "").strip()
+    if upload_token:
+        if not expected_upload_token:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Upload token auth is not configured on the API",
+            )
+        if not secrets.compare_digest(upload_token, expected_upload_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid upload token",
+            )
+        return ClerkUser(user_id="ingestion-token", session_id=None, is_admin=True)
+
+    return get_admin_user(credentials)

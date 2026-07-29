@@ -1,193 +1,179 @@
 # Database Schema
 
-PostgreSQL database used by the FastAPI backend. Managed via Alembic migrations.
+PostgreSQL schema for the current Spyboxd runtime.
 
----
+The app is centered on imported full-profile datasets, not server-side scraping jobs.
 
-## Tables
+## Compatibility Tables
 
 ### `profiles`
-One row per tracked Letterboxd user.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | integer PK | Auto-increment |
-| `username` | varchar(50) UNIQUE | Letterboxd username |
-| `created_at` | timestamptz | When profile was added to Spyboxd |
-| `updated_at` | timestamptz | Last DB update |
-| `last_scraped_at` | timestamptz | When the last successful scrape ran |
-| `scraping_status` | varchar(20) | `pending` / `in_progress` / `completed` / `error` |
-| `avg_rating` | float | Computed from `ratings` table after each scrape |
-| `total_reviews` | integer | Count of rows in `reviews` table for this profile |
-| `join_date` | date | Letterboxd join date (from profile page, nullable) |
-| `is_active` | boolean | Soft-delete flag |
-| `profile_image_url` | varchar(500) | Avatar URL (from profile page, nullable) |
-| `bio` | text | Profile bio (from profile page, nullable) |
-| `location` | varchar(100) | Location (from profile page, nullable) |
-| `website` | varchar(200) | Website (from profile page, nullable) |
-| `enhanced_metrics` | JSON | Reserved for future computed analytics |
+One row per tracked Letterboxd profile.
 
-> **Note:** `bio`, `location`, `website`, `profile_image_url`, and `join_date` are populated by the HTML scraper (`scraper_html.py`). The RSS scraper cannot access these (Cloudflare blocks the profile page from VPS). They will be `null` for VPS-scraped profiles.
+Key columns:
 
----
+- `username`
+- `last_scraped_at`
+- `scraping_status`
+- `avg_rating`
+- `total_reviews`
+- `join_date`
+- `bio`
+- `location`
+- `website`
+- `profile_image_url`
+- `enhanced_metrics`
+
+Notes:
+
+- `scraping_status` now reflects import state more than scrape state.
+- Full HTML syncs populate richer profile metadata than partial imports.
 
 ### `ratings`
-One row per film watched by a user. This is the core data table — every film the user has logged in their Letterboxd diary ends up here.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | integer PK | Auto-increment |
-| `profile_id` | integer FK → `profiles.id` | Owner |
-| `movie_title` | varchar(300) | Film title |
-| `movie_year` | integer | Release year (nullable) |
-| `letterboxd_id` | varchar(100) | TMDB movie ID (from RSS `tmdb:movieId`) |
-| `rating` | float | 0.5–5.0 in 0.5 increments, or `null` if unrated |
-| `watched_date` | date | Date the user watched the film (from `letterboxd:watchedDate`) |
-| `is_rewatch` | boolean | Whether this was a rewatch (`letterboxd:rewatch`) |
-| `is_liked` | boolean | Whether the user liked the film (`letterboxd:memberLike`) |
-| `film_slug` | varchar(200) | Letterboxd URL slug (e.g. `the-godfather`) |
-| `poster_url` | varchar(500) | Film poster image URL (extracted from RSS description `<img>`) |
-| `tags` | JSON | Reserved (not populated by RSS scraper) |
-| `created_at` | timestamptz | Row insert time |
+One row per film per profile.
 
-**Unique constraint:** `(profile_id, movie_title, movie_year)` — prevents duplicate entries for the same film per user.
+Key columns:
 
-> **RSS coverage:** All diary entries are captured. Films rated without a diary date get `watched_date = null`. Rewatches each appear as a separate diary entry but are deduplicated to one row here (most recent watch is kept).
+- `profile_id`
+- `movie_title`
+- `movie_year`
+- `letterboxd_id`
+- `rating`
+- `watched_date`
+- `is_rewatch`
+- `is_liked`
+- `film_slug`
+- `poster_url`
 
----
+Constraint:
+
+- unique on `(profile_id, movie_title, movie_year)`
 
 ### `reviews`
-One row per written review. A user can have a rating without a review; a review always has at least a film title.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | integer PK | Auto-increment |
-| `profile_id` | integer FK → `profiles.id` | Owner |
-| `movie_title` | varchar(300) | Film title |
-| `movie_year` | integer | Release year (nullable) |
-| `letterboxd_id` | varchar(100) | TMDB movie ID |
-| `review_text` | text | Full review text (from RSS description CDATA, HTML stripped) |
-| `rating` | float | Rating at time of review (nullable) |
-| `contains_spoilers` | boolean | Always `false` (not detectable from RSS) |
-| `likes_count` | integer | Always `0` (not in RSS feed) |
-| `comments_count` | integer | Always `0` (not in RSS feed) |
-| `published_date` | date | Review publish date (from RSS `pubDate`) |
-| `created_at` | timestamptz | Row insert time |
+One row per written review.
 
----
+Key columns:
+
+- `profile_id`
+- `movie_title`
+- `movie_year`
+- `letterboxd_id`
+- `review_text`
+- `rating`
+- `published_date`
+- `likes_count`
+- `comments_count`
+
+These tables are retained for existing routes and response contracts. New imports dual-write them and the normalized foundation below in the same transaction.
+
+## Normalized Data Foundation
+
+### `profile_syncs` and `sync_datasets`
+
+`profile_syncs` records processing state for each unique `(profile, source fingerprint, importer version)` artifact. Reprocessing the same fingerprint reuses and updates that row; a distinct bundle fingerprint creates another history row. It stores source kind, status, timing, aggregate counts, coverage, and any failure that reaches ingestion.
+
+`sync_datasets` records the state of each imported surface such as films, diary, reviews, watchlist, lists, and favorites. Each row captures source/imported counts and whether that surface was authoritative for the sync.
+
+Together these tables answer both "how fresh is this profile?" and "which missing values are real versus unavailable?"
+
+### `profile_feed_states`
+
+One operational row per tracked profile for conservative Letterboxd RSS polling. It stores the rolling GUID window, content hash, optional HTTP validators, success/failure timestamps, exponential-backoff schedule, and a short worker lease. A feed row never makes RSS authoritative: disappearance from the finite feed cannot remove profile data, and a non-overlapping window is held for another full sync.
+
+### `movies`
+
+One canonical movie row shared by every profile. Stable Letterboxd numeric IDs are preferred, with slug and conservative title/year fallback matching. Source URLs and posters live here; optional `tmdb_id` and `imdb_id` are attached later without making TMDB part of ingestion.
+
+### `profile_films`
+
+One current-state row per `(profile_id, movie_id)` containing the profile's latest rating/like/review state, first and latest watch dates, watch and rewatch counts, and sync lineage. `removed_at` is used when an authoritative later snapshot no longer contains the film.
+
+### `watch_events`
+
+Authoritative diary imports store one row per occurrence. Stable Letterboxd viewing IDs are preferred for `event_key`; deterministic occurrence-aware keys are the fallback. Repeat watches on the same title and date remain separate events. Superseded rows are retained during normal ingestion while insight queries use only active rows.
+
+The normalization backfill also created non-authoritative `legacy_rating_snapshot` events from the one retained date on each legacy rating. `GET /api/spy-signals` therefore keeps ratings as its compatibility default. With `event_source=events`, it uses active WatchEvents only for profiles with a completed authoritative diary and falls back per profile to `ratings.watched_date` when no such diary exists.
+
+### `watchlist_items`
+
+Current per-profile watchlist membership with source position, optional added date, sync lineage, and removal timestamp.
 
 ### `movie_lists`
-Custom Letterboxd lists. Not populated by the RSS scraper (list pages are Cloudflare-blocked on VPS). Reserved for future use or manual upload.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | integer PK | Auto-increment |
-| `profile_id` | integer FK → `profiles.id` | Owner |
-| `name` | varchar(200) | List name |
-| `description` | text | List description (nullable) |
-| `is_public` | boolean | Always `true` |
-| `is_ranked` | boolean | Whether the list is ranked |
-| `movie_count` | integer | Number of films in the list |
-| `movies` | JSON | Array of movie objects |
-| `created_at` / `updated_at` | timestamptz | Timestamps |
+Imported list metadata: name, slug/source URL, description, ranked/public flags, published/updated dates, reported movie count, sync lineage, and removal timestamp.
 
----
+### `movie_list_items`
 
-### `scraping_jobs`
-Audit log of every scrape attempt.
+Ordered canonical movie membership for each imported list. The `(movie_list_id, movie_id)` relationship is unique and preserves source position.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | integer PK | Auto-increment |
-| `profile_id` | integer FK → `profiles.id` | Target profile |
-| `status` | varchar(20) | `queued` / `in_progress` / `completed` / `failed` |
-| `progress_message` | text | Human-readable status update (streamed via SSE) |
-| `progress_percentage` | float | 0–100 |
-| `queued_at` | timestamptz | When job was created |
-| `started_at` | timestamptz | When Celery worker picked it up |
-| `completed_at` | timestamptz | When job finished |
-| `error_message` | text | Exception message if failed |
-| `retry_count` | integer | Number of retries attempted |
-| `job_type` | varchar(50) | Always `full_scrape` currently |
-| `job_params` | JSON | Reserved |
+### `profile_favorite_movies`
 
----
+The ordered favorite-film strip from a public profile page, linked to canonical movies and the authoritative profile sync.
+
+### `movie_enrichments` and `movie_watch_providers`
+
+Optional TMDB cache. `movie_enrichments` stores details such as overview, runtime, release date, language, genres, keywords, credits, countries, and expiry. `movie_watch_providers` stores region/provider/type rows separately so regional availability can expire independently.
+
+No Letterboxd import depends on these tables or on a TMDB credential.
+
+## Other Tables
 
 ### `system_metrics`
-Periodic snapshots of system-wide stats. Not actively written yet — reserved for future scheduled metric collection.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | integer PK | Auto-increment |
-| `timestamp` | timestamptz | Snapshot time |
-| `total_profiles` | integer | Profile count |
-| `total_movies_tracked` | integer | Unique film count |
-| `total_reviews` | integer | Review count |
-| `avg_scraping_time` | float | Minutes |
-| `active_scraping_jobs` | integer | Jobs in flight |
-| `metrics` | JSON | Additional metrics |
+Stores cached system-wide analytics snapshots.
 
----
+Current use:
+
+- `metrics.dashboard_snapshot` holds the cached dashboard payload served by `GET /api/dashboard/analytics`
+
+Other numeric columns remain useful as coarse counters, but the JSON snapshot is the primary production cache.
+
+### `scraping_jobs`
+
+Legacy table kept for schema compatibility. The current runtime no longer writes new server-side scrape jobs.
 
 ## Relationships
 
-```
+```text
 profiles
-  ├── ratings         (one-to-many, cascade delete)
-  ├── reviews         (one-to-many, cascade delete)
-  ├── movie_lists     (one-to-many, cascade delete)
-  └── scraping_jobs   (one-to-many, cascade delete)
+  ├─ profile_syncs ── sync_datasets
+  ├─ profile_films ── movies
+  ├─ watch_events ── movies
+  ├─ watchlist_items ── movies
+  ├─ movie_lists ── movie_list_items ── movies
+  ├─ profile_favorite_movies ── movies
+  ├─ ratings (compatibility)
+  ├─ reviews (compatibility)
+  └─ scraping_jobs (legacy)
+
+movies
+  ├─ movie_enrichments
+  └─ movie_watch_providers
 ```
 
----
+## Data Flow
 
-## Data Pipeline
-
-```
-Letterboxd RSS feed  ──►  scraper.py  ──►  CSV files (temp dir)
-                                                  │
-                                                  ▼
-                                      services/profile_loader.py
-                                      (loads CSVs into DataFrames)
-                                                  │
-                                                  ▼
-                                      services/ingestion.py
-                                      (writes to DB via repositories)
-                                                  │
-                              ┌───────────────────┼───────────────────┐
-                              ▼                   ▼                   ▼
-                          ratings             reviews           profiles
-                          (film data)         (review text)     (avg_rating,
-                                                                 total_reviews)
+```text
+Residential machine
+  └─ backend/scraper_html.py
+       └─ schema-v2 CSV bundle + manifest
+            ├─ ZIP upload to /upload/
+            └─ scripts/import_local_archive.py
+                 ├─ services/profile_loader.py
+                 └─ services/ingestion.py
+                      └─ one atomic dual-write sync
+                           ├─ normalized foundation
+                           ├─ ratings / reviews compatibility tables
+                           └─ dashboard snapshot refresh
 ```
 
-### What the RSS scraper captures
+## Data Integrity Notes
 
-| Data | Source field | Stored in |
-|------|-------------|-----------|
-| Film title | `letterboxd:filmTitle` | `ratings.movie_title` |
-| Release year | `letterboxd:filmYear` | `ratings.movie_year` |
-| Star rating | `letterboxd:memberRating` | `ratings.rating` |
-| Watch date | `letterboxd:watchedDate` | `ratings.watched_date` |
-| Liked | `letterboxd:memberLike` | `ratings.is_liked` |
-| Rewatch | `letterboxd:rewatch` | `ratings.is_rewatch` |
-| TMDB ID | `tmdb:movieId` | `ratings.letterboxd_id` |
-| Poster URL | `<img>` in description | `ratings.poster_url` |
-| Review text | description CDATA (text) | `reviews.review_text` |
-| Review date | `pubDate` | `reviews.published_date` |
-| Film slug | URL path segment | `ratings.film_slug` |
-
-### What's NOT captured (Cloudflare-blocked on VPS)
-
-- Profile bio, location, avatar, join date, website
-- Watchlist
-- Custom lists
-- Films rated without a diary entry (edge case: user rates a film but doesn't log a watch date)
-
----
-
-## Computed values
-
-`profiles.avg_rating` and `profiles.total_reviews` are **recomputed after every scrape** from the `ratings` and `reviews` tables respectively — they are not read from the RSS feed directly.
-
-`total_films` shown in the UI is computed on-the-fly via `SELECT COUNT(*) FROM ratings WHERE profile_id = ?` — it is not stored in the `profiles` table.
+- Read traffic should hit cached dashboard analytics, not recompute global correlations per request.
+- `profiles.avg_rating` and `profiles.total_reviews` are derived from imported `ratings` and `reviews`.
+- `total_films` shown in the UI is computed from `ratings`, not stored directly on `profiles`.
+- During normal authoritative ingestion, missing current state is soft-removed and missing diary occurrences are superseded where those tables support history. Reprocessing an identical source fingerprint can update its sync and event records; deleting a profile or explicitly clearing its imported data physically removes profile-owned history.
+- Public HTML gaps such as tags, comments, or private account data are represented in coverage rather than fabricated.
+- Migrations `20260728_0002` and `20260728_0003` add and backfill the normalized foundation without changing legacy cardinality at migration time.

@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useUser } from '@clerk/nextjs';
 import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
-import { profileApi, scraperApi, dashboardApi } from '../services/api';
+import { profileApi, dashboardApi, changesApi } from '../services/api';
 import { 
   ArrowPathIcon,
   PlusIcon,
@@ -18,7 +19,10 @@ import {
   MessageCircle, 
   Activity,
   Award,
-  Calendar
+  Calendar,
+  Radar,
+  ArrowRight,
+  Clock3,
 } from 'lucide-react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
@@ -26,36 +30,34 @@ import StatsCard from '../components/Charts/StatsCard';
 import ProfileCard from '../components/ProfileCard';
 import RatingDistributionChart from '../components/Charts/RatingDistributionChart';
 import ActivityChart from '../components/Charts/ActivityChart';
+import RecentChangesCard from '../components/insights/RecentChangesCard';
 
 const Dashboard: React.FC = () => {
-  const [refreshingProfile, setRefreshingProfile] = useState<string | null>(null);
   const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
   const router = useRouter();
+  const { user } = useUser();
+  const isAdmin = Boolean(user?.publicMetadata?.is_admin);
   
   const { data: profiles, isLoading, error, refetch } = useQuery({
     queryKey: ['profiles'],
     queryFn: profileApi.getProfiles,
-    refetchInterval: 30000, // Auto-refresh every 30 seconds
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
-  const { data: analytics, isLoading: analyticsLoading } = useQuery({
+  const { data: analytics, isLoading: analyticsLoading, refetch: refetchAnalytics } = useQuery({
     queryKey: ['dashboard-analytics'],
     queryFn: dashboardApi.getAnalytics,
-    refetchInterval: 30000, // Auto-refresh every 30 seconds
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
-  // Handle profile refresh
-  const handleRefreshProfile = async (username: string) => {
-    setRefreshingProfile(username);
-    try {
-      await scraperApi.scrapeProfile(username);
-      refetch();
-    } catch (error) {
-      console.error('Failed to refresh profile:', error);
-    } finally {
-      setRefreshingProfile(null);
-    }
-  };
+  const recentChangesQuery = useQuery({
+    queryKey: ['recent-changes', 'latest-sync', 6],
+    queryFn: () => changesApi.getRecentChanges({ limit: 6, latestSyncOnly: true }),
+    staleTime: 2 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
 
   // Handle profile deletion
   const handleDeleteProfile = async (username: string) => {
@@ -63,7 +65,7 @@ const Dashboard: React.FC = () => {
       setDeletingProfile(username);
       try {
         await profileApi.deleteProfile(username);
-        refetch();
+        await Promise.all([refetch(), refetchAnalytics()]);
       } catch (error) {
         console.error('Failed to delete profile:', error);
       } finally {
@@ -72,19 +74,9 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Handle start scraping
-  const handleStartScraping = async (username: string) => {
-    try {
-      await scraperApi.scrapeProfile(username);
-      refetch();
-    } catch (error) {
-      console.error('Failed to start scraping:', error);
-    }
-  };
-
   // Handle manual refresh all
   const handleRefreshAll = () => {
-    refetch();
+    void Promise.all([refetch(), refetchAnalytics(), recentChangesQuery.refetch()]);
   };
 
   if (isLoading) return <LoadingSpinner />;
@@ -101,10 +93,18 @@ const Dashboard: React.FC = () => {
 
   // Calculate completion rate based on profile statuses
   const activeProfiles = profilesArray.filter(p => p.scraping_status === 'completed').length;
+  const latestSyncTimestamp = Math.max(
+    ...profilesArray
+      .filter((profile) => profile.last_scraped_at)
+      .map((profile) => new Date(profile.last_scraped_at!).getTime()),
+    0,
+  );
   
   // Use analytics data directly
   const aggregateRatingDistribution = analytics?.rating_distribution ?? {};
   const aggregateActivityData = analytics?.activity_data ?? [];
+  const signalSummary = analytics?.group_signals?.summary;
+  const strongestPair = signalSummary?.strongest_alignment_pair;
 
   if (analyticsLoading) {
     return <LoadingSpinner message="Loading dashboard analytics..." />;
@@ -129,7 +129,7 @@ const Dashboard: React.FC = () => {
             Dashboard
           </h1>
           <p className="text-white/60">
-            Real-time insights from your Letterboxd community
+            Analytics over the latest shared Letterboxd dataset
           </p>
         </div>
         
@@ -149,14 +149,14 @@ const Dashboard: React.FC = () => {
             <span>Refresh All</span>
           </motion.button>
           
-          <motion.button 
+          <motion.button
             onClick={() => router.push('/profiles')}
             className="btn-primary flex items-center space-x-2"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
           >
             <PlusIcon className="w-5 h-5" />
-            <span>Add Profile</span>
+            <span>{isAdmin ? 'Manage Profiles' : 'Browse Profiles'}</span>
           </motion.button>
         </motion.div>
       </motion.div>
@@ -226,9 +226,9 @@ const Dashboard: React.FC = () => {
         transition={{ delay: 0.8 }}
       >
         <StatsCard
-          title="Active Scrapers"
-          value={profilesArray.filter(p => p.scraping_status === 'in_progress').length}
-          subtitle="Currently updating"
+          title="Pending Syncs"
+          value={profilesArray.filter(p => p.scraping_status !== 'completed').length}
+          subtitle="Profiles awaiting a local upload"
           icon={Activity}
           gradient="from-green-500/20 to-green-600/10"
           delay={0}
@@ -249,12 +249,7 @@ const Dashboard: React.FC = () => {
         
         <StatsCard
           title="Last Update"
-          value={profilesArray.length > 0 ? 
-            new Date(Math.max(...profilesArray
-              .filter(p => p.last_scraped_at)
-              .map(p => new Date(p.last_scraped_at!).getTime())
-            )).toLocaleDateString() : 'Never'
-          }
+          value={latestSyncTimestamp > 0 ? new Date(latestSyncTimestamp).toLocaleDateString() : 'Never'}
           subtitle="Most recent data sync"
           icon={Calendar}
           gradient="from-indigo-500/20 to-indigo-600/10"
@@ -262,12 +257,75 @@ const Dashboard: React.FC = () => {
         />
       </motion.div>
 
+      {/* Compact entry point for the dedicated investigation workspace */}
+      <motion.section
+        className="card-cinema overflow-hidden"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.9 }}
+      >
+        <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex items-start gap-4">
+            <div className="rounded-2xl border border-cinema-400/30 bg-cinema-500/15 p-3 text-cinema-300">
+              <Radar className="h-7 w-7" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-white">Spy Signals</h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">
+                Find who watched the same film on the same day, within a one-day gap,
+                or across a custom set of profiles.
+              </p>
+              {strongestPair && (
+                <p className="mt-3 text-sm text-cinema-300">
+                  Strongest current pair: {strongestPair.profiles.join(' + ')}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 xl:min-w-[420px]">
+            <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
+              <p className="text-2xl font-bold text-white">{signalSummary?.same_day_events ?? 0}</p>
+              <p className="mt-1 text-xs text-white/50">Same-day alerts</p>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Clock3 className="h-4 w-4 text-cinema-300" />
+                <p className="text-2xl font-bold text-white">{signalSummary?.one_day_gap_events ?? 0}</p>
+              </div>
+              <p className="mt-1 text-xs text-white/50">1-day echoes</p>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/15 px-4 py-3">
+              <p className="text-2xl font-bold text-white">{signalSummary?.shared_titles ?? 0}</p>
+              <p className="mt-1 text-xs text-white/50">Shared titles</p>
+            </div>
+          </div>
+
+          <motion.button
+            type="button"
+            onClick={() => router.push('/spy-signals')}
+            className="btn-primary flex shrink-0 items-center justify-center gap-2"
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+          >
+            Open Spy Signals
+            <ArrowRight className="h-5 w-5" />
+          </motion.button>
+        </div>
+        <RecentChangesCard
+          data={recentChangesQuery.data}
+          loading={recentChangesQuery.isLoading}
+          error={Boolean(recentChangesQuery.error)}
+          onRetry={() => void recentChangesQuery.refetch()}
+        />
+      </motion.section>
+
       {/* Profiles Grid */}
       <motion.div 
         className="space-y-6"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 1.0 }}
+        transition={{ delay: 1.05 }}
       >
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-white">
@@ -289,10 +347,7 @@ const Dashboard: React.FC = () => {
                   key={profile.username}
                   profile={profile}
                   index={index}
-                  onRefresh={handleRefreshProfile}
-                  onDelete={handleDeleteProfile}
-                  onStartScraping={handleStartScraping}
-                  isRefreshing={refreshingProfile === profile.username}
+                  onDelete={isAdmin ? handleDeleteProfile : undefined}
                   isDeleting={deletingProfile === profile.username}
                 />
               ))}
@@ -327,14 +382,14 @@ const Dashboard: React.FC = () => {
               </p>
               
               <div className="flex justify-center space-x-4">
-                <motion.button 
+                <motion.button
                   onClick={() => router.push('/profiles')}
                   className="btn-primary flex items-center space-x-2"
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                 >
                   <PlusIcon className="w-5 h-5" />
-                  <span>Add First Profile</span>
+                  <span>{isAdmin ? 'Manage Profiles' : 'Browse Profiles'}</span>
                 </motion.button>
                 
                 <motion.button 

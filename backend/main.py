@@ -1,29 +1,29 @@
-import asyncio
-import json
 import math
 import os
 import shutil
+import stat
 import tempfile
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from auth import ClerkUser, get_current_user
-from celery_app import celery_app
+from api.routes.activity import router as activity_router
+from api.routes.insights import router as insights_router
+from auth import ClerkUser, get_admin_user, get_upload_user
 from database.connection import get_db, init_db
 from database.repository import (
-    ProfileRepository, RatingRepository, ReviewRepository,
-    ScrapingJobRepository, AnalyticsRepository
+    ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
 from pydantic import BaseModel
+from services.data_coverage import (
+    extract_data_coverage,
+)
 from services.ingestion import unified_data_loader
 from services.profile_loader import load_profile_data
 from sqlalchemy.orm import Session
-from tasks.scrape import scrape_profile_task
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BASE_DIR)
@@ -33,9 +33,6 @@ load_dotenv(os.path.join(REPO_ROOT, ".env"))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 DATA_DIR = os.path.join(BASE_DIR, "..", "data")
 SCRAPED_DATA_DIR = os.path.join(DATA_DIR, "scraped")
-SSE_PROGRESS_TIMEOUT_SECONDS = int(os.getenv("SSE_PROGRESS_TIMEOUT_SECONDS", "900"))
-SSE_PROGRESS_POLL_INTERVAL_SECONDS = float(os.getenv("SSE_PROGRESS_POLL_INTERVAL_SECONDS", "1.5"))
-SCRAPE_STALE_JOB_MINUTES = int(os.getenv("SCRAPE_STALE_JOB_MINUTES", "20"))
 
 # Pydantic models for request/response
 class ProfileCreate(BaseModel):
@@ -49,14 +46,6 @@ class ProfileUpdate(BaseModel):
     location: Optional[str] = None
     website: Optional[str] = None
     is_active: Optional[bool] = None
-
-class ScrapingJobResponse(BaseModel):
-    id: int
-    status: str
-    progress_message: Optional[str]
-    progress_percentage: float
-    started_at: Optional[datetime]
-    error_message: Optional[str]
 
 
 def _get_cors_origins() -> List[str]:
@@ -81,28 +70,6 @@ def _get_cors_origins() -> List[str]:
     return deduped
 
 
-def _job_reference_time(job) -> Optional[datetime]:
-    return job.started_at or job.queued_at
-
-
-def _seconds_since(timestamp: Optional[datetime]) -> Optional[int]:
-    if not timestamp:
-        return None
-
-    now = datetime.now(timestamp.tzinfo) if timestamp.tzinfo else datetime.utcnow()
-    delta = now - timestamp
-    return max(0, int(delta.total_seconds()))
-
-
-def _is_job_stale(job, stale_minutes: int) -> bool:
-    if job.status not in ["queued", "in_progress"]:
-        return False
-    age_seconds = _seconds_since(_job_reference_time(job))
-    if age_seconds is None:
-        return False
-    return age_seconds >= stale_minutes * 60
-
-
 def _safe_json_float(value, default: Optional[float] = None) -> Optional[float]:
     if value is None:
         return default
@@ -115,50 +82,39 @@ def _safe_json_float(value, default: Optional[float] = None) -> Optional[float]:
     return numeric
 
 
-def _format_enqueue_error(exc: Exception) -> str:
-    raw_message = str(exc).strip()
-    if "Retry limit exceeded while trying to reconnect to the Celery redis result store backend" in raw_message:
-        return "Celery/Redis connection is stale. Restart API and Celery worker after confirming Redis is running."
-    if raw_message:
-        return raw_message
-    return exc.__class__.__name__
-
-
-def _enqueue_scrape_task(job_id: int, username: str):
-    """
-    Enqueue scraping task and try one connection reset when Celery backend got stale.
-    This commonly happens after local Redis/Celery restarts during development.
-    """
+def _refresh_dashboard_snapshot_cache(db: Session) -> None:
     try:
-        return scrape_profile_task.apply_async(args=[job_id, username])
+        AnalyticsRepository(db).refresh_dashboard_analytics_snapshot(
+            group_limit=6,
+            top_movies_limit=10,
+        )
     except Exception as exc:
-        if "Retry limit exceeded while trying to reconnect to the Celery redis result store backend" not in str(exc):
-            raise
-        try:
-            celery_app.close()
-        except Exception:
-            pass
-        return scrape_profile_task.apply_async(args=[job_id, username])
+        print(f"Warning: failed to refresh dashboard analytics snapshot: {exc}")
 
 
-def _serialize_scrape_job(job, username: str, stale_minutes: int) -> dict:
-    age_seconds = _seconds_since(_job_reference_time(job))
-    return {
-        "id": job.id,
-        "username": username,
-        "profile_id": job.profile_id,
-        "status": job.status,
-        "progress_message": job.progress_message,
-        "progress_percentage": job.progress_percentage,
-        "queued_at": job.queued_at.isoformat() if job.queued_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-        "error_message": job.error_message,
-        "retry_count": job.retry_count,
-        "job_type": job.job_type,
-        "age_seconds": age_seconds,
-        "is_stale": _is_job_stale(job, stale_minutes),
+def _record_owner_export_publication_consent(analyzer_profile, publish_owner_data: bool) -> None:
+    """Require an explicit admin attestation before owner-export data becomes public.
+
+    Official exports can contain records that are not visible on a public
+    Letterboxd profile. Spyboxd's analytics routes are public, so importing an
+    export is a publication action, not merely a file upload.
+    """
+    if getattr(analyzer_profile, "source_kind", None) != "letterboxd_export":
+        return
+    if not publish_owner_data:
+        raise PermissionError(
+            "Owner-export publication consent is required because official exports "
+            "can contain private or deleted account data."
+        )
+
+    manifest = dict(getattr(analyzer_profile, "manifest", {}) or {})
+    manifest["publication_consent"] = {
+        "granted": True,
+        "scope": "public_spyboxd_instance",
+        "policy_version": 1,
+        "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+    analyzer_profile.manifest = manifest
 
 
 app = FastAPI(
@@ -175,6 +131,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# New insight surfaces are additive; all legacy endpoints above and below remain intact.
+app.include_router(insights_router)
+app.include_router(activity_router)
 
 # Initialize database on startup
 @app.on_event("startup")
@@ -221,16 +181,41 @@ async def get_public_profile(username: str, db: Session = Depends(get_db)):
         "location": profile.location,
         "website": profile.website,
         "last_scraped_at": profile.last_scraped_at.isoformat() if profile.last_scraped_at else None,
+        "data_coverage": extract_data_coverage(profile.enhanced_metrics),
     }
 
 def extract_zip_file(uploaded_file, temp_dir):
-    """Extract uploaded zip file to temporary directory"""
-    zip_path = os.path.join(temp_dir, uploaded_file.filename)
-    with open(zip_path, "wb") as f:
-        f.write(uploaded_file.file.read())
+    """Extract a bounded ZIP without allowing archive paths to escape temp_dir."""
+    safe_filename = os.path.basename(uploaded_file.filename or "letterboxd-export.zip")
+    if not safe_filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only ZIP archives are supported")
 
-    extract_dir = os.path.join(temp_dir, uploaded_file.filename.replace('.zip', ''))
+    zip_path = os.path.join(temp_dir, safe_filename)
+    with open(zip_path, "wb") as f:
+        shutil.copyfileobj(uploaded_file.file, f)
+
+    extract_dir = os.path.join(temp_dir, os.path.splitext(safe_filename)[0] or "archive")
+    os.makedirs(extract_dir, exist_ok=True)
+    extract_root = os.path.realpath(extract_dir)
+    max_members = int(os.getenv("UPLOAD_MAX_ARCHIVE_MEMBERS", "50000"))
+    max_uncompressed_bytes = int(
+        os.getenv("UPLOAD_MAX_UNCOMPRESSED_BYTES", str(2 * 1024 * 1024 * 1024))
+    )
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        members = zip_ref.infolist()
+        if len(members) > max_members:
+            raise HTTPException(status_code=400, detail="ZIP archive contains too many files")
+        if sum(member.file_size for member in members) > max_uncompressed_bytes:
+            raise HTTPException(status_code=400, detail="ZIP archive is too large when extracted")
+
+        for member in members:
+            member_name = member.filename.replace("\\", "/")
+            target = os.path.realpath(os.path.join(extract_root, member_name))
+            if os.path.commonpath([extract_root, target]) != extract_root:
+                raise HTTPException(status_code=400, detail="ZIP archive contains an unsafe path")
+            member_type = (member.external_attr >> 16) & 0o170000
+            if member_type == stat.S_IFLNK:
+                raise HTTPException(status_code=400, detail="ZIP archive contains a symbolic link")
         zip_ref.extractall(extract_dir)
 
     # Find the actual data directory (might be nested)
@@ -244,18 +229,16 @@ def extract_zip_file(uploaded_file, temp_dir):
 @app.get("/profiles/")
 async def list_profiles(
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
 ):
     """Get all active profiles with their basic information"""
     profile_repo = ProfileRepository(db)
+    rating_repo = RatingRepository(db)
     
     profiles = profile_repo.get_all_profiles(active_only=True)
     
     profile_list = []
     for profile in profiles:
         profile_dict = profile.to_dict()
-        # Add real-time stats with proper distinction
-        rating_repo = RatingRepository(db)
         all_entries = rating_repo.get_ratings_by_profile(profile.id)
         
         # Calculate separate counts
@@ -272,6 +255,8 @@ async def list_profiles(
             profile_dict['avg_rating'] = sum(r.rating for r in all_entries if r.rating and r.rating > 0) / rated_films
         else:
             profile_dict['avg_rating'] = 0
+
+        profile_dict['data_coverage'] = extract_data_coverage(profile.enhanced_metrics)
             
         profile_list.append(profile_dict)
     
@@ -280,37 +265,103 @@ async def list_profiles(
 @app.get("/api/dashboard/analytics")
 async def get_consolidated_dashboard_analytics(
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
 ):
     """Get consolidated system-wide analytics for the main dashboard."""
     analytics_repo = AnalyticsRepository(db)
-    rating_repo = RatingRepository(db)
+    return analytics_repo.get_dashboard_analytics_snapshot(
+        group_limit=6,
+        top_movies_limit=10,
+    )
 
-    # Get system stats from the dedicated repository method
-    system_stats = analytics_repo.get_system_stats()
-    
-    # Get top-rated movies
-    top_movies = analytics_repo.get_top_rated_movies(limit=10)
-    
-    # Get global rating distribution
-    rating_distribution = rating_repo.get_global_rating_distribution()
 
-    # Get monthly activity data
-    activity_data = rating_repo.get_global_monthly_activity()
+@app.get("/api/spy-signals")
+async def get_spy_signals(
+    profiles: Optional[List[str]] = Query(default=None),
+    gap_days: int = Query(default=1, ge=0, le=7),
+    event_source: str = Query(default="ratings", pattern="^(ratings|events)$"),
+    db: Session = Depends(get_db),
+):
+    """Compare timing and rating signals for two or more completed profiles."""
+    profile_repo = ProfileRepository(db)
+    all_profiles = profile_repo.get_all_profiles(active_only=False)
+    profiles_by_username = {profile.username.casefold(): profile for profile in all_profiles}
 
+    requested_profiles: List[str] = []
+    seen_profiles = set()
+    for requested in profiles or []:
+        normalized = requested.strip()
+        dedupe_key = normalized.casefold()
+        if normalized and dedupe_key not in seen_profiles:
+            requested_profiles.append(normalized)
+            seen_profiles.add(dedupe_key)
+
+    if requested_profiles:
+        unknown_profiles = [
+            username
+            for username in requested_profiles
+            if username.casefold() not in profiles_by_username
+        ]
+        if unknown_profiles:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "One or more profiles were not found",
+                    "unknown_profiles": unknown_profiles,
+                },
+            )
+
+        unavailable_profiles = [
+            username
+            for username in requested_profiles
+            if not profiles_by_username[username.casefold()].is_active
+            or profiles_by_username[username.casefold()].scraping_status != "completed"
+        ]
+        if unavailable_profiles:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "One or more profiles are inactive or do not have completed data",
+                    "unavailable_profiles": unavailable_profiles,
+                },
+            )
+
+        selected_profiles = [
+            profiles_by_username[username.casefold()].username
+            for username in requested_profiles
+        ]
+    else:
+        selected_profiles = sorted(
+            profile.username
+            for profile in all_profiles
+            if profile.is_active and profile.scraping_status == "completed"
+        )
+
+    if len(selected_profiles) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "At least two active profiles with completed data are required",
+                "selected_profiles": selected_profiles,
+            },
+        )
+
+    group_signals = AnalyticsRepository(db).get_group_correlation_metrics(
+        usernames=selected_profiles,
+        limit=100,
+        gap_days=gap_days,
+        event_source=event_source,
+    )
     return {
-        "system_stats": system_stats,
-        "top_rated_movies": top_movies,
-        "rating_distribution": rating_distribution,
-        "activity_data": activity_data,
-        "timestamp": datetime.utcnow().isoformat()
+        "selected_profiles": selected_profiles,
+        "gap_days": gap_days,
+        "group_signals": group_signals,
     }
+
 
 @app.get("/profiles/{username}/analysis")
 async def get_analysis(
     username: str,
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
 ):
     """Get detailed analysis for a specific profile"""
     profile_repo = ProfileRepository(db)
@@ -353,6 +404,7 @@ async def get_analysis(
         "last_scraped_at": profile.last_scraped_at.isoformat() if profile.last_scraped_at else None,
         "scraping_status": profile.scraping_status,
         "enhanced_metrics": profile.enhanced_metrics or {},
+        "data_coverage": extract_data_coverage(profile.enhanced_metrics),
         "rating_distribution": rating_distribution,
         "monthly_stats": monthly_stats,
         "recent_ratings": [
@@ -391,7 +443,7 @@ async def get_analysis(
 async def create_profile(
     profile_data: ProfileCreate,
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
+    _user: ClerkUser = Depends(get_admin_user),
 ):
     """Create a new profile"""
     profile_repo = ProfileRepository(db)
@@ -407,6 +459,8 @@ async def create_profile(
         location=profile_data.location,
         website=profile_data.website
     )
+
+    _refresh_dashboard_snapshot_cache(db)
     
     return {"message": f"Profile created for {profile_data.username}", "profile": profile.to_dict()}
 
@@ -415,7 +469,7 @@ async def update_profile(
     username: str,
     profile_data: ProfileUpdate,
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
+    _user: ClerkUser = Depends(get_admin_user),
 ):
     """Update an existing profile"""
     profile_repo = ProfileRepository(db)
@@ -427,6 +481,8 @@ async def update_profile(
     # Update profile with provided data
     update_data = profile_data.dict(exclude_unset=True)
     updated_profile = profile_repo.update_profile(profile.id, **update_data)
+
+    _refresh_dashboard_snapshot_cache(db)
     
     return {"message": f"Profile updated for {username}", "profile": updated_profile.to_dict()}
 
@@ -434,7 +490,7 @@ async def update_profile(
 async def delete_profile(
     username: str,
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
+    _user: ClerkUser = Depends(get_admin_user),
 ):
     """Delete a profile and all associated data"""
     profile_repo = ProfileRepository(db)
@@ -453,6 +509,7 @@ async def delete_profile(
     
     # Delete from database (cascades to ratings, reviews, etc.)
     profile_repo.delete_profile(profile.id)
+    _refresh_dashboard_snapshot_cache(db)
     
     return {"message": f"Profile {username} deleted successfully"}
 
@@ -460,13 +517,15 @@ async def delete_profile(
 @app.post("/upload/")
 async def upload_files(
     files: List[UploadFile] = File(...),
+    publish_owner_data: bool = Form(default=False),
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
+    _user: ClerkUser = Depends(get_upload_user),
 ):
     """Upload multiple ZIP files containing Letterboxd data"""
     profile_repo = ProfileRepository(db)
     
     loaded_profiles = []
+    loaded_imports = []
     errors = []
     
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -483,26 +542,24 @@ async def upload_files(
                 
                 # Load profile data from extracted CSVs
                 analyzer_profile = load_profile_data(profile_path, username)
+                # Official Letterboxd exports carry the authoritative account
+                # username in profile.csv. Schema-v2 full-sync bundles retain
+                # their strict manifest identity inside load_profile_data.
+                username = analyzer_profile.username
+                _record_owner_export_publication_consent(
+                    analyzer_profile,
+                    publish_owner_data=publish_owner_data,
+                )
                 
-                # Create or update profile in database
+                # The unified loader owns snapshot metadata updates so an
+                # already-completed source replay remains a true no-op.
                 existing_profile = profile_repo.get_profile_by_username(username)
                 if existing_profile:
-                    profile = profile_repo.update_profile(
-                        existing_profile.id,
-                        avg_rating=analyzer_profile.avg_rating,
-                        total_reviews=analyzer_profile.total_reviews,
-                        join_date=analyzer_profile.join_date,
-                        last_scraped_at=datetime.utcnow(),
-                        scraping_status="completed"
-                    )
+                    profile = existing_profile
                 else:
                     profile = profile_repo.create_profile(
                         username=username,
-                        avg_rating=analyzer_profile.avg_rating,
-                        total_reviews=analyzer_profile.total_reviews,
-                        join_date=analyzer_profile.join_date,
-                        last_scraped_at=datetime.utcnow(),
-                        scraping_status="completed"
+                        scraping_status="processing",
                     )
                 
                 # Use unified data loader to prevent duplicates
@@ -510,519 +567,54 @@ async def upload_files(
                 print(f"Loaded {movies_loaded} movies for {username} via upload")
                 
                 loaded_profiles.append(username)
+                loaded_imports.append(
+                    {
+                        "username": username,
+                        "source_kind": analyzer_profile.source_kind,
+                        "movies_loaded": movies_loaded,
+                    }
+                )
                 
             except Exception as e:
                 errors.append(f"Failed to process {file.filename}: {str(e)}")
     
-    result = {"loaded_profiles": loaded_profiles}
+    result = {"loaded_profiles": loaded_profiles, "imports": loaded_imports}
     if errors:
         result["errors"] = errors
     
     if not loaded_profiles:
-        raise HTTPException(status_code=400, detail="No profiles could be loaded")
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "No profiles could be loaded", "errors": errors},
+        )
+
+    _refresh_dashboard_snapshot_cache(db)
     
     return result
-
-# Enhanced Scraper Endpoints
-@app.post("/scrape/profile/{username}")
-async def scrape_profile(
-    username: str,
-    db: Session = Depends(get_db),
-    user: ClerkUser = Depends(get_current_user),
-):
-    """Start scraping a Letterboxd profile. Requires admin role."""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Manual scraping requires admin role")
-    profile_repo = ProfileRepository(db)
-    job_repo = ScrapingJobRepository(db)
-    
-    # Create or get profile
-    profile = profile_repo.get_profile_by_username(username)
-    if not profile:
-        profile = profile_repo.create_profile(username=username, scraping_status="queued")
-    
-    # Check for existing active job
-    existing_job = job_repo.get_job_by_profile(profile.id)
-    if existing_job and existing_job.status in ["queued", "in_progress"]:
-        raise HTTPException(status_code=409, detail="Scraping already in progress for this user.")
-    
-    # Create new scraping job
-    job = job_repo.create_job(profile.id, job_type="full_scrape", status="queued")
-    
-    # Update profile status
-    profile_repo.update_profile(profile.id, scraping_status="queued")
-    
-    try:
-        queued_task = _enqueue_scrape_task(job.id, username)
-    except Exception as exc:
-        enqueue_error = _format_enqueue_error(exc)
-        job_repo.update_job_status(job.id, "failed", "Failed to enqueue scraping task", 0.0, enqueue_error)
-        profile_repo.update_profile(profile.id, scraping_status="error")
-        raise HTTPException(status_code=503, detail=f"Failed to enqueue scraping task: {enqueue_error}") from exc
-
-    return {
-        "message": f"Started scraping profile for {username}",
-        "job_id": job.id,
-        "task_id": queued_task.id,
-        "status": "queued",
-        "check_status_url": f"/scrape/status/{username}"
-    }
-
-@app.get("/scrape/status/{username}")
-async def get_scraping_status(
-    username: str,
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Get the current scraping status for a user."""
-    profile_repo = ProfileRepository(db)
-    job_repo = ScrapingJobRepository(db)
-    
-    profile = profile_repo.get_profile_by_username(username)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    
-    job = job_repo.get_job_by_profile(profile.id)
-    if not job:
-        return {
-            "status": profile.scraping_status,
-            "progress_message": "No active scraping job",
-            "progress_percentage": 0.0
-        }
-    
-    return {
-        "id": job.id,
-        "status": job.status,
-        "progress_message": job.progress_message,
-        "progress_percentage": job.progress_percentage,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "error_message": job.error_message
-    }
-
-
-@app.get("/scrape/jobs")
-async def list_scrape_jobs(
-    limit: int = Query(default=50, ge=1, le=200),
-    stale_only: bool = Query(default=False),
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """List recent scraping jobs with queue/stale metadata."""
-    job_repo = ScrapingJobRepository(db)
-    rows = job_repo.get_recent_jobs_with_profile(limit=limit)
-
-    jobs = []
-    for job, username in rows:
-        serialized = _serialize_scrape_job(job, username=username, stale_minutes=SCRAPE_STALE_JOB_MINUTES)
-        if stale_only and not serialized["is_stale"]:
-            continue
-        jobs.append(serialized)
-
-    counts = {
-        "total": len(jobs),
-        "queued": len([job for job in jobs if job["status"] == "queued"]),
-        "in_progress": len([job for job in jobs if job["status"] == "in_progress"]),
-        "completed": len([job for job in jobs if job["status"] == "completed"]),
-        "failed": len([job for job in jobs if job["status"] == "failed"]),
-        "stale": len([job for job in jobs if job["is_stale"]]),
-    }
-
-    return {
-        "jobs": jobs,
-        "counts": counts,
-        "stale_threshold_minutes": SCRAPE_STALE_JOB_MINUTES,
-        "generated_at": datetime.utcnow().isoformat(),
-    }
-
-
-@app.post("/scrape/jobs/{job_id}/retry")
-async def retry_scrape_job(
-    job_id: int,
-    db: Session = Depends(get_db),
-    user: ClerkUser = Depends(get_current_user),
-):
-    """Create a fresh scrape job for the same profile and enqueue it. Requires admin role."""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="Manual scraping requires admin role")
-    job_repo = ScrapingJobRepository(db)
-    profile_repo = ProfileRepository(db)
-
-    original_job = job_repo.get_job_by_id(job_id)
-    if not original_job:
-        raise HTTPException(status_code=404, detail="Scraping job not found")
-
-    profile = profile_repo.get_profile_by_id(original_job.profile_id)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile for scraping job not found")
-
-    active_jobs = job_repo.get_active_jobs_for_profile(profile.id, exclude_job_id=original_job.id)
-    if active_jobs:
-        raise HTTPException(status_code=409, detail="An active scraping job already exists for this profile")
-
-    new_retry_count = (original_job.retry_count or 0) + 1
-    new_job = job_repo.create_job(
-        profile.id,
-        job_type=original_job.job_type or "full_scrape",
-        status="queued",
-        retry_count=new_retry_count,
-    )
-    profile_repo.update_profile(profile.id, scraping_status="queued")
-
-    try:
-        queued_task = _enqueue_scrape_task(new_job.id, profile.username)
-    except Exception as exc:
-        enqueue_error = _format_enqueue_error(exc)
-        job_repo.update_job_status(
-            new_job.id,
-            "failed",
-            "Failed to enqueue retry task",
-            0.0,
-            enqueue_error,
-        )
-        profile_repo.update_profile(profile.id, scraping_status="error")
-        raise HTTPException(status_code=503, detail=f"Failed to enqueue retry task: {enqueue_error}") from exc
-
-    return {
-        "message": f"Retry queued for {profile.username}",
-        "job": _serialize_scrape_job(new_job, username=profile.username, stale_minutes=SCRAPE_STALE_JOB_MINUTES),
-        "task_id": queued_task.id,
-    }
-
-
-@app.post("/scrape/jobs/{job_id}/cancel")
-async def cancel_scrape_job(
-    job_id: int,
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Mark an active scraping job as failed to unblock the queue from UI."""
-    job_repo = ScrapingJobRepository(db)
-    profile_repo = ProfileRepository(db)
-
-    job = job_repo.get_job_by_id(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Scraping job not found")
-
-    if job.status not in ["queued", "in_progress"]:
-        raise HTTPException(status_code=409, detail="Only queued/in-progress jobs can be cancelled")
-
-    job_repo.update_job_status(
-        job.id,
-        "failed",
-        "Cancelled from UI",
-        job.progress_percentage if job.progress_percentage is not None else 0.0,
-        "Cancelled manually from scraper dashboard",
-    )
-
-    profile = profile_repo.get_profile_by_id(job.profile_id)
-    if profile:
-        remaining_active_jobs = job_repo.get_active_jobs_for_profile(profile.id, exclude_job_id=job.id)
-        if not remaining_active_jobs:
-            profile_repo.update_profile(profile.id, scraping_status="pending")
-
-    updated = job_repo.get_job_by_id(job.id)
-    username = profile.username if profile else "unknown"
-    return {
-        "message": f"Cancelled scraping job {job.id}",
-        "job": _serialize_scrape_job(updated, username=username, stale_minutes=SCRAPE_STALE_JOB_MINUTES) if updated else None,
-    }
-
-
-@app.post("/scrape/jobs/reset-stale")
-async def reset_stale_scrape_jobs(
-    stale_minutes: int = Query(default=SCRAPE_STALE_JOB_MINUTES, ge=1, le=720),
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Mark stale queued/in-progress jobs as failed to recover from worker crashes."""
-    job_repo = ScrapingJobRepository(db)
-    profile_repo = ProfileRepository(db)
-
-    active_jobs = job_repo.get_active_jobs()
-    reset_jobs = []
-
-    for job in active_jobs:
-        if not _is_job_stale(job, stale_minutes):
-            continue
-
-        profile = profile_repo.get_profile_by_id(job.profile_id)
-        username = profile.username if profile else f"profile:{job.profile_id}"
-
-        job_repo.update_job_status(
-            job.id,
-            "failed",
-            "Marked stale and reset from UI",
-            job.progress_percentage if job.progress_percentage is not None else 0.0,
-            f"Job exceeded stale threshold ({stale_minutes}m)",
-        )
-
-        if profile:
-            remaining_active_jobs = job_repo.get_active_jobs_for_profile(profile.id, exclude_job_id=job.id)
-            if not remaining_active_jobs:
-                profile_repo.update_profile(profile.id, scraping_status="pending")
-
-        refreshed = job_repo.get_job_by_id(job.id)
-        if refreshed:
-            reset_jobs.append(_serialize_scrape_job(refreshed, username=username, stale_minutes=stale_minutes))
-
-    return {
-        "message": f"Reset {len(reset_jobs)} stale jobs",
-        "reset_count": len(reset_jobs),
-        "stale_threshold_minutes": stale_minutes,
-        "jobs": reset_jobs,
-    }
-
-
-@app.get("/scrape/progress/{job_id}/stream")
-async def stream_scrape_progress(job_id: int, request: Request, db: Session = Depends(get_db)):
-    """
-    Stream scraping progress updates for a specific job via Server-Sent Events.
-    """
-    job_repo = ScrapingJobRepository(db)
-    initial_job = job_repo.get_job_by_id(job_id)
-    if not initial_job:
-        raise HTTPException(status_code=404, detail="Scraping job not found")
-
-    async def event_generator():
-        deadline = datetime.utcnow() + timedelta(seconds=SSE_PROGRESS_TIMEOUT_SECONDS)
-        last_payload = None
-
-        while True:
-            if await request.is_disconnected():
-                break
-
-            db.expire_all()
-            job = job_repo.get_job_by_id(job_id)
-            if not job:
-                payload = {
-                    "id": job_id,
-                    "status": "failed",
-                    "progress_message": "Scraping job not found",
-                    "progress_percentage": 0.0,
-                    "error_message": "Job no longer exists",
-                    "done": True,
-                }
-                yield f"data: {json.dumps(payload)}\n\n"
-                break
-
-            payload = {
-                "id": job.id,
-                "status": job.status,
-                "progress_message": job.progress_message,
-                "progress_percentage": job.progress_percentage,
-                "started_at": job.started_at.isoformat() if job.started_at else None,
-                "error_message": job.error_message,
-                "done": job.status in ["completed", "failed"],
-            }
-
-            if payload != last_payload:
-                yield f"data: {json.dumps(payload)}\n\n"
-                last_payload = payload
-
-            if payload["done"]:
-                break
-
-            if datetime.utcnow() >= deadline:
-                timeout_payload = {
-                    **payload,
-                    "progress_message": payload.get("progress_message") or "Progress stream timeout",
-                    "timeout": True,
-                    "done": True,
-                }
-                yield f"data: {json.dumps(timeout_payload)}\n\n"
-                break
-
-            await asyncio.sleep(SSE_PROGRESS_POLL_INTERVAL_SECONDS)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-@app.get("/scrape/available")
-async def get_available_profiles(
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Get all available scraped profiles."""
-    profile_repo = ProfileRepository(db)
-    profiles = profile_repo.get_all_profiles(active_only=True)
-    
-    available_profiles = []
-    for profile in profiles:
-        if profile.last_scraped_at and profile.scraping_status == "completed":
-            available_profiles.append({
-                "username": profile.username,
-                "scraped_at": profile.last_scraped_at.isoformat()
-            })
-    
-    return {"available_profiles": available_profiles}
-
-@app.delete("/scrape/{username}")
-async def clear_scraped_data(
-    username: str,
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Clear scraped data for a user - alias for /profiles/{username}/data"""
-    return await clear_profile_data(username, db, _user)
-
-# Analytics and Dashboard Endpoints
-
-@app.get("/profiles/suggestions/update")
-async def get_update_suggestions(
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Get profiles that need updating"""
-    profile_repo = ProfileRepository(db)
-    profiles_needing_update = profile_repo.get_profiles_requiring_update(hours=24)
-    
-    return {
-        "profiles_needing_update": [
-            {
-                "username": p.username,
-                "last_scraped_at": p.last_scraped_at.isoformat() if p.last_scraped_at else None,
-                "hours_since_update": int((datetime.utcnow() - p.last_scraped_at).total_seconds() / 3600) if p.last_scraped_at else None
-            }
-            for p in profiles_needing_update
-        ]
-    }
 
 @app.delete("/profiles/{username}/data")
 async def clear_profile_data(
     username: str,
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
+    _user: ClerkUser = Depends(get_admin_user),
 ):
     """Clear scraped data for a user."""
     profile_repo = ProfileRepository(db)
-    
+
     profile = profile_repo.get_profile_by_username(username)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    
-    # Reset profile scraping status
-    profile_repo.update_profile(
-        profile.id,
-        scraping_status="pending",
-        last_scraped_at=None,
-        avg_rating=0.0,
-        total_reviews=0
-    )
+
+    profile_repo.clear_profile_data(profile.id)
     
     # Clean up data directory
     data_path = os.path.join(SCRAPED_DATA_DIR, username)
     if os.path.exists(data_path):
         shutil.rmtree(data_path)
+
+    _refresh_dashboard_snapshot_cache(db)
     
     return {"message": f"Cleared all scraped data for {username}"}
-
-# Analysis Endpoints (required by frontend)
-@app.get("/analysis/comparative")
-async def get_comparative_analysis(
-    usernames: List[str] = Query(default=[]),
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Get comparative analysis between multiple profiles"""
-    if not usernames:
-        raise HTTPException(status_code=400, detail="usernames parameter is required")
-    
-    # Support both ?usernames=a,b and ?usernames=a&usernames=b forms.
-    username_list: List[str] = []
-    for raw_value in usernames:
-        username_list.extend([value.strip() for value in raw_value.split(",") if value.strip()])
-    username_list = list(dict.fromkeys(username_list))
-    
-    if len(username_list) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 usernames required for comparison")
-        
-    profile_repo = ProfileRepository(db)
-    rating_repo = RatingRepository(db)
-    
-    profiles_data = []
-    for username in username_list:
-        profile = profile_repo.get_profile_by_username(username)
-        if not profile:
-            raise HTTPException(status_code=404, detail=f"Profile '{username}' not found")
-        
-        ratings = rating_repo.get_ratings_by_profile(profile.id)
-        rating_distribution = rating_repo.get_rating_distribution(profile.id)
-        
-        profiles_data.append({
-            "profile": profile.to_dict(),
-            "ratings_count": len(ratings),
-            "rating_distribution": rating_distribution,
-            "recent_ratings": [
-                {
-                    "movie_title": r.movie_title,
-                    "movie_year": r.movie_year,
-                    "rating": _safe_json_float(r.rating),
-                    "watched_date": r.watched_date.isoformat() if r.watched_date else None
-                } for r in ratings[:10]
-            ]
-        })
-    
-    # Simple comparison metrics
-    comparison_result = {
-        "profiles": profiles_data,
-        "comparison_metrics": {
-            "total_profiles": len(profiles_data),
-            "avg_movies_per_profile": sum(p["ratings_count"] for p in profiles_data) / len(profiles_data),
-            "rating_spread": {
-                username_list[i]: profiles_data[i]["profile"]["avg_rating"] 
-                for i in range(len(username_list))
-            }
-        }
-    }
-    
-    return comparison_result
-
-@app.get("/analysis/recommendations/{username}")
-async def get_recommendations(
-    username: str,
-    db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_current_user),
-):
-    """Get movie recommendations for a specific profile"""
-    profile_repo = ProfileRepository(db)
-    rating_repo = RatingRepository(db)
-    analytics_repo = AnalyticsRepository(db)
-    
-    profile = profile_repo.get_profile_by_username(username)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    
-    # Get user's ratings for analysis
-    user_ratings = rating_repo.get_ratings_by_profile(profile.id)
-    
-    # Get highly rated movies from other users as recommendations
-    top_movies = analytics_repo.get_top_rated_movies(limit=20)
-    
-    # Simple recommendation logic: suggest top-rated movies the user hasn't seen
-    user_watched_titles = {r.movie_title for r in user_ratings}
-    recommendations = [
-        movie for movie in top_movies 
-        if movie['title'] not in user_watched_titles
-    ][:10]
-    
-    return {
-        "username": username,
-        "user_stats": {
-            "total_movies": len(user_ratings),
-            "avg_rating": _safe_json_float(profile.avg_rating, 0.0),
-            "favorite_genres": []  # Could be enhanced with genre analysis
-        },
-        "recommendations": recommendations,
-        "recommendation_type": "popular_unwatched",
-        "total_recommendations": len(recommendations)
-    }
 
 if __name__ == "__main__":
     import uvicorn

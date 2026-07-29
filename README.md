@@ -1,286 +1,259 @@
-# 🎬 Spyboxd
+# Spyboxd
 
-A modern, full-stack application for analyzing and tracking Letterboxd profiles with real-time data synchronization, advanced analytics, and a cinema-inspired UI.
+Spyboxd is a shared Letterboxd analytics app built around one production-safe ingestion model:
 
-## ✨ Features
+- scrape a complete public-profile snapshot on a residential machine
+- upload the generated dataset to the API
+- poll Letterboxd's public RSS feed conservatively for later diary/review activity
+- serve cached analytics from PostgreSQL
 
-### 🎯 Core Functionality
-- **Profile Management**: Add, update, and manage multiple Letterboxd profiles
-- **Real-time Scraping**: Queue-backed scraping with progress tracking
-- **Advanced Analytics**: Comprehensive statistics and insights
-- **Data Persistence**: SQLAlchemy ORM with PostgreSQL-ready migrations
-- **Export & Backup**: Data export and backup capabilities
+The backend does not perform server-side full-HTML scraping from the VPS. RSS
+is a separate additions-only observation layer over the last full snapshot.
 
-### 🎨 User Experience  
-- **Cinema-themed UI**: Glassmorphism design with film-inspired aesthetics
-- **Smooth Animations**: Framer Motion for fluid transitions and micro-interactions
-- **Responsive Design**: Mobile-first approach with TailwindCSS
-- **Real-time Updates**: Manual refresh with optimistic UI updates
-- **Interactive Charts**: Chart.js visualizations for data insights
+## Stack
 
-### 🔧 Technical Stack
-- **Backend**: FastAPI + Celery workers
-- **Frontend**: Next.js App Router + React 19 + Clerk auth
-- **Database**: SQLAlchemy ORM with PostgreSQL (legacy SQLite import supported)
-- **Queue/Broker**: Celery + Redis
-- **Styling**: TailwindCSS with custom cinema theme
-- **Charts**: Chart.js with react-chartjs-2
-- **Animations**: Framer Motion for advanced animations
+- Backend: FastAPI + SQLAlchemy + PostgreSQL
+- Frontend: Next.js App Router + React Query + Clerk
+- Local sync runner: Python scripts calling the HTML scraper from a residential machine
 
-## 🚀 Quick Start
+## Features
+
+Existing routes remain available:
+
+- Dashboard for group-level activity and aggregate statistics
+- Spy Signals for same-day and configurable day-gap co-watch detection
+- Profiles for browsing and managing tracked accounts
+- Analysis for a single profile's ratings and activity
+
+Additive insight routes:
+
+- Compare: Pair Dossier, Taste DNA, and Signal Calendar for selected profiles
+- Watch Together: ranked unseen-by-all or shared-watchlist candidates with group-fit explanations and country-aware provider availability
+- Data coverage: per-surface freshness, row counts, and honest missing-data warnings
+- Optional TMDB enrichment: genres, runtimes, credits, keywords, artwork, and regional watch providers
+
+The timing views use individual `watch_events`, so repeat diary entries are preserved. Sequence is presented as a follow pattern, not proof of influence.
+
+`GET /api/spy-signals` keeps `event_source=ratings` as its compatibility default. The Spy Signals frontend opts into `event_source=events`, which uses authoritative active diary events and falls back per profile to the legacy stored date only when no authoritative diary has ever been imported.
+
+## Current Architecture
+
+```text
+Residential machine
+  └─ scripts/local_full_sync.py
+       └─ backend/scraper_html.py
+            └─ ZIP upload to /upload/
+
+API / PostgreSQL
+  ├─ services/profile_loader.py
+  ├─ services/ingestion.py
+  ├─ services/rss_incremental.py + rss_worker.py
+  ├─ sync lineage + canonical movies + per-profile film state + watch events
+  └─ dashboard snapshot cache in system_metrics.metrics
+
+Frontend
+  └─ public reads for browsing and analytics
+  └─ Clerk auth only for admin mutations and user personalization
+```
+
+## Quick Start
 
 ### Prerequisites
-- Python 3.9+
+
+- Python 3.12+
 - Node.js 18+
 - PostgreSQL 15+
-- Redis 7+
 
-### Local Development (No Scripts)
+### Local development
 
 ```bash
-# Clone and enter project
 git clone <repository-url>
 cd letterboxd-reviewer
 
-# Python env + backend deps
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Frontend deps
-cd frontend
-npm install
-cd ..
-
-# Env files
 cp .env.example .env
 cp frontend/.env.example frontend/.env.local
 
-# Ensure Postgres + Redis are running, and database exists
 createdb spyboxd
+PYTHONPATH=backend alembic upgrade head
 
-# Run migrations
-.venv/bin/alembic upgrade head
+cd frontend
+npm install
+cd ..
 ```
 
-Start the app in 3 terminals:
+Run the app:
 
 ```bash
-# Terminal 1: API
 source .venv/bin/activate
 cd backend
 uvicorn main:app --reload --port 8000
 ```
 
 ```bash
-# Terminal 2: Worker (solo pool is safer on macOS)
-source .venv/bin/activate
-cd backend
-celery -A celery_app.celery_app worker --loglevel=info --pool=solo
-```
-
-```bash
-# Terminal 3: Frontend
 cd frontend
 npm run dev
 ```
 
-Open:
-- Frontend: `http://localhost:3000`
-- API health: `http://localhost:8000/health`
+## Residential Sync Workflow
 
-## 📁 Project Structure
+The HTML scraper is fail-closed: a schema-v2 bundle is written only when every requested public surface finishes and its manifest counts match the CSVs. Empty public watchlists and lists require an explicit Letterboxd empty state; favorites require either a recognized favorites container (including Letterboxd's empty owner container) or an explicit empty state. When a retained sync directory is reused, only scraper-owned CSVs for newly unavailable surfaces are removed, so stale private data cannot enter the next bundle and unrelated files remain untouched.
 
-```
-letterboxd-reviewer/
-├── 📁 backend/                 # FastAPI backend application
-│   ├── 📁 config/             # Configuration files
-│   ├── 📁 core/               # Core analysis logic
-│   ├── 📁 database/           # Database models & repositories
-│   ├── 📁 services/           # Data ingestion/scrape orchestration
-│   ├── 📁 tasks/              # Celery task entrypoints
-│   ├── main.py                # FastAPI application entry point
-│   ├── celery_app.py          # Celery app configuration
-│   └── scraper.py             # Web scraping functionality
-├── 📁 frontend/               # Next.js frontend application
-│   ├── 📁 public/             # Static assets
-│   ├── 📁 src/
-│   │   ├── 📁 components/     # Reusable React components
-│   │   ├── 📁 app/            # App Router pages/layouts
-│   │   └── 📁 services/       # API integration
-│   ├── middleware.ts          # Clerk route protection
-│   ├── package.json
-│   └── tailwind.config.js     # TailwindCSS configuration
-├── 📁 alembic/                # Database migrations
-├── 📁 data/                   # Application data
-│   ├── 📁 scraped/           # Scraped profile data
-│   ├── 📁 exports/           # Exported data files
-│   └── 📁 backups/           # Database backups
-├── docker-compose.yml         # Local full-stack deployment
-├── .env.example              # Environment variables template
-├── .gitignore               # Git ignore rules
-├── requirements.txt         # Python dependencies
-└── README.md               # This file
-```
-
-## 🎯 Usage Guide
-
-### 1. 🏠 Dashboard
-- View system-wide statistics and metrics
-- Monitor active scraping jobs
-- Access quick actions for profile management
-- Interactive charts for data visualization
-
-### 2. 👥 Profile Manager
-- Add new Letterboxd profiles for tracking
-- Update existing profile information
-- Initiate data scraping operations
-- View scraping status and progress
-
-### 3. 🔄 Data Scraping
-- Background scraping with progress tracking
-- Real-time status updates
-- Comprehensive data collection (ratings, reviews, lists)
-- Error handling and retry mechanisms
-
-### 4. 📊 Analytics
-- Rating distribution analysis
-- Monthly activity trends
-- Profile comparison tools
-- Export functionality for further analysis
-
-## 🔧 API Endpoints
-
-### Profiles
-- `GET /profiles/` - List all profiles
-- `POST /profiles/create` - Create new profile
-- `PUT /profiles/{username}` - Update profile
-- `DELETE /profiles/{username}` - Delete profile
-- `GET /profiles/{username}/analysis` - Get detailed analysis
-- `GET /public/profile/{username}` - Public profile snapshot for share pages/OG
-
-### Scraping
-- `POST /scrape/profile/{username}` - Start scraping
-- `GET /scrape/status/{username}` - Check scraping status
-- `GET /scrape/progress/{job_id}/stream` - Stream live progress (SSE)
-- `DELETE /profiles/{username}/data` - Clear scraped data
-
-Note: the scraping endpoint enqueues a Celery task; make sure Redis and the worker are running locally.
-
-### Analytics
-- `GET /api/dashboard/analytics` - System-wide statistics
-- `GET /profiles/suggestions/update` - Profiles needing updates
-
-### Health
-- `GET /health` - Liveness endpoint for deployment healthchecks
-
-Most routes require a valid Clerk bearer token. Public routes are limited to `/health`, `/public/profile/{username}`, and the scrape progress stream endpoint.
-
-## 🎨 Design System
-
-### Color Palette
-- **Cinema Orange**: Primary brand color (`#e65100`)
-- **Noir Black**: Deep backgrounds (`#0f172a`)
-- **Glass Effects**: Transparency with backdrop blur
-- **Gradient Accents**: Dynamic color transitions
-
-### Components
-- **Glassmorphism Cards**: Modern card design with transparency
-- **Animated Buttons**: Hover effects and micro-interactions
-- **Interactive Charts**: Responsive data visualizations
-- **Status Indicators**: Real-time status with animations
-
-## 🔒 Environment Configuration
-
-Create a `.env` file based on `.env.example`:
+Set an ingestion token on the API:
 
 ```bash
-# Copy the example file
-cp .env.example .env
-
-# Edit with your configuration
-DATABASE_URL=postgresql+psycopg://localhost/spyboxd
-API_HOST=localhost
-API_PORT=8000
-FRONTEND_URL=http://localhost:3000
-CORS_ALLOWED_ORIGINS=http://localhost:3000
-# Optional Celery tuning (defaults to solo/1 on macOS, prefork/2 elsewhere)
-# CELERY_WORKER_POOL=solo
-# CELERY_WORKER_CONCURRENCY=1
-# SCRAPE_STALE_JOB_MINUTES=20
-# CLERK_JWKS_URL=https://your-instance.clerk.accounts.dev/.well-known/jwks.json
-# CLERK_FRONTEND_API=https://your-instance.clerk.accounts.dev
+INGESTION_API_TOKEN=replace-with-a-long-random-secret
 ```
 
-For frontend env vars, copy `frontend/.env.example` and set:
-- `NEXT_PUBLIC_API_BASE_URL` (browser API URL)
-- `API_URL` (server-side API URL for Next routes)
-- Clerk publishable/secret keys
-
-### Local Postgres Workflow
-
-1. Start PostgreSQL locally and create a `spyboxd` database.
-2. Copy `.env.example` to `.env` and confirm `DATABASE_URL`.
-3. Run `alembic upgrade head` from the repo root to create the schema.
-4. Optional: import existing SQLite data with `python -m backend.database.migrate import-sqlite`.
-
-Useful database commands:
+Single profile sync:
 
 ```bash
-# Inspect the active database target
-python -m backend.database.migrate check
-
-# Import the legacy SQLite database into Postgres
-python -m backend.database.migrate import-sqlite --source ./data/letterboxd_analyzer.db
+python scripts/local_full_sync.py <username> \
+  --api-base-url http://localhost:8000 \
+  --upload-token "$INGESTION_API_TOKEN"
 ```
 
-## 🚀 Deployment
+Repeatable batch sync:
 
-### Docker Compose (Ready)
+1. Copy `scripts/sync-profiles.example.json` to `sync-profiles.json`.
+2. Fill in usernames and API URL.
+3. Export `INGESTION_API_TOKEN`.
+4. Run:
+
 ```bash
-# Build and start all services (frontend, api, worker, postgres, redis)
-docker compose up --build -d
-
-# Tail logs
-docker compose logs -f api worker frontend
-
-# Stop
-docker compose down
+python scripts/batch_full_sync.py --config sync-profiles.json
 ```
 
-### Manual Deployment
-1. Set up a production database (PostgreSQL recommended)
-2. Configure backend env (`DATABASE_URL`, `REDIS_URL`, Clerk JWKS, CORS origins)
-3. Run migrations: `alembic upgrade head`
-4. Run API: `uvicorn main:app --host 0.0.0.0 --port 8000`
-5. Run worker: `celery -A celery_app.celery_app worker --loglevel=info`
-6. Build/start frontend with Next.js (`npm run build && npm run start`)
+For a local correction run that should write directly to the configured database, first scrape to a retained directory and then import its validated bundle:
 
-## 🤝 Contributing
+```bash
+python backend/scraper_html.py <username> --output data/scraped/<username>
+python scripts/import_local_archive.py <username> data/scraped/<username>
+```
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push to branch: `git push origin feature/amazing-feature`
-5. Open a Pull Request
+The importer accepts either a directory or ZIP, requires the full schema-v2 manifest, checks username and dataset counts, rejects unsafe ZIP members, and commits one profile sync atomically.
 
-## 📝 License
+## Incremental RSS Activity
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+After a profile has one completed full sync, the RSS worker checks only the
+official `https://letterboxd.com/<username>/rss/` feed. It upserts observed
+public diary entries and reviews by their stable feed/viewing ID. It never
+deletes data, replaces the full snapshot, or treats the feed's rolling window
+as complete history.
 
-## 🙏 Acknowledgments
+Run one due-profile cycle:
 
-- **Letterboxd**: For the amazing platform and data
-- **React Community**: For the excellent ecosystem
-- **FastAPI**: For the modern Python web framework
-- **TailwindCSS**: For the utility-first CSS framework
+```bash
+PYTHONPATH=backend python -m rss_worker --once
+```
 
-## 📬 Support
+Run the long-lived worker:
 
-- **Issues**: Report bugs and feature requests via GitHub Issues
-- **Discussions**: Join community discussions in GitHub Discussions
-- **Documentation**: Check the `/docs` folder for detailed guides
+```bash
+PYTHONPATH=backend python -m rss_worker
+```
 
----
+The default interval is two hours, requests are sequential with a three-second
+pause, and failures use exponential backoff capped at 24 hours. These settings
+are configurable through the `SPYBOXD_RSS_*` variables in `.env.example`.
+RSS cannot prove deletions or observe watchlist, favorites, private activity,
+profile metadata, or complete list membership, so periodic/manual residential
+full syncs remain the reconciliation source.
 
-**Made with ❤️ for film enthusiasts and data lovers**
+Public HTML does not expose every account-only Letterboxd field. Tags, comments, and private data remain marked unavailable instead of being inferred. A user's official Letterboxd export can still be supported as a separate source without weakening the public-snapshot contract.
+
+## Optional TMDB Enrichment
+
+Letterboxd ingestion works without TMDB. After setting `TMDB_API_TOKEN` (preferred) or `TMDB_API_KEY`, enrich imported canonical movies separately:
+
+```bash
+python scripts/enrich_tmdb.py --region DE
+```
+
+The enrichment command caches details and provider results, retries transient failures, and supports bounded or dry runs. Streaming availability is region-specific and is displayed as unavailable when the cache has no matching provider data.
+
+## Runtime Model
+
+- `POST /upload/` is the write path for profile data.
+- `GET /api/dashboard/analytics` serves a cached snapshot, not live recomputation on every request.
+- The snapshot is refreshed after uploads, profile deletes, and data clears.
+- Read endpoints are public.
+- Admin mutations require a Clerk user with `public_metadata.is_admin = true`.
+- The local sync runner can authenticate with `X-Upload-Token`.
+
+## Main Endpoints
+
+### Public reads
+
+- `GET /health`
+- `GET /profiles/`
+- `GET /profiles/{username}/analysis`
+- `GET /public/profile/{username}`
+- `GET /api/dashboard/analytics`
+- `GET /api/spy-signals?event_source=ratings|events`
+- `GET /api/data-coverage`
+- `GET /api/pair-dossier`
+- `GET /api/taste-dna`
+- `GET /api/signal-calendar`
+- `GET /api/watch-together`
+- `GET /api/watch-provider-regions`
+
+### Admin / ingestion
+
+- `POST /profiles/create`
+- `PUT /profiles/{username}`
+- `DELETE /profiles/{username}`
+- `DELETE /profiles/{username}/data`
+- `POST /upload/`
+
+## Docker Compose
+
+Local compose runs:
+
+- `postgres`
+- `api`
+- `rss-poller`
+- `frontend`
+
+Start it with:
+
+```bash
+docker compose up --build
+```
+
+## Repo Layout
+
+```text
+backend/
+  main.py
+  auth.py
+  rss_worker.py
+  database/
+  services/
+  scraper_html.py
+
+frontend/
+  src/app/
+  src/components/
+  src/services/
+  src/views/
+
+scripts/
+  local_full_sync.py
+  batch_full_sync.py
+  import_local_archive.py
+  enrich_tmdb.py
+  sync-profiles.example.json
+```
+
+See [`DATABASE.md`](DATABASE.md) for the normalized schema, compatibility tables, and data-integrity behavior.
+
+## Notes
+
+- `backend/scraper_html.py` remains because it powers the residential sync runner.
+- The normalized data foundation is additive. Legacy `ratings`, `reviews`, and old API contracts remain available while new insights read canonical movies, profile-film state, and active watch events.
+- Dashboard group metrics are precomputed into a cached snapshot for production reads.
+- Legacy server-side scraping, Celery workers, Redis, SSE progress streams, and comparative scrape tooling have been removed from the active app path.

@@ -16,9 +16,22 @@ from .models import Base
 
 TABLE_COPY_ORDER = [
     "profiles",
+    "profile_syncs",
+    "profile_feed_states",
+    "sync_datasets",
+    "movies",
     "ratings",
     "reviews",
+    "profile_films",
+    "watch_events",
+    "watchlist_items",
     "movie_lists",
+    "movie_list_items",
+    "profile_favorite_movies",
+    "profile_source_activities",
+    "profile_data_changes",
+    "movie_enrichments",
+    "movie_watch_providers",
     "scraping_jobs",
     "system_metrics",
 ]

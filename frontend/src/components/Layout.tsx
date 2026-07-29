@@ -10,54 +10,81 @@ import {
   ChartBarIcon,
   UserGroupIcon,
   PlayIcon,
+  SignalIcon,
+  ScaleIcon,
 } from '@heroicons/react/24/outline';
 import {
   HomeIcon as HomeIconSolid,
   ChartBarIcon as ChartBarIconSolid,
+  SignalIcon as SignalIconSolid,
+  ScaleIcon as ScaleIconSolid,
 } from '@heroicons/react/24/solid';
+import { Menu, UsersRound, X } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
+
+const NAVIGATION_ITEMS = [
+  {
+    path: '/',
+    label: 'Dashboard',
+    icon: HomeIcon,
+    activeIcon: HomeIconSolid,
+    description: 'Overview & Analytics',
+  },
+  {
+    path: '/spy-signals',
+    label: 'Spy Signals',
+    icon: SignalIcon,
+    activeIcon: SignalIconSolid,
+    description: 'Same-day & Gap Alerts',
+  },
+  {
+    path: '/compare',
+    label: 'Compare',
+    icon: ScaleIcon,
+    activeIcon: ScaleIconSolid,
+    description: 'Understand Overlap',
+  },
+  {
+    path: '/watch-together',
+    label: 'Watch Together',
+    icon: UsersRound,
+    activeIcon: UsersRound,
+    description: 'Find a Group Pick',
+  },
+  {
+    path: '/profiles',
+    label: 'Profiles',
+    icon: UserGroupIcon,
+    activeIcon: UserGroupIcon,
+    description: 'Browse & Manage',
+  },
+  {
+    path: '/analysis',
+    label: 'Analysis',
+    icon: ChartBarIcon,
+    activeIcon: ChartBarIconSolid,
+    description: 'Profile Deep Dive',
+  },
+] as const;
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const pathname = usePathname();
   const { isSignedIn } = useAuth();
   const [isLoaded, setIsLoaded] = useState(false);
   const [currentTime, setCurrentTime] = useState<Date | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     setIsLoaded(true);
     setCurrentTime(new Date());
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
   }, []);
 
-  const navigationItems = [
-    {
-      path: '/',
-      label: 'Dashboard',
-      icon: HomeIcon,
-      activeIcon: HomeIconSolid,
-      description: 'Overview & Analytics'
-    },
-    {
-      path: '/profiles',
-      label: 'Profiles',
-      icon: UserGroupIcon,
-      activeIcon: UserGroupIcon,
-      description: 'Manage & Scrape'
-    },
-    {
-      path: '/analysis',
-      label: 'Analysis',
-      icon: ChartBarIcon,
-      activeIcon: ChartBarIconSolid,
-      description: 'Deep Insights'
-    }
-  ];
-
-  const isActive = (path: string) => pathname === path;
+  const isActive = (path: string) => pathname === path || (path !== '/' && pathname.startsWith(`${path}/`));
+  const activeItem = NAVIGATION_ITEMS.find((item) => isActive(item.path));
+  const isInsightWorkspace = isActive('/compare') || isActive('/watch-together');
 
   return (
     <motion.div 
@@ -68,21 +95,22 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     >
       {/* Sidebar Navigation */}
       <motion.nav 
-        className="w-full lg:w-80 bg-black/20 backdrop-blur-xl border-r border-white/10 flex-shrink-0"
+        className="relative z-50 w-full flex-shrink-0 border-b border-white/10 bg-[#081321]/95 backdrop-blur-xl lg:sticky lg:top-0 lg:h-screen lg:w-72 lg:border-b-0 lg:border-r lg:bg-black/20"
         initial={{ x: -100, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ duration: 0.6, delay: 0.2, ease: "easeOut" }}
       >
-        <div className="p-6 h-full flex flex-col">
+        <div className="flex h-full flex-col px-4 py-3 lg:p-6">
           {/* Logo & Branding */}
-          <motion.div 
-            className="flex items-center space-x-3 mb-8"
+          <motion.div
+            className="flex items-center justify-between lg:mb-8"
             whileHover={{ scale: 1.02 }}
             transition={{ type: "spring", stiffness: 300 }}
           >
-            <div className="relative">
-              <motion.div 
-                className="w-12 h-12 bg-gradient-to-br from-cinema-400 to-cinema-600 rounded-xl flex items-center justify-center shadow-glow"
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <motion.div
+                className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-cinema-400 to-cinema-600 shadow-glow lg:h-12 lg:w-12"
                 animate={{ 
                   boxShadow: [
                     "0 0 20px rgba(229, 81, 0, 0.3)",
@@ -92,21 +120,28 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 }}
                 transition={{ duration: 3, repeat: Infinity }}
               >
-                <PlayIcon className="w-6 h-6 text-white" />
-              </motion.div>
+                  <PlayIcon className="h-5 w-5 text-white lg:h-6 lg:w-6" />
+                </motion.div>
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-white text-glow">Spyboxd</h1>
+                <p className="hidden text-sm font-medium text-white/60 lg:block">User Analytics</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-white text-glow">
-                Spyboxd
-              </h1>
-              <p className="text-sm text-white/60 font-medium">
-                User Analytics
-              </p>
-            </div>
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen((open) => !open)}
+              className="grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-white/70 hover:bg-white/5 hover:text-white lg:hidden"
+              aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
+              aria-expanded={mobileNavOpen}
+            >
+              {mobileNavOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </button>
           </motion.div>
 
-          {/* System Status */}
-          <motion.div 
+          <div className={`${mobileNavOpen ? 'mt-4 flex' : 'hidden'} min-h-0 flex-1 flex-col lg:mt-0 lg:flex`}>
+            {/* System Status */}
+            <motion.div
             className="mb-8 p-4 rounded-xl bg-white/5 border border-white/10 backdrop-blur-sm"
             initial={{ y: 20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
@@ -123,11 +158,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <div className="text-xs text-white/50">
               {currentTime?.toLocaleTimeString() ?? ''}
             </div>
-          </motion.div>
+            </motion.div>
 
-          {/* Navigation Items */}
-          <div className="space-y-2 flex-1">
-            {navigationItems.map((item, index) => {
+            {/* Navigation Items */}
+            <div className="flex-1 space-y-2">
+            {NAVIGATION_ITEMS.map((item, index) => {
               const Icon = isActive(item.path) ? item.activeIcon : item.icon;
               return (
                 <motion.div
@@ -136,7 +171,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                   animate={{ x: 0, opacity: 1 }}
                   transition={{ delay: 0.3 + (index * 0.1) }}
                 >
-                  <Link href={item.path}>
+                  <Link href={item.path} onClick={() => setMobileNavOpen(false)}>
                     <motion.div
                       className={`
                         relative group flex items-center space-x-4 p-4 rounded-xl transition-all duration-300
@@ -189,6 +224,17 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 </motion.div>
               );
             })}
+            </div>
+
+            <div className="mt-5 border-t border-white/10 pt-4 lg:hidden">
+              {isSignedIn ? (
+                <div className="flex items-center gap-3 text-sm text-white/60"><UserButton /> Signed in</div>
+              ) : (
+                <SignInButton mode="modal">
+                  <button className="btn-primary w-full px-4 py-2 text-sm">Sign in</button>
+                </SignInButton>
+              )}
+            </div>
           </div>
         </div>
       </motion.nav>
@@ -197,7 +243,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       <main className="flex-1 flex flex-col min-h-screen lg:min-h-auto">
         {/* Top Header */}
         <motion.header 
-          className="bg-black/10 backdrop-blur-md border-b border-white/10 px-6 py-4"
+          className={`${isInsightWorkspace ? 'hidden' : 'hidden lg:block'} border-b border-white/10 bg-black/10 px-6 py-4 backdrop-blur-md`}
           initial={{ y: -50, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           transition={{ duration: 0.6, delay: 0.3 }}
@@ -210,7 +256,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 animate={{ x: 0, opacity: 1 }}
                 transition={{ delay: 0.5 }}
               >
-                {navigationItems.find(item => isActive(item.path))?.label || 'Dashboard'}
+                {activeItem?.label || 'Dashboard'}
               </motion.h2>
               <motion.p 
                 className="text-white/60 text-sm mt-1"
@@ -218,7 +264,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 animate={{ x: 0, opacity: 1 }}
                 transition={{ delay: 0.6 }}
               >
-                {navigationItems.find(item => isActive(item.path))?.description || 'Welcome to Spyboxd'}
+                {activeItem?.description || 'Welcome to Spyboxd'}
               </motion.p>
             </div>
             
@@ -248,7 +294,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         </motion.header>
 
         {/* Page Content with Animation */}
-        <div className="flex-1 p-6">
+        <div className="flex-1 p-4 sm:p-6">
           <AnimatePresence mode="wait">
             <motion.div
               key={pathname}
