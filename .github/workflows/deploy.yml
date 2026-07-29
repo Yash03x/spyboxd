@@ -6,6 +6,7 @@ on:
     types: [completed]
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -27,16 +28,83 @@ jobs:
       url: https://spyboxd.com
     env:
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+      REMOTE_BUNDLE: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz
+      REMOTE_CHECKSUM: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz.sha256
 
     steps:
-      - name: Release validated commit to Hetzner
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
+      - name: Download exact CI release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: spyboxd-release-${{ env.RELEASE_SHA }}
+          path: transfer
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Verify exact release artifact
+        run: |
+          set -Eeuo pipefail
+
+          artifact_dir="${GITHUB_WORKSPACE}/transfer"
+          bundle_name="spyboxd-release-${RELEASE_SHA}.tar.gz"
+          checksum_name="${bundle_name}.sha256"
+          bundle_path="${artifact_dir}/${bundle_name}"
+          checksum_path="${artifact_dir}/${checksum_name}"
+
+          [[ -f "${bundle_path}" && ! -L "${bundle_path}" ]]
+          [[ -f "${checksum_path}" && ! -L "${checksum_path}" ]]
+          [[ "$(find "${artifact_dir}" -mindepth 1 -maxdepth 1 | wc -l)" -eq 2 ]]
+          [[ "$(find "${artifact_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2 ]]
+
+          read -r expected_hash expected_name extra <"${checksum_path}"
+          [[ "${expected_hash}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${expected_name}" == "${bundle_name}" && -z "${extra:-}" ]]
+          (
+            cd "${artifact_dir}"
+            sha256sum --check --strict "${checksum_name}"
+          )
+
+      - name: Clear exact remote artifact paths
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.VPS_HOST }}
           username: spyboxd-deploy
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          envs: RELEASE_SHA
+          envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
+          script: |
+            set -eu
+
+            case "${RELEASE_SHA}" in
+              *[!0-9a-f]*|'') exit 64 ;;
+            esac
+            [ "${#RELEASE_SHA}" -eq 40 ] || exit 64
+            [ "${REMOTE_BUNDLE}" = "/tmp/spyboxd-release-${RELEASE_SHA}.tar.gz" ] || exit 64
+            [ "${REMOTE_CHECKSUM}" = "${REMOTE_BUNDLE}.sha256" ] || exit 64
+            rm -f -- "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}"
+
+      - name: Copy exact release artifact to Hetzner
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: spyboxd-deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: transfer/spyboxd-release-${{ env.RELEASE_SHA }}.tar.gz,transfer/spyboxd-release-${{ env.RELEASE_SHA }}.tar.gz.sha256
+          target: /tmp
+          strip_components: 1
+          overwrite: true
+          command_timeout: 15m
+
+      - name: Release validated commit to Hetzner
+        id: activate
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: spyboxd-deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
           command_timeout: 45m
           script: |
             set -eu
@@ -51,6 +119,46 @@ jobs:
               echo "Release SHA must contain exactly 40 hexadecimal characters" >&2
               exit 64
             fi
+            if [ "${REMOTE_BUNDLE}" != "/tmp/spyboxd-release-${RELEASE_SHA}.tar.gz" ] \
+                || [ "${REMOTE_CHECKSUM}" != "${REMOTE_BUNDLE}.sha256" ]; then
+              echo "Remote artifact paths do not match the validated release SHA" >&2
+              exit 64
+            fi
+
+            release_runner=""
+            cleanup_activation() {
+              if [ -n "${release_runner}" ]; then
+                rm -f -- "${release_runner}"
+              fi
+              rm -f -- "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}"
+            }
+            trap cleanup_activation EXIT
+
+            if [ ! -f "${REMOTE_BUNDLE}" ] || [ -L "${REMOTE_BUNDLE}" ] \
+                || [ ! -f "${REMOTE_CHECKSUM}" ] || [ -L "${REMOTE_CHECKSUM}" ]; then
+              echo "Transferred release artifact is incomplete or unsafe" >&2
+              exit 1
+            fi
+
+            checksum_hash="$(awk 'NR == 1 { print $1 }' "${REMOTE_CHECKSUM}")"
+            checksum_name="$(awk 'NR == 1 { print $2 }' "${REMOTE_CHECKSUM}")"
+            checksum_lines="$(awk 'END { print NR }' "${REMOTE_CHECKSUM}")"
+            case "${checksum_hash}" in
+              *[!0-9a-f]*|'')
+                echo "Remote checksum is invalid" >&2
+                exit 1
+                ;;
+            esac
+            if [ "${#checksum_hash}" -ne 64 ] \
+                || [ "${checksum_name}" != "$(basename "${REMOTE_BUNDLE}")" ] \
+                || [ "${checksum_lines}" -ne 1 ]; then
+              echo "Remote checksum does not identify the exact release bundle" >&2
+              exit 1
+            fi
+            (
+              cd /tmp
+              sha256sum --check --strict "$(basename "${REMOTE_CHECKSUM}")"
+            )
 
             if git --git-dir=/opt/spyboxd/repository rev-parse --is-bare-repository >/dev/null 2>&1; then
               repository_git() {
@@ -71,10 +179,112 @@ jobs:
               echo "Fetched commit does not match the CI-validated SHA" >&2
               exit 1
             fi
-            repository_git merge-base --is-ancestor "${RELEASE_SHA}" refs/remotes/origin/main
+            main_sha="$(repository_git rev-parse --verify 'refs/remotes/origin/main^{commit}')"
+            if [ "${main_sha}" != "${RELEASE_SHA}" ]; then
+              echo "Skipping stale CI artifact because main now points to ${main_sha}" >&2
+              exit 75
+            fi
 
             release_runner="$(mktemp /tmp/spyboxd-release.XXXXXX)"
-            trap 'rm -f -- "${release_runner}"' EXIT
             repository_git show "${RELEASE_SHA}:deploy/release.sh" >"${release_runner}"
             chmod 0700 "${release_runner}"
-            "${release_runner}" "${RELEASE_SHA}"
+            "${release_runner}" "${RELEASE_SHA}" "${REMOTE_BUNDLE}"
+
+      - name: Verify public release from GitHub runner
+        id: external_smoke
+        run: |
+          set -Eeuo pipefail
+
+          api_ready=false
+          for attempt in $(seq 1 15); do
+            if response="$(curl --silent --show-error --fail --max-time 10 \
+                --header 'Cache-Control: no-cache' \
+                https://api.spyboxd.com/ready 2>/dev/null)" \
+                && jq --exit-status --arg expected_revision "${RELEASE_SHA}" \
+                  '.status == "ready" and .revision == $expected_revision' \
+                  <<<"${response}" >/dev/null
+            then
+              api_ready=true
+              break
+            fi
+            sleep 2
+          done
+          [[ "${api_ready}" == true ]]
+
+          frontend_ready=false
+          for attempt in $(seq 1 15); do
+            status_code="$(curl --silent --show-error --output /dev/null \
+              --write-out '%{http_code}' --max-time 10 \
+              --header 'Cache-Control: no-cache' \
+              https://spyboxd.com/ 2>/dev/null || true)"
+            case "${status_code}" in
+              2??)
+                frontend_ready=true
+                break
+                ;;
+            esac
+            sleep 2
+          done
+          [[ "${frontend_ready}" == true ]]
+
+      - name: Roll back externally unhealthy activation
+        if: always() && steps.activate.outcome == 'success' && steps.external_smoke.outcome == 'failure'
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: spyboxd-deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: RELEASE_SHA
+          command_timeout: 10m
+          script: |
+            set -eu
+
+            case "${RELEASE_SHA}" in
+              *[!0-9a-f]*|'') exit 64 ;;
+            esac
+            [ "${#RELEASE_SHA}" -eq 40 ] || exit 64
+
+            if git --git-dir=/opt/spyboxd/repository rev-parse --is-bare-repository >/dev/null 2>&1; then
+              repository_git() {
+                git --git-dir=/opt/spyboxd/repository "$@"
+              }
+            elif git -C /opt/spyboxd rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              repository_git() {
+                git -C /opt/spyboxd "$@"
+              }
+            else
+              echo "No Spyboxd Git repository is available for rollback" >&2
+              exit 1
+            fi
+
+            repository_git fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
+            resolved_sha="$(repository_git rev-parse --verify "${RELEASE_SHA}^{commit}")"
+            [ "${resolved_sha}" = "${RELEASE_SHA}" ]
+            repository_git merge-base --is-ancestor "${RELEASE_SHA}" refs/remotes/origin/main
+
+            rollback_runner="$(mktemp /tmp/spyboxd-rollback.XXXXXX)"
+            trap 'rm -f -- "${rollback_runner}"' EXIT
+            repository_git show "${RELEASE_SHA}:deploy/rollback.sh" >"${rollback_runner}"
+            chmod 0700 "${rollback_runner}"
+            "${rollback_runner}" previous
+
+      - name: Clean exact remote artifact paths
+        if: always()
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: spyboxd-deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
+          script: |
+            set -eu
+
+            case "${RELEASE_SHA}" in
+              *[!0-9a-f]*|'') exit 64 ;;
+            esac
+            [ "${#RELEASE_SHA}" -eq 40 ] || exit 64
+            [ "${REMOTE_BUNDLE}" = "/tmp/spyboxd-release-${RELEASE_SHA}.tar.gz" ] || exit 64
+            [ "${REMOTE_CHECKSUM}" = "${REMOTE_BUNDLE}.sha256" ] || exit 64
+            rm -f -- "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}"

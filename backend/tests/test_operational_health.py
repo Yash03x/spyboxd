@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from database.models import Profile, ProfileFeedState
 from main import health_check, readiness_check, rss_health_check
 from services.operational_health import (
+    application_revision,
     readiness_report,
     repository_schema_heads,
     rss_operational_report,
@@ -46,6 +47,7 @@ def test_readiness_accepts_exact_repository_head():
         database_engine.dispose()
 
     assert report["status"] == "ready"
+    assert report["revision"] is None
     assert report["checks"] == {"database": "ok", "schema": "current"}
 
 
@@ -109,7 +111,27 @@ def test_liveness_remains_independent_of_database_and_schema():
     result = asyncio.run(health_check())
 
     assert result["status"] == "ok"
-    assert set(result) == {"status", "timestamp"}
+    assert result["revision"] is None
+    assert set(result) == {"status", "timestamp", "revision"}
+
+
+def test_application_revision_accepts_only_an_exact_sha(monkeypatch):
+    revision = "a" * 40
+    monkeypatch.setenv("SPYBOXD_REVISION", revision.upper())
+    assert application_revision() == revision
+
+    monkeypatch.setenv("SPYBOXD_REVISION", "main")
+    assert application_revision() is None
+
+
+def test_application_revision_reads_release_marker(monkeypatch, tmp_path):
+    revision = "b" * 40
+    marker = tmp_path / "REVISION"
+    marker.write_text(f"{revision}\n", encoding="utf-8")
+    monkeypatch.delenv("SPYBOXD_REVISION", raising=False)
+    monkeypatch.setattr("services.operational_health.REVISION_PATH", marker)
+
+    assert application_revision() == revision
 
 
 def test_rss_report_is_healthy_when_every_active_feed_is_fresh():

@@ -190,6 +190,7 @@ class TMDBClient:
         base_url: str = DEFAULT_API_BASE_URL,
         timeout_seconds: float = 20.0,
         max_retries: int = 3,
+        request_pause_seconds: float = 0.0,
         session: Optional[requests.Session] = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -204,10 +205,13 @@ class TMDBClient:
             raise ValueError("timeout_seconds must be positive")
         if max_retries < 0:
             raise ValueError("max_retries cannot be negative")
+        if not math.isfinite(request_pause_seconds) or request_pause_seconds < 0:
+            raise ValueError("request_pause_seconds must be a finite non-negative number")
 
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        self.request_pause_seconds = request_pause_seconds
         self.session = session or requests.Session()
         self.sleeper = sleeper
         self.session.headers.setdefault("Accept", "application/json")
@@ -222,6 +226,18 @@ class TMDBClient:
             or os.getenv("TMDB_API_TOKEN")
             or os.getenv("TMDB_READ_ACCESS_TOKEN")
         )
+        request_pause_raw = os.getenv("TMDB_REQUEST_PAUSE_SECONDS", "0")
+        try:
+            request_pause_seconds = float(request_pause_raw)
+        except ValueError as exc:
+            raise TMDBConfigurationError(
+                "TMDB_REQUEST_PAUSE_SECONDS must be a non-negative number."
+            ) from exc
+        if not math.isfinite(request_pause_seconds) or request_pause_seconds < 0:
+            raise TMDBConfigurationError(
+                "TMDB_REQUEST_PAUSE_SECONDS must be a finite non-negative number."
+            )
+        kwargs.setdefault("request_pause_seconds", request_pause_seconds)
         return cls(
             bearer_token=bearer_token,
             api_key=os.getenv("TMDB_API_KEY"),
@@ -292,6 +308,8 @@ class TMDBClient:
 
         url = f"{self.base_url}/{path.lstrip('/')}"
         for attempt in range(self.max_retries + 1):
+            if self.request_pause_seconds:
+                self.sleeper(self.request_pause_seconds)
             try:
                 response = self.session.get(
                     url,

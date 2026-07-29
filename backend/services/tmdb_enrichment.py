@@ -211,6 +211,7 @@ def _select_candidates(
             Movie.title,
             Movie.release_year,
             Movie.tmdb_id,
+            MovieEnrichment.movie_id,
             MovieEnrichment.expires_at,
             MovieEnrichment.raw_payload,
         )
@@ -230,8 +231,16 @@ def _select_candidates(
         )
     }
 
-    candidates: List[EnrichmentCandidate] = []
-    for movie_id, title, release_year, tmdb_id, expires_at, raw_payload in query.all():
+    ranked_candidates: List[tuple[tuple[int, int, int], EnrichmentCandidate]] = []
+    for (
+        movie_id,
+        title,
+        release_year,
+        tmdb_id,
+        enrichment_movie_id,
+        expires_at,
+        raw_payload,
+    ) in query.all():
         details_expiry = _aware_utc(expires_at)
         details_are_stale = details_expiry is None or details_expiry <= now
         provider_expiry = _provider_region_expiry(raw_payload, region)
@@ -243,19 +252,30 @@ def _select_candidates(
         needs_providers = refresh or needs_details or providers_are_stale
         if not needs_details and not needs_providers:
             continue
-        candidates.append(
-            EnrichmentCandidate(
-                movie_id=int(movie_id),
-                title=title,
-                release_year=release_year,
-                tmdb_id=int(tmdb_id) if tmdb_id is not None else None,
-                needs_details=needs_details,
-                needs_providers=needs_providers,
+        candidate = EnrichmentCandidate(
+            movie_id=int(movie_id),
+            title=title,
+            release_year=release_year,
+            tmdb_id=int(tmdb_id) if tmdb_id is not None else None,
+            needs_details=needs_details,
+            needs_providers=needs_providers,
+        )
+        # A bounded timer must not let newly imported movies wait behind a
+        # large synchronized cache-expiry backlog. Manual/unbounded runs still
+        # receive every candidate; this changes only processing order.
+        ranked_candidates.append(
+            (
+                (
+                    0 if enrichment_movie_id is None else 1,
+                    0 if tmdb_id is None else 1,
+                    int(movie_id),
+                ),
+                candidate,
             )
         )
-        if limit is not None and len(candidates) >= limit:
-            break
-    return candidates
+    ranked_candidates.sort(key=lambda item: item[0])
+    candidates = [candidate for _, candidate in ranked_candidates]
+    return candidates[:limit] if limit is not None else candidates
 
 
 def _chunks(values: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:

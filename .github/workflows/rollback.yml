@@ -1,0 +1,102 @@
+name: Roll Back Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_revision:
+        description: "Retained 40-character release SHA, or 'previous'"
+        required: true
+        default: previous
+        type: string
+      confirmation:
+        description: "Type ROLLBACK to confirm (database migrations are not downgraded)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spyboxd-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Guarded retained-release rollback
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://spyboxd.com
+    env:
+      ROLLBACK_TARGET: ${{ inputs.target_revision }}
+      ROLLBACK_SCRIPT_SHA: ${{ github.sha }}
+      ROLLBACK_CONFIRMATION: ${{ inputs.confirmation }}
+
+    steps:
+      - name: Verify explicit confirmation and target
+        run: |
+          if [[ "${ROLLBACK_CONFIRMATION}" != "ROLLBACK" ]]; then
+            echo "Confirmation must exactly match ROLLBACK" >&2
+            exit 64
+          fi
+          if [[ "${ROLLBACK_TARGET}" != previous ]] \
+              && [[ ! "${ROLLBACK_TARGET}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Rollback target must be 'previous' or a lowercase full Git SHA" >&2
+            exit 64
+          fi
+
+      - name: Activate retained release
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: spyboxd-deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: ROLLBACK_TARGET,ROLLBACK_SCRIPT_SHA
+          command_timeout: 15m
+          script: |
+            set -eu
+
+            case "${ROLLBACK_SCRIPT_SHA}" in
+              *[!0-9a-f]*|'')
+                echo "Invalid rollback script SHA" >&2
+                exit 64
+                ;;
+            esac
+            if [ "${#ROLLBACK_SCRIPT_SHA}" -ne 40 ]; then
+              echo "Rollback script SHA must contain exactly 40 hexadecimal characters" >&2
+              exit 64
+            fi
+
+            case "${ROLLBACK_TARGET}" in
+              previous)
+                ;;
+              *[!0-9a-f]*|'')
+                echo "Rollback target must be 'previous' or a lowercase full Git SHA" >&2
+                exit 64
+                ;;
+            esac
+            if [ "${ROLLBACK_TARGET}" != previous ] && [ "${#ROLLBACK_TARGET}" -ne 40 ]; then
+              echo "Rollback target SHA must contain exactly 40 hexadecimal characters" >&2
+              exit 64
+            fi
+
+            repository_git() {
+              git --git-dir=/opt/spyboxd/repository "$@"
+            }
+            repository_git rev-parse --is-bare-repository >/dev/null
+            repository_git fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
+            resolved_script_sha="$(repository_git rev-parse --verify "${ROLLBACK_SCRIPT_SHA}^{commit}")"
+            if [ "${resolved_script_sha}" != "${ROLLBACK_SCRIPT_SHA}" ]; then
+              echo "Rollback workflow revision is not available on the server" >&2
+              exit 1
+            fi
+            repository_git merge-base --is-ancestor "${ROLLBACK_SCRIPT_SHA}" refs/remotes/origin/main
+
+            rollback_runner="$(mktemp /tmp/spyboxd-rollback.XXXXXX)"
+            trap 'rm -f -- "${rollback_runner}"' EXIT
+            repository_git show "${ROLLBACK_SCRIPT_SHA}:deploy/rollback.sh" >"${rollback_runner}"
+            chmod 0700 "${rollback_runner}"
+            "${rollback_runner}" "${ROLLBACK_TARGET}"

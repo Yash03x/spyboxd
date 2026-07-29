@@ -18,6 +18,7 @@ from services.tmdb_client import (
     select_best_movie_match,
 )
 from services.tmdb_enrichment import (
+    _select_candidates,
     build_enrichment_values,
     enrich_movies,
     provider_rows_for_region,
@@ -166,6 +167,24 @@ class TMDBClientTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.25])
         self.assertEqual(len(session.calls), 2)
 
+    def test_environment_can_add_conservative_request_pacing(self):
+        sleeps = []
+        session = FakeHTTPSession([FakeResponse(200, {"results": []})])
+        with patch.dict(
+            "os.environ",
+            {
+                "TMDB_API_TOKEN": "read-token",
+                "TMDB_REQUEST_PAUSE_SECONDS": "0.2",
+            },
+            clear=True,
+        ):
+            client = TMDBClient.from_env(session=session, sleeper=sleeps.append)
+
+        client.search_movies("Arrival")
+
+        self.assertEqual(sleeps, [0.2])
+        self.assertEqual(len(session.calls), 1)
+
     def test_matcher_rejects_a_wrong_year_remake(self):
         results = [
             {"id": 1, "title": "Suspiria", "release_date": "2018-10-26", "popularity": 20},
@@ -269,7 +288,7 @@ class TMDBEnrichmentMappingTests(unittest.TestCase):
     def test_dry_run_selects_stale_movies_without_client_or_writes(self):
         stale = datetime.now(timezone.utc) - timedelta(days=1)
         session = FakeSelectionSession(
-            [(1, "Arrival", 2016, None, stale, {})],
+            [(1, "Arrival", 2016, None, None, stale, {})],
         )
 
         stats = enrich_movies(session, None, region="DE", limit=1, dry_run=True)
@@ -287,6 +306,7 @@ class TMDBEnrichmentMappingTests(unittest.TestCase):
                     "Arrival",
                     2016,
                     329865,
+                    1,
                     fresh,
                     {
                         "_spyboxd": {
@@ -302,11 +322,32 @@ class TMDBEnrichmentMappingTests(unittest.TestCase):
         self.assertEqual(stats.selected, 0)
         self.assertTrue(session.rolled_back)
 
+    def test_bounded_selection_prioritizes_missing_enrichment_and_tmdb_identity(self):
+        stale = datetime.now(timezone.utc) - timedelta(days=1)
+        session = FakeSelectionSession(
+            [
+                (1, "Stale cached", 2001, 101, 1, stale, {}),
+                (2, "New import", 2002, 202, None, None, {}),
+                (3, "Missing identity", 2003, None, 3, stale, {}),
+            ],
+        )
+
+        candidates = _select_candidates(
+            session,
+            region="DE",
+            now=datetime.now(timezone.utc),
+            refresh=False,
+            limit=2,
+            movie_ids=None,
+        )
+
+        self.assertEqual([candidate.movie_id for candidate in candidates], [2, 3])
+
     def test_identity_conflict_is_reported_and_skipped_before_any_write(self):
         session = FakeIdentityConflictSession(
             [
-                (8713, "The Girlfriend", 2025, None, None, {}),
-                (9000, "Definitely Missing", 2025, None, None, {}),
+                (8713, "The Girlfriend", 2025, None, None, None, {}),
+                (9000, "Definitely Missing", 2025, None, None, None, {}),
             ],
             [(1196348, 147, "The Girlfriend")],
         )

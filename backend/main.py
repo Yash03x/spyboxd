@@ -27,7 +27,11 @@ from services.data_coverage import (
 )
 from services.ingestion import unified_data_loader
 from services.profile_loader import load_profile_data
-from services.operational_health import readiness_report, rss_operational_report
+from services.operational_health import (
+    application_revision,
+    readiness_report,
+    rss_operational_report,
+)
 from sqlalchemy.orm import Session
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -187,7 +191,11 @@ app.include_router(activity_router)
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "revision": application_revision(),
+    }
 
 
 @app.get("/ready")
