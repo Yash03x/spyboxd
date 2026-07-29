@@ -1,6 +1,7 @@
 import logging
 import math
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -44,10 +45,38 @@ _OWNER_EXPORT_CONSENT_ERROR = (
     "can contain private or deleted account data."
 )
 _UNEXPECTED_UPLOAD_ERROR = "An unexpected processing error occurred."
+_PROFILE_DIRECTORY_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
 class _OwnerExportPublicationConsentRequired(PermissionError):
     """Expected upload validation failure with a fixed, public-safe message."""
+
+
+def _remove_scraped_profile_directory(username: str) -> None:
+    """Remove one legacy scrape directory without deriving a path from input.
+
+    Profile data now lives in PostgreSQL, but older installations may still
+    have a per-profile directory below ``SCRAPED_DATA_DIR``. Enumerating that
+    fixed root keeps the deletion target filesystem-derived, while the strict
+    component check and symlink rejection prevent traversal outside it.
+    """
+
+    if not _PROFILE_DIRECTORY_COMPONENT.fullmatch(username):
+        raise HTTPException(status_code=400, detail="Invalid username/path")
+
+    try:
+        entries = os.scandir(SCRAPED_DATA_DIR)
+    except FileNotFoundError:
+        return
+
+    with entries:
+        for entry in entries:
+            if entry.name != username:
+                continue
+            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                raise HTTPException(status_code=400, detail="Invalid profile data path")
+            shutil.rmtree(entry.path)
+            return
 
 # Pydantic models for request/response
 class ProfileCreate(BaseModel):
@@ -540,13 +569,8 @@ async def delete_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     
-    # Clean up data directory
-    data_path = os.path.normpath(os.path.join(SCRAPED_DATA_DIR, username))
-    # Ensure the final path is within SCRAPED_DATA_DIR
-    if not data_path.startswith(os.path.abspath(SCRAPED_DATA_DIR) + os.sep):
-        raise HTTPException(status_code=400, detail="Invalid username/path")
-    if os.path.exists(data_path):
-        shutil.rmtree(data_path)
+    # Clean up any legacy on-disk scrape owned by this canonical profile.
+    _remove_scraped_profile_directory(profile.username)
     
     # Delete from database (cascades to ratings, reviews, etc.)
     profile_repo.delete_profile(profile.id)
@@ -656,12 +680,10 @@ async def clear_profile_data(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
+    # Validate and remove any legacy on-disk scrape before committing the
+    # database clear, so a rejected path cannot leave a partial operation.
+    _remove_scraped_profile_directory(profile.username)
     profile_repo.clear_profile_data(profile.id)
-    
-    # Clean up data directory
-    data_path = os.path.join(SCRAPED_DATA_DIR, username)
-    if os.path.exists(data_path):
-        shutil.rmtree(data_path)
 
     _refresh_dashboard_snapshot_cache(db)
     
