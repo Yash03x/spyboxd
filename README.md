@@ -156,9 +156,10 @@ Run the long-lived worker:
 PYTHONPATH=backend python -m rss_worker
 ```
 
-The default interval is two hours, requests are sequential with a three-second
-pause, and failures use exponential backoff capped at 24 hours. These settings
-are configurable through the `SPYBOXD_RSS_*` variables in `.env.example`.
+The default per-profile interval is ten minutes. The worker checks the due queue
+once a minute, sends feed requests sequentially with a three-second pause, and
+uses exponential failure backoff capped at 24 hours. These settings are
+configurable through the `SPYBOXD_RSS_*` environment variables.
 RSS cannot prove deletions or observe watchlist, favorites, private activity,
 profile metadata, or complete list membership, so periodic/manual residential
 full syncs remain the reconciliation source.

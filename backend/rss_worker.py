@@ -170,8 +170,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
 
-    interval_seconds = _positive_int("SPYBOXD_RSS_POLL_INTERVAL_SECONDS", 7200)
-    sweep_seconds = _positive_int("SPYBOXD_RSS_SWEEP_SECONDS", 300)
+    interval_seconds = _positive_int("SPYBOXD_RSS_POLL_INTERVAL_SECONDS", 600)
+    sweep_seconds = _positive_int("SPYBOXD_RSS_SWEEP_SECONDS", 60)
     max_backoff_seconds = _positive_int("SPYBOXD_RSS_MAX_BACKOFF_SECONDS", 86400)
     batch_size = _positive_int("SPYBOXD_RSS_BATCH_SIZE", 50)
     pause_seconds = _positive_float("SPYBOXD_RSS_REQUEST_PAUSE_SECONDS", 3.0)
