@@ -22,7 +22,8 @@ class AdditiveMigrationContractTests(unittest.TestCase):
         config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
         script = ScriptDirectory.from_config(config)
 
-        self.assertEqual(script.get_heads(), ["20260729_0006"])
+        self.assertEqual(script.get_heads(), ["20260729_0007"])
+        self.assertEqual(script.get_revision("20260729_0007").down_revision, "20260729_0006")
         self.assertEqual(script.get_revision("20260729_0006").down_revision, "20260729_0005")
         self.assertEqual(script.get_revision("20260729_0005").down_revision, "20260729_0004")
         self.assertEqual(script.get_revision("20260729_0004").down_revision, "20260728_0003")
@@ -55,7 +56,15 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "profiles": {"display_name", "followers_count", "following_count", "last_profile_sync_id"},
             "ratings": {"movie_id", "first_seen_profile_sync_id", "last_seen_profile_sync_id", "removed_at"},
             "reviews": {"movie_id", "source_review_key", "published_at", "removed_at", "tags"},
-            "movies": {"canonical_key", "letterboxd_id", "tmdb_id", "imdb_id"},
+            "movies": {
+                "canonical_key",
+                "letterboxd_id",
+                "tmdb_id",
+                "imdb_id",
+                "tmdb_lookup_attempted_at",
+                "tmdb_lookup_expires_at",
+                "tmdb_lookup_key",
+            },
             "profile_films": {"profile_id", "movie_id", "legacy_rating_id", "watch_count", "rewatch_count"},
             "watch_events": {"profile_id", "movie_id", "event_key", "watched_date", "superseded_at"},
             "profile_data_changes": {"profile_id", "profile_sync_id", "change_type", "before", "after"},
@@ -119,7 +128,7 @@ class AdditiveMigrationPostgresTests(unittest.TestCase):
             connection.execute(text("SET TRANSACTION READ ONLY"))
             try:
                 current_revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                self.assertEqual(current_revision, "20260729_0006")
+                self.assertEqual(current_revision, "20260729_0007")
 
                 counts = connection.execute(
                     text(

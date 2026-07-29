@@ -393,6 +393,9 @@ class Movie(Base):
     poster_url = Column(String(500), nullable=True)
     tmdb_id = Column(BigInteger, nullable=True)
     imdb_id = Column(String(32), nullable=True)
+    tmdb_lookup_attempted_at = Column(DateTime(timezone=True), nullable=True)
+    tmdb_lookup_expires_at = Column(DateTime(timezone=True), nullable=True)
+    tmdb_lookup_key = Column(String(64), nullable=True)
     first_seen_profile_sync_id = Column(
         BigInteger,
         ForeignKey("profile_syncs.id", ondelete="SET NULL"),
@@ -447,6 +450,7 @@ class Movie(Base):
         ),
         Index("ix_movies_normalized_title_year", "normalized_title", "release_year"),
         Index("ix_movies_letterboxd_slug", "letterboxd_slug"),
+        Index("ix_movies_tmdb_lookup_expires_at", "tmdb_lookup_expires_at"),
     )
 
 class Rating(Base):

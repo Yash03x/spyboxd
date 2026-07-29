@@ -53,7 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--cache-days",
         type=positive_integer,
         default=int(os.getenv("TMDB_CACHE_DAYS", "30")),
-        help="Number of days before details/providers are eligible for refresh.",
+        help=(
+            "Number of days before details/providers refresh or an unsuccessful "
+            "identity lookup is retried."
+        ),
     )
     parser.add_argument(
         "--batch-size",
