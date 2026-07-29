@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
+import hashlib
+import json
 import os
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
 from database.models import Movie, MovieEnrichment, MovieWatchProvider
+from services.import_contracts import normalize_title
 from services.tmdb_client import TMDBClient, TMDBError
 
 
@@ -18,6 +21,7 @@ DEFAULT_REGION = "DE"
 DEFAULT_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
 DEFAULT_PROVIDER_LOGO_BASE_URL = "https://image.tmdb.org/t/p/original"
 PROVIDER_TYPES = ("flatrate", "rent", "buy", "free", "ads")
+TMDB_LOOKUP_MATCHER_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -46,7 +50,9 @@ class EnrichmentStats:
     provider_fetches: int = 0
     enriched: int = 0
     not_found: int = 0
+    not_found_cached: int = 0
     identity_conflicts: int = 0
+    identity_conflicts_cached: int = 0
     failed: int = 0
     provider_rows: int = 0
     dry_run: bool = False
@@ -103,6 +109,27 @@ def _provider_region_expiry(raw_payload: Any, region: str) -> Optional[datetime]
     metadata = _as_dict(_as_dict(raw_payload).get("_spyboxd"))
     expiries = _as_dict(metadata.get("provider_region_expires_at"))
     return _parse_iso_datetime(expiries.get(region.upper()))
+
+
+def _tmdb_lookup_key(
+    title: str,
+    release_year: Optional[int],
+    language: str,
+) -> str:
+    """Fingerprint every input that can change a cached identity-search result."""
+    payload = {
+        "language": language.strip().casefold(),
+        "matcher_version": TMDB_LOOKUP_MATCHER_VERSION,
+        "normalized_title": normalize_title(title),
+        "release_year": release_year,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _certification_for_region(details: Mapping[str, Any], region: str) -> Optional[str]:
@@ -204,6 +231,7 @@ def _select_candidates(
     refresh: bool,
     limit: Optional[int],
     movie_ids: Optional[Sequence[int]],
+    language: str,
 ) -> List[EnrichmentCandidate]:
     query = (
         db.query(
@@ -214,6 +242,9 @@ def _select_candidates(
             MovieEnrichment.movie_id,
             MovieEnrichment.expires_at,
             MovieEnrichment.raw_payload,
+            Movie.tmdb_lookup_attempted_at,
+            Movie.tmdb_lookup_expires_at,
+            Movie.tmdb_lookup_key,
         )
         .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
         .order_by(Movie.id)
@@ -231,7 +262,7 @@ def _select_candidates(
         )
     }
 
-    ranked_candidates: List[tuple[tuple[int, int, int], EnrichmentCandidate]] = []
+    ranked_candidates: List[tuple[tuple[int, int, int, int], EnrichmentCandidate]] = []
     for (
         movie_id,
         title,
@@ -240,7 +271,22 @@ def _select_candidates(
         enrichment_movie_id,
         expires_at,
         raw_payload,
+        tmdb_lookup_attempted_at,
+        tmdb_lookup_expires_at,
+        tmdb_lookup_key,
     ) in query.all():
+        lookup_attempted_at = _aware_utc(tmdb_lookup_attempted_at)
+        lookup_expiry = _aware_utc(tmdb_lookup_expires_at)
+        current_lookup_key = _tmdb_lookup_key(title, release_year, language)
+        lookup_inputs_match = tmdb_lookup_key == current_lookup_key
+        if (
+            tmdb_id is None
+            and not refresh
+            and lookup_expiry is not None
+            and lookup_expiry > now
+            and lookup_inputs_match
+        ):
+            continue
         details_expiry = _aware_utc(expires_at)
         details_are_stale = details_expiry is None or details_expiry <= now
         provider_expiry = _provider_region_expiry(raw_payload, region)
@@ -261,12 +307,14 @@ def _select_candidates(
             needs_providers=needs_providers,
         )
         # A bounded timer must not let newly imported movies wait behind a
-        # large synchronized cache-expiry backlog. Manual/unbounded runs still
-        # receive every candidate; this changes only processing order.
+        # large synchronized cache-expiry backlog or expired negative lookups.
+        # Manual/unbounded runs still receive every eligible candidate; this
+        # changes only processing order.
         ranked_candidates.append(
             (
                 (
                     0 if enrichment_movie_id is None else 1,
+                    0 if lookup_attempted_at is None or not lookup_inputs_match else 1,
                     0 if tmdb_id is None else 1,
                     int(movie_id),
                 ),
@@ -350,6 +398,9 @@ def _persist_prepared(
     if movie is None:
         raise ValueError(f"Movie {prepared.candidate.movie_id} disappeared during enrichment")
     movie.tmdb_id = prepared.tmdb_id
+    movie.tmdb_lookup_attempted_at = None
+    movie.tmdb_lookup_expires_at = None
+    movie.tmdb_lookup_key = None
 
     enrichment = db.get(MovieEnrichment, movie.id)
     if enrichment is None:
@@ -414,6 +465,29 @@ def _persist_prepared(
     return inserted_provider_rows
 
 
+def _persist_lookup_deferral(
+    db: Session,
+    candidate: EnrichmentCandidate,
+    *,
+    attempted_at: datetime,
+    expires_at: datetime,
+    lookup_key: str,
+) -> bool:
+    movie = db.get(Movie, candidate.movie_id)
+    if movie is None:
+        raise ValueError(f"Movie {candidate.movie_id} disappeared during enrichment")
+    # RSS or another trusted ingestion path may have supplied the identity
+    # while the network search was running. Never overwrite that newer fact
+    # with a stale negative lookup.
+    if movie.tmdb_id is not None:
+        return False
+    movie.tmdb_lookup_attempted_at = attempted_at
+    movie.tmdb_lookup_expires_at = expires_at
+    movie.tmdb_lookup_key = lookup_key
+    db.flush()
+    return True
+
+
 def enrich_movies(
     db: Session,
     client: Optional[TMDBClient],
@@ -452,6 +526,7 @@ def enrich_movies(
         refresh=refresh,
         limit=limit,
         movie_ids=movie_ids,
+        language=language,
     )
     # End the read transaction before any potentially slow network request.
     db.rollback()
@@ -465,6 +540,7 @@ def enrich_movies(
     completed = 0
     for candidate_batch in _chunks(candidates, batch_size):
         prepared_batch: List[PreparedEnrichment] = []
+        missed_batch: List[EnrichmentCandidate] = []
         for candidate in candidate_batch:
             if progress:
                 progress(completed + 1, len(candidates), candidate)
@@ -474,6 +550,7 @@ def enrich_movies(
                 prepared = _prepare_candidate(client, candidate, language=language)
                 if prepared is None:
                     stats.not_found += 1
+                    missed_batch.append(candidate)
                     completed += 1
                     continue
                 if candidate.needs_details:
@@ -490,11 +567,14 @@ def enrich_movies(
 
         successful_writes = 0
         successful_provider_rows = 0
+        successful_miss_writes = 0
+        successful_conflict_writes = 0
         tmdb_owners = _existing_tmdb_owners(
             db,
             (prepared.tmdb_id for prepared in prepared_batch),
         )
         writable_batch: List[PreparedEnrichment] = []
+        conflicted_batch: List[EnrichmentCandidate] = []
         for prepared in prepared_batch:
             candidate = prepared.candidate
             owner = tmdb_owners.get(prepared.tmdb_id)
@@ -510,11 +590,64 @@ def enrich_movies(
                         "reason": "tmdb_id_already_owned",
                     }
                 )
+                conflicted_batch.append(candidate)
                 continue
             # Reserve this identity within the prepared batch as well as
             # respecting mappings already persisted in the database.
             tmdb_owners[prepared.tmdb_id] = (candidate.movie_id, candidate.title)
             writable_batch.append(prepared)
+
+        for candidate in missed_batch:
+            try:
+                with db.begin_nested():
+                    attempted_at = datetime.now(timezone.utc)
+                    if _persist_lookup_deferral(
+                        db,
+                        candidate,
+                        attempted_at=attempted_at,
+                        expires_at=attempted_at + timedelta(days=cache_days),
+                        lookup_key=_tmdb_lookup_key(
+                            candidate.title,
+                            candidate.release_year,
+                            language,
+                        ),
+                    ):
+                        successful_miss_writes += 1
+            except Exception as exc:
+                stats.failed += 1
+                stats.errors.append(
+                    {
+                        "movie_id": candidate.movie_id,
+                        "title": candidate.title,
+                        "error": f"Search-miss cache write failed: {exc}",
+                    }
+                )
+
+        for candidate in conflicted_batch:
+            try:
+                with db.begin_nested():
+                    attempted_at = datetime.now(timezone.utc)
+                    if _persist_lookup_deferral(
+                        db,
+                        candidate,
+                        attempted_at=attempted_at,
+                        expires_at=attempted_at + timedelta(days=cache_days),
+                        lookup_key=_tmdb_lookup_key(
+                            candidate.title,
+                            candidate.release_year,
+                            language,
+                        ),
+                    ):
+                        successful_conflict_writes += 1
+            except Exception as exc:
+                stats.failed += 1
+                stats.errors.append(
+                    {
+                        "movie_id": candidate.movie_id,
+                        "title": candidate.title,
+                        "error": f"Identity-conflict cache write failed: {exc}",
+                    }
+                )
 
         for prepared in writable_batch:
             try:
@@ -542,10 +675,16 @@ def enrich_movies(
         try:
             db.commit()
             stats.enriched += successful_writes
+            stats.not_found_cached += successful_miss_writes
+            stats.identity_conflicts_cached += successful_conflict_writes
             stats.provider_rows += successful_provider_rows
         except Exception as exc:
             db.rollback()
-            stats.failed += successful_writes
+            stats.failed += (
+                successful_writes
+                + successful_miss_writes
+                + successful_conflict_writes
+            )
             stats.errors.append({"movie_id": None, "title": None, "error": f"Batch commit failed: {exc}"})
 
     return stats
