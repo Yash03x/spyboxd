@@ -3,12 +3,25 @@ from fastapi.routing import APIRoute
 from backend.main import app
 
 
+def _api_routes(routes):
+    """Flatten FastAPI routers across eager and deferred include versions."""
+
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+
+        included_router = getattr(route, "original_router", None)
+        nested_routes = getattr(included_router, "routes", None)
+        if nested_routes is not None:
+            yield from _api_routes(nested_routes)
+
+
 def _route(method: str, path: str) -> APIRoute:
     return next(
         route
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        and route.path == path
+        for route in _api_routes(app.routes)
+        if route.path == path
         and method in route.methods
     )
 
