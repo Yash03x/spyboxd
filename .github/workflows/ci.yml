@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-ci-${{ github.workflow }}-${{ github.ref }}
+  group: production-ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -192,7 +192,6 @@ jobs:
             deploy/systemd/spyboxd-api.service
             deploy/systemd/spyboxd-frontend.service
             deploy/systemd/spyboxd-rss.service
-            deploy/systemd/spyboxd-tmdb-enrichment.service
           )
           for unit in "${runtime_units[@]}"; do
             grep -Fqx 'User=spyboxd' "${unit}"
@@ -203,8 +202,6 @@ jobs:
           grep -Fqx 'ExecStart=/opt/spyboxd/current/.venv/bin/uvicorn main:app --app-dir /opt/spyboxd/current/backend --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1' deploy/systemd/spyboxd-api.service
           grep -Fqx 'ExecStart=/usr/bin/npm run start -- --hostname localhost --port 3000' deploy/systemd/spyboxd-frontend.service
           grep -Fqx 'ExecStart=/opt/spyboxd/current/.venv/bin/python -m rss_worker' deploy/systemd/spyboxd-rss.service
-          grep -Fqx 'ExecStart=/opt/spyboxd/current/deploy/run-tmdb-enrichment.sh' deploy/systemd/spyboxd-tmdb-enrichment.service
-          grep -Fqx 'Unit=spyboxd-tmdb-enrichment.service' deploy/systemd/spyboxd-tmdb-enrichment.timer
 
       - name: Validate nginx configuration
         run: |
@@ -247,6 +244,9 @@ jobs:
           grep -Fq 'readonly SERVICES=(spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service)' deploy/release.sh
           grep -Fq 'sudo -n nginx -t' deploy/release.sh
           grep -Fq 'SPYBOXD_NGINX_VALIDATE = /usr/sbin/nginx -t' deploy/sudoers/spyboxd-deploy
+          # This assertion intentionally matches a literal shell expression.
+          # shellcheck disable=SC2016
+          grep -Fq 'runner_path="${current_link}/deploy/run-tmdb-enrichment.sh"' .github/workflows/tmdb-enrichment.yml
           grep -Fq 'proxy_pass http://127.0.0.1:3000;' deploy/nginx/spyboxd.conf
           grep -Fq 'proxy_pass http://127.0.0.1:8000;' deploy/nginx/spyboxd.conf
 
