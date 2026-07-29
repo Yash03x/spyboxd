@@ -23,7 +23,7 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 90
     environment:
       name: production
       url: https://spyboxd.com
@@ -33,6 +33,34 @@ jobs:
       REMOTE_CHECKSUM: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz.sha256
 
     steps:
+      - name: Reject a stale deployable CI result before loading SSH credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+
+          current_main_sha="$(
+            curl --silent --show-error --fail --connect-timeout 10 --max-time 30 \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              | jq --exit-status --raw-output \
+                  'if .object.type == "commit" and (.object.sha | test("^[0-9a-f]{40}$")) then .object.sha else empty end'
+          )"
+          if [[ "${current_main_sha}" != "${RELEASE_SHA}" ]]; then
+            echo "Skipping stale CI artifact because main now points to ${current_main_sha}." >&2
+            exit 75
+          fi
+
+      - name: Check out exact deployment helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Download exact CI release artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -65,176 +93,94 @@ jobs:
             sha256sum --check --strict "${checksum_name}"
           )
 
-      - name: Clear exact remote artifact paths
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: spyboxd-deploy
-          key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          timeout: 2m
-          envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
-          script: |
-            set -eu
-
-            case "${RELEASE_SHA}" in
-              *[!0-9a-f]*|'') exit 64 ;;
-            esac
-            [ "${#RELEASE_SHA}" -eq 40 ] || exit 64
-            [ "${REMOTE_BUNDLE}" = "/tmp/spyboxd-release-${RELEASE_SHA}.tar.gz" ] || exit 64
-            [ "${REMOTE_CHECKSUM}" = "${REMOTE_BUNDLE}.sha256" ] || exit 64
-            rm -f -- "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}"
-
-      - name: Copy exact release artifact with pinned OpenSSH host identity
+      - name: Establish one pinned IPv4 production SSH connection
+        id: production_ssh
         env:
           SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
           SSH_HOST: ${{ secrets.VPS_HOST }}
           SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: deploy/production-ssh.sh open
+
+      - name: Clear exact remote artifact paths
         run: |
-          set -Eeuo pipefail
+          deploy/production-ssh.sh run sh -s -- \
+            "${RELEASE_SHA}" "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}" <<'REMOTE'
+          set -eu
+          release_sha="$1"
+          remote_bundle="$2"
+          remote_checksum="$3"
 
-          key_path="${RUNNER_TEMP}/spyboxd-deploy-key"
-          known_hosts_path="${RUNNER_TEMP}/spyboxd-known-hosts"
-          scanned_hosts_path="${RUNNER_TEMP}/spyboxd-scanned-hosts"
-
-          case "${SSH_HOST}" in
-            ''|-*|*[!A-Za-z0-9.-]*)
-              echo 'VPS_HOST must be a plain hostname or IPv4 address.' >&2
-              exit 64
-              ;;
+          case "${release_sha}" in
+            *[!0-9a-f]*|'') exit 64 ;;
           esac
-          [[ "${SSH_FINGERPRINT}" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || {
-            echo 'VPS_HOST_FINGERPRINT must be an exact SHA256 fingerprint.' >&2
-            exit 64
-          }
-          [[ -n "${SSH_PRIVATE_KEY}" ]] || {
-            echo 'VPS_SSH_KEY is empty.' >&2
-            exit 64
-          }
+          [ "${#release_sha}" -eq 40 ] || exit 64
+          [ "${remote_bundle}" = "/tmp/spyboxd-release-${release_sha}.tar.gz" ] || exit 64
+          [ "${remote_checksum}" = "${remote_bundle}.sha256" ] || exit 64
+          rm -f -- "${remote_bundle}" "${remote_checksum}"
+          REMOTE
 
-          for local_path in "${key_path}" "${known_hosts_path}" "${scanned_hosts_path}"; do
-            case "${local_path}" in
-              "${RUNNER_TEMP}"/spyboxd-*) ;;
-              *) echo 'Refusing an SSH material path outside RUNNER_TEMP.' >&2; exit 64 ;;
-            esac
-            [[ ! -e "${local_path}" && ! -L "${local_path}" ]] || {
-              echo "Refusing to overwrite an existing SSH material path: ${local_path}" >&2
-              exit 1
-            }
-          done
-
-          umask 077
-          printf '%s\n' "${SSH_PRIVATE_KEY}" >"${key_path}"
-          chmod 0600 "${key_path}"
-          [[ -s "${key_path}" ]]
-
-          scanned=false
-          for attempt in 1 2 3; do
-            if ssh-keyscan -T 10 "${SSH_HOST}" >"${scanned_hosts_path}" 2>/dev/null \
-                && grep -qv '^#' "${scanned_hosts_path}"; then
-              scanned=true
-              break
-            fi
-            sleep "$((attempt * 2))"
-          done
-          [[ "${scanned}" == true ]] || {
-            echo 'Could not scan the production SSH host key.' >&2
-            exit 1
-          }
-
-          matching_keys=0
-          while IFS= read -r key_line; do
-            case "${key_line}" in
-              \#*|'') continue ;;
-            esac
-            candidate_fingerprint="$(
-              printf '%s\n' "${key_line}" | ssh-keygen -lf - -E sha256 | awk '{print $2}'
-            )"
-            if [[ "${candidate_fingerprint}" == "${SSH_FINGERPRINT}" ]]; then
-              printf '%s\n' "${key_line}" >>"${known_hosts_path}"
-              ((matching_keys += 1))
-            fi
-          done <"${scanned_hosts_path}"
-          (( matching_keys > 0 )) || {
-            echo 'Scanned SSH host keys did not match VPS_HOST_FINGERPRINT.' >&2
-            exit 1
-          }
-          chmod 0600 "${known_hosts_path}"
-
-          ssh_options=(
-            -o BatchMode=yes
-            -o ConnectTimeout=15
-            -o GlobalKnownHostsFile=/dev/null
-            -o IdentitiesOnly=yes
-            -o IdentityFile="${key_path}"
-            -o LogLevel=ERROR
-            -o ServerAliveCountMax=3
-            -o ServerAliveInterval=10
-            -o StrictHostKeyChecking=yes
-            -o UserKnownHostsFile="${known_hosts_path}"
-          )
-
-          copy_with_retries() {
-            local source_path="$1" remote_path="$2" attempt
-            [[ -f "${source_path}" && ! -L "${source_path}" ]]
-            for attempt in 1 2 3; do
-              if timeout --signal=TERM --kill-after=15s 15m \
-                  scp "${ssh_options[@]}" -- \
-                    "${source_path}" "spyboxd-deploy@${SSH_HOST}:${remote_path}"; then
-                return 0
-              fi
-              if (( attempt < 3 )); then
-                sleep "$((attempt * 5))"
-              fi
-            done
-            return 1
-          }
-
-          copy_with_retries \
+      - name: Copy both exact release files over the pinned connection
+        run: |
+          deploy/production-ssh.sh copy \
             "${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz" \
-            "${REMOTE_BUNDLE}"
-          copy_with_retries \
             "${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz.sha256" \
-            "${REMOTE_CHECKSUM}"
+            spyboxd-production:/tmp/
 
-      - name: Securely remove local SSH material
-        if: always()
+      - name: Snapshot the exact pre-activation target
+        id: pre_activation
         run: |
           set -Eeuo pipefail
+          previous_target="$(deploy/production-ssh.sh run sh -s <<'REMOTE'
+          set -eu
+          app_root=/opt/spyboxd
+          current_link="${app_root}/current"
+          releases_dir="${app_root}/releases"
 
-          cleanup_paths=(
-            "${RUNNER_TEMP}/spyboxd-deploy-key"
-            "${RUNNER_TEMP}/spyboxd-known-hosts"
-            "${RUNNER_TEMP}/spyboxd-scanned-hosts"
-          )
-          for cleanup_path in "${cleanup_paths[@]}"; do
-            case "${cleanup_path}" in
-              "${RUNNER_TEMP}"/spyboxd-*) ;;
-              *) echo 'Refusing an SSH cleanup path outside RUNNER_TEMP.' >&2; exit 64 ;;
-            esac
-            [[ ! -L "${cleanup_path}" ]] || {
-              echo "Refusing to follow an SSH cleanup symlink: ${cleanup_path}" >&2
-              exit 1
-            }
-            if [[ -f "${cleanup_path}" ]]; then
-              chmod 0600 "${cleanup_path}"
-              shred --force --iterations=1 --zero --remove -- "${cleanup_path}"
+          if [ -L "${current_link}" ]; then
+            resolved_target="$(readlink -f "${current_link}" || true)"
+            if [ "${resolved_target}" = "${app_root}" ]; then
+              printf 'legacy\n'
+              exit 0
             fi
-          done
+            case "${resolved_target}" in
+              "${releases_dir}"/[0-9a-f][0-9a-f]*) ;;
+              *) echo 'The active release target is outside the trusted release paths.' >&2; exit 1 ;;
+            esac
+            revision="$(basename "${resolved_target}")"
+            case "${revision}" in
+              *[!0-9a-f]*|'') exit 1 ;;
+            esac
+            [ "${#revision}" -eq 40 ]
+            [ -f "${resolved_target}/REVISION" ]
+            [ "$(cat "${resolved_target}/REVISION")" = "${revision}" ]
+            printf '%s\n' "${revision}"
+          elif [ -x "${app_root}/.venv/bin/uvicorn" ] \
+              && [ -f "${app_root}/frontend/.next/BUILD_ID" ]; then
+            printf 'legacy\n'
+          else
+            printf 'none\n'
+          fi
+          REMOTE
+          )"
+          case "${previous_target}" in
+            legacy|none) ;;
+            *[!0-9a-f]*|'') echo 'Invalid pre-activation target.' >&2; exit 1 ;;
+          esac
+          if [[ "${previous_target}" != legacy && "${previous_target}" != none ]]; then
+            [[ "${#previous_target}" -eq 40 ]]
+          fi
+          printf 'target=%s\n' "${previous_target}" >>"${GITHUB_OUTPUT}"
 
       - name: Release validated commit to Hetzner
         id: activate
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: spyboxd-deploy
-          key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          timeout: 2m
-          envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
-          command_timeout: 45m
-          script: |
+        run: |
+          timeout --signal=TERM --kill-after=2m 30m \
+            deploy/production-ssh.sh run sh -s -- \
+              "${RELEASE_SHA}" "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}" <<'REMOTE'
             set -eu
+            RELEASE_SHA="$1"
+            REMOTE_BUNDLE="$2"
+            REMOTE_CHECKSUM="$3"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'')
@@ -291,16 +237,24 @@ jobs:
               repository_git() {
                 git --git-dir=/opt/spyboxd/repository "$@"
               }
+              repository_fetch() {
+                timeout --signal=TERM --kill-after=15s 2m \
+                  git --git-dir=/opt/spyboxd/repository fetch "$@"
+              }
             elif git -C /opt/spyboxd rev-parse --is-inside-work-tree >/dev/null 2>&1; then
               repository_git() {
                 git -C /opt/spyboxd "$@"
+              }
+              repository_fetch() {
+                timeout --signal=TERM --kill-after=15s 2m \
+                  git -C /opt/spyboxd fetch "$@"
               }
             else
               echo "No Spyboxd Git repository found. The first rollout requires the existing /opt/spyboxd checkout." >&2
               exit 1
             fi
 
-            repository_git fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
+            repository_fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
             resolved_sha="$(repository_git rev-parse --verify "${RELEASE_SHA}^{commit}")"
             if [ "${resolved_sha}" != "${RELEASE_SHA}" ]; then
               echo "Fetched commit does not match the CI-validated SHA" >&2
@@ -316,6 +270,396 @@ jobs:
             repository_git show "${RELEASE_SHA}:deploy/release.sh" >"${release_runner}"
             chmod 0700 "${release_runner}"
             "${release_runner}" "${RELEASE_SHA}" "${REMOTE_BUNDLE}"
+          REMOTE
+
+      - name: Reconcile an interrupted or failed activation
+        if: >-
+          always() &&
+          steps.production_ssh.outcome == 'success' &&
+          steps.pre_activation.outcome == 'success' &&
+          steps.activate.outcome == 'failure'
+        env:
+          PREVIOUS_TARGET: ${{ steps.pre_activation.outputs.target }}
+        run: |
+          timeout --signal=TERM --kill-after=2m 25m \
+            deploy/production-ssh.sh run sh -s -- \
+              "${RELEASE_SHA}" "${PREVIOUS_TARGET}" <<'REMOTE'
+          set -eu
+          release_sha="$1"
+          previous_target="$2"
+          app_root=/opt/spyboxd
+          current_link="${app_root}/current"
+          releases_dir="${app_root}/releases"
+          state_dir="${app_root}/shared/release-state"
+          expected_target="${releases_dir}/${release_sha}"
+
+          case "${release_sha}" in
+            *[!0-9a-f]*|'') exit 64 ;;
+          esac
+          [ "${#release_sha}" -eq 40 ] || exit 64
+          case "${previous_target}" in
+            legacy|none) ;;
+            *[!0-9a-f]*|'') exit 64 ;;
+          esac
+          if [ "${previous_target}" != legacy ] && [ "${previous_target}" != none ]; then
+            [ "${#previous_target}" -eq 40 ] || exit 64
+          fi
+
+          for command_name in curl flock git id python3 readlink seq stat sudo timeout; do
+            command -v "${command_name}" >/dev/null 2>&1 || {
+              echo "Required recovery command is missing: ${command_name}" >&2
+              exit 1
+            }
+          done
+
+          exec 9>"${app_root}/.release.lock"
+          flock -w 180 9 || {
+            echo 'The interrupted release did not relinquish the deployment lock.' >&2
+            exit 1
+          }
+
+          validate_state_dir() {
+            [ -d "${state_dir}" ] && [ ! -L "${state_dir}" ] || {
+              echo 'Trusted release state is unavailable.' >&2
+              return 1
+            }
+            [ "$(stat -c '%u' "${state_dir}")" = "$(id -u)" ] \
+              && [ "$(stat -c '%a' "${state_dir}")" = 750 ] || {
+                echo 'Trusted release state has unsafe ownership or permissions.' >&2
+                return 1
+              }
+          }
+
+          read_state_revision() {
+            marker_path="${state_dir}/$1"
+            [ -f "${marker_path}" ] && [ ! -L "${marker_path}" ] || return 1
+            marker_revision="$(cat "${marker_path}")"
+            case "${marker_revision}" in
+              *[!0-9a-f]*|'') return 1 ;;
+            esac
+            [ "${#marker_revision}" -eq 40 ] || return 1
+            printf '%s\n' "${marker_revision}"
+          }
+
+          write_state_revision() {
+            marker_name="$1"
+            marker_revision="$2"
+            case "${marker_name}" in active|previous) ;; *) return 1 ;; esac
+            case "${marker_revision}" in *[!0-9a-f]*|'') return 1 ;; esac
+            [ "${#marker_revision}" -eq 40 ] || return 1
+            temporary_marker="${state_dir}/.${marker_name}.$$"
+            [ ! -e "${temporary_marker}" ] && [ ! -L "${temporary_marker}" ] || return 1
+            printf '%s\n' "${marker_revision}" >"${temporary_marker}"
+            chmod 0640 "${temporary_marker}"
+            mv -f -- "${temporary_marker}" "${state_dir}/${marker_name}"
+          }
+
+          clear_state_marker() {
+            marker_path="${state_dir}/$1"
+            if [ -L "${marker_path}" ]; then
+              echo "Refusing to remove unsafe state marker: $1" >&2
+              return 1
+            fi
+            if [ -e "${marker_path}" ]; then
+              [ -f "${marker_path}" ] || return 1
+              rm -f -- "${marker_path}"
+            fi
+          }
+
+          check_json_health() {
+            expected_revision="$1"
+            python3 -c '
+          import json
+          import sys
+
+          expected_revision = sys.argv[1]
+          try:
+              payload = json.load(sys.stdin)
+          except (TypeError, ValueError):
+              raise SystemExit(1)
+          if payload.get("status") != "ok":
+              raise SystemExit(1)
+          if expected_revision and payload.get("revision") != expected_revision:
+              raise SystemExit(1)
+          ' "${expected_revision}"
+          }
+
+          check_release_health() {
+            expected_revision="$1"
+            for attempt in $(seq 1 12); do
+              if local_api="$(curl --silent --show-error --fail --max-time 5 \
+                    http://127.0.0.1:8000/health 2>/dev/null)" \
+                  && printf '%s' "${local_api}" | check_json_health "${expected_revision}" \
+                  && curl --silent --show-error --fail --max-time 5 \
+                    --output /dev/null http://127.0.0.1:3000/ 2>/dev/null \
+                  && public_api="$(curl --silent --show-error --fail --max-time 5 \
+                    https://api.spyboxd.com/health 2>/dev/null)" \
+                  && printf '%s' "${public_api}" | check_json_health "${expected_revision}" \
+                  && curl --silent --show-error --fail --max-time 5 \
+                    --output /dev/null https://spyboxd.com/ 2>/dev/null
+              then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+
+          active_target="$(readlink -f "${current_link}" 2>/dev/null || true)"
+
+          if [ "${previous_target}" = none ]; then
+            case "${active_target}" in
+              ""|"${expected_target}") ;;
+              *) echo 'First-release recovery found an unexpected active target.' >&2; exit 1 ;;
+            esac
+            if [ -e "${state_dir}" ] || [ -L "${state_dir}" ]; then
+              validate_state_dir
+              if [ -e "${state_dir}/active" ] || [ -L "${state_dir}/active" ]; then
+                [ "$(read_state_revision active)" = "${release_sha}" ] || {
+                  echo 'First-release recovery found an unexpected active state marker.' >&2
+                  exit 1
+                }
+              fi
+              if [ -e "${state_dir}/previous" ] || [ -L "${state_dir}/previous" ]; then
+                echo 'First-release recovery found an impossible previous state marker.' >&2
+                exit 1
+              fi
+            fi
+            timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl stop \
+              spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service || true
+            rm -f -- "${current_link}"
+            if [ -e "${state_dir}" ] || [ -L "${state_dir}" ]; then
+              validate_state_dir
+              clear_state_marker active
+              clear_state_marker previous
+            fi
+            echo 'Stopped the first failed activation because no prior release existed.'
+            exit 0
+          fi
+
+          if [ "${previous_target}" = legacy ]; then
+            case "${active_target}" in
+              ""|"${app_root}"|"${expected_target}") ;;
+              *) echo 'Legacy recovery found an unexpected active target.' >&2; exit 1 ;;
+            esac
+            [ -x "${app_root}/.venv/bin/uvicorn" ]
+            [ -f "${app_root}/frontend/.next/BUILD_ID" ]
+            legacy_active_marker=''
+            if [ -e "${state_dir}" ] || [ -L "${state_dir}" ]; then
+              validate_state_dir
+              if [ -e "${state_dir}/active" ] || [ -L "${state_dir}/active" ]; then
+                legacy_active_marker="$(read_state_revision active)" || {
+                  echo 'Legacy recovery found an invalid active state marker.' >&2
+                  exit 1
+                }
+                [ "${legacy_active_marker}" = "${release_sha}" ] || {
+                  echo 'Legacy recovery found an unexpected active state marker.' >&2
+                  exit 1
+                }
+                if [ -e "${state_dir}/previous" ] || [ -L "${state_dir}/previous" ]; then
+                  echo 'Legacy recovery found an impossible previous state marker.' >&2
+                  exit 1
+                fi
+                [ -d "${expected_target}" ] && [ ! -L "${expected_target}" ]
+                [ -f "${expected_target}/REVISION" ] && [ ! -L "${expected_target}/REVISION" ]
+                [ "$(cat "${expected_target}/REVISION")" = "${release_sha}" ]
+                [ -f "${expected_target}/.revision-health-v1" ] \
+                  && [ ! -L "${expected_target}/.revision-health-v1" ]
+                [ -x "${expected_target}/.venv/bin/uvicorn" ]
+                [ -f "${expected_target}/frontend/.next/BUILD_ID" ]
+                [ -f "${expected_target}/frontend/node_modules/next/dist/bin/next" ]
+              fi
+            fi
+            rollback_link="${app_root}/.current-reconcile.$$"
+            [ ! -e "${rollback_link}" ] && [ ! -L "${rollback_link}" ]
+            trap 'rm -f -- "${rollback_link}"' EXIT
+            ln -s "${app_root}" "${rollback_link}"
+            mv -Tf -- "${rollback_link}" "${current_link}"
+            rollback_link=""
+            trap - EXIT
+            legacy_restarted=true
+            timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl restart \
+              spyboxd-api.service spyboxd-frontend.service || legacy_restarted=false
+            timeout --signal=TERM --kill-after=15s 2m sudo -n systemctl stop \
+              spyboxd-rss.service || true
+            if [ "${legacy_restarted}" = true ] && check_release_health ''; then
+              if [ -e "${state_dir}" ] || [ -L "${state_dir}" ]; then
+                validate_state_dir
+                clear_state_marker active
+                clear_state_marker previous
+              fi
+              echo 'Restored the healthy legacy release after an interrupted activation.'
+              exit 0
+            fi
+            if [ "${legacy_active_marker}" = "${release_sha}" ]; then
+              restore_link="${app_root}/.current-restore.$$"
+              [ ! -e "${restore_link}" ] && [ ! -L "${restore_link}" ]
+              trap 'rm -f -- "${restore_link}"' EXIT
+              ln -s "${expected_target}" "${restore_link}"
+              mv -Tf -- "${restore_link}" "${current_link}"
+              restore_link=""
+              trap - EXIT
+              if timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl restart \
+                    spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service \
+                  && check_release_health "${release_sha}"; then
+                echo 'Legacy recovery failed; restored the healthy attempted release.' >&2
+              else
+                echo 'Legacy recovery and attempted-release restoration are unhealthy.' >&2
+              fi
+            fi
+            echo 'Legacy reconciliation did not become healthy.' >&2
+            exit 1
+          fi
+
+          previous_release="${releases_dir}/${previous_target}"
+          case "${active_target}" in
+            ""|"${expected_target}"|"${previous_release}") ;;
+            *) echo 'Revision recovery found an unexpected active target.' >&2; exit 1 ;;
+          esac
+
+          validate_state_dir
+          active_marker="$(read_state_revision active)" || {
+            echo 'The active release-state marker is invalid.' >&2
+            exit 1
+          }
+
+          if [ "${previous_target}" = "${release_sha}" ]; then
+            [ "${active_target}" = "${expected_target}" ] \
+              && [ "${active_marker}" = "${release_sha}" ] || {
+                echo 'A same-revision retry no longer matches its pre-activation state.' >&2
+                exit 1
+              }
+            if check_release_health "${release_sha}"; then
+              echo 'The failed same-revision retry left the already-active release healthy.'
+              exit 0
+            fi
+            echo 'The already-active same-revision release is unhealthy.' >&2
+            exit 1
+          fi
+
+          if [ "${active_marker}" = "${release_sha}" ]; then
+            recorded_previous="$(read_state_revision previous)" || {
+              echo 'The successful activation has no trustworthy previous marker.' >&2
+              exit 1
+            }
+            [ "${recorded_previous}" = "${previous_target}" ] || {
+              echo 'The recorded previous release changed after the workflow snapshot.' >&2
+              exit 1
+            }
+          fi
+
+          if git --git-dir="${app_root}/repository" rev-parse --is-bare-repository >/dev/null 2>&1; then
+            repository_git() {
+              git --git-dir="${app_root}/repository" "$@"
+            }
+            repository_fetch() {
+              timeout --signal=TERM --kill-after=15s 2m \
+                git --git-dir="${app_root}/repository" fetch "$@"
+            }
+          elif git -C "${app_root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            repository_git() {
+              git -C "${app_root}" "$@"
+            }
+            repository_fetch() {
+              timeout --signal=TERM --kill-after=15s 2m \
+                git -C "${app_root}" fetch "$@"
+            }
+          else
+            echo 'No trusted repository is available for reconciliation.' >&2
+            exit 1
+          fi
+
+          repository_fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
+          resolved_sha="$(repository_git rev-parse --verify "${release_sha}^{commit}")"
+          [ "${resolved_sha}" = "${release_sha}" ]
+          repository_git merge-base --is-ancestor "${release_sha}" refs/remotes/origin/main
+          resolved_previous="$(repository_git rev-parse --verify "${previous_target}^{commit}")"
+          [ "${resolved_previous}" = "${previous_target}" ]
+          repository_git merge-base --is-ancestor "${previous_target}" refs/remotes/origin/main
+
+          if [ "${active_marker}" = "${release_sha}" ] \
+              && [ "${active_target}" = "${expected_target}" ]; then
+            rollback_runner="$(mktemp /tmp/spyboxd-reconcile.XXXXXX)"
+            trap 'rm -f -- "${rollback_runner}"' EXIT
+            repository_git show "${release_sha}:deploy/rollback.sh" >"${rollback_runner}"
+            chmod 0700 "${rollback_runner}"
+            # rollback.sh owns the same deployment lock for its full transaction.
+            flock -u 9
+            exec 9>&-
+            SPYBOXD_EXPECTED_CURRENT_REVISION="${release_sha}" \
+              "${rollback_runner}" "${previous_target}"
+            exit 0
+          fi
+
+          if [ "${active_marker}" != "${previous_target}" ] \
+              && [ "${active_marker}" != "${release_sha}" ]; then
+            echo 'Release-state marker does not identify either recovery revision.' >&2
+            exit 1
+          fi
+          [ -d "${previous_release}" ] && [ ! -L "${previous_release}" ]
+          [ -f "${previous_release}/REVISION" ] && [ ! -L "${previous_release}/REVISION" ]
+          [ "$(cat "${previous_release}/REVISION")" = "${previous_target}" ]
+          [ -f "${previous_release}/.revision-health-v1" ] \
+            && [ ! -L "${previous_release}/.revision-health-v1" ]
+          [ -x "${previous_release}/.venv/bin/uvicorn" ]
+          [ -f "${previous_release}/frontend/.next/BUILD_ID" ]
+          [ -f "${previous_release}/frontend/node_modules/next/dist/bin/next" ]
+          if [ "${active_marker}" = "${release_sha}" ]; then
+            [ -d "${expected_target}" ] && [ ! -L "${expected_target}" ]
+            [ -f "${expected_target}/REVISION" ] && [ ! -L "${expected_target}/REVISION" ]
+            [ "$(cat "${expected_target}/REVISION")" = "${release_sha}" ]
+            [ -f "${expected_target}/.revision-health-v1" ] \
+              && [ ! -L "${expected_target}/.revision-health-v1" ]
+            [ -x "${expected_target}/.venv/bin/uvicorn" ]
+            [ -f "${expected_target}/frontend/.next/BUILD_ID" ]
+            [ -f "${expected_target}/frontend/node_modules/next/dist/bin/next" ]
+          fi
+
+          rollback_link="${app_root}/.current-reconcile.$$"
+          [ ! -e "${rollback_link}" ] && [ ! -L "${rollback_link}" ]
+          trap 'rm -f -- "${rollback_link}"' EXIT
+          ln -s "${previous_release}" "${rollback_link}"
+          mv -Tf -- "${rollback_link}" "${current_link}"
+          rollback_link=""
+          trap - EXIT
+          previous_restarted=true
+          timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl restart \
+            spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service \
+            || previous_restarted=false
+
+          if [ "${previous_restarted}" != true ] \
+              || ! check_release_health "${previous_target}"; then
+            if [ "${active_marker}" = "${release_sha}" ]; then
+              restore_link="${app_root}/.current-restore.$$"
+              [ ! -e "${restore_link}" ] && [ ! -L "${restore_link}" ]
+              trap 'rm -f -- "${restore_link}"' EXIT
+              ln -s "${expected_target}" "${restore_link}"
+              mv -Tf -- "${restore_link}" "${current_link}"
+              restore_link=""
+              trap - EXIT
+              if timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl restart \
+                    spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service \
+                  && check_release_health "${release_sha}"; then
+                echo 'Previous-release recovery failed; restored the healthy attempted release.' >&2
+              else
+                echo 'Previous-release recovery and attempted-release restoration are unhealthy.' >&2
+              fi
+            fi
+            echo 'The directly restored previous release did not become healthy.' >&2
+            exit 1
+          fi
+
+          touch "${previous_release}/.activated-at"
+          if [ "${active_marker}" = "${release_sha}" ]; then
+            write_state_revision previous "${release_sha}"
+            write_state_revision active "${previous_target}"
+          elif previous_marker="$(read_state_revision previous 2>/dev/null)" \
+              && [ "${previous_marker}" = "${previous_target}" ]; then
+            clear_state_marker previous
+          fi
+          [ "$(read_state_revision active)" = "${previous_target}" ]
+          echo "Restored healthy previous release ${previous_target} after interrupted activation."
+          REMOTE
 
       - name: Verify public release from GitHub runner
         id: external_smoke
@@ -356,17 +700,11 @@ jobs:
 
       - name: Roll back externally unhealthy activation
         if: always() && steps.activate.outcome == 'success' && steps.external_smoke.outcome == 'failure'
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: spyboxd-deploy
-          key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          timeout: 2m
-          envs: RELEASE_SHA
-          command_timeout: 10m
-          script: |
+        run: |
+          timeout --signal=TERM --kill-after=2m 24m \
+            deploy/production-ssh.sh run sh -s -- "${RELEASE_SHA}" <<'REMOTE'
             set -eu
+            RELEASE_SHA="$1"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'') exit 64 ;;
@@ -377,16 +715,24 @@ jobs:
               repository_git() {
                 git --git-dir=/opt/spyboxd/repository "$@"
               }
+              repository_fetch() {
+                timeout --signal=TERM --kill-after=15s 2m \
+                  git --git-dir=/opt/spyboxd/repository fetch "$@"
+              }
             elif git -C /opt/spyboxd rev-parse --is-inside-work-tree >/dev/null 2>&1; then
               repository_git() {
                 git -C /opt/spyboxd "$@"
+              }
+              repository_fetch() {
+                timeout --signal=TERM --kill-after=15s 2m \
+                  git -C /opt/spyboxd fetch "$@"
               }
             else
               echo "No Spyboxd Git repository is available for rollback" >&2
               exit 1
             fi
 
-            repository_git fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
+            repository_fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
             resolved_sha="$(repository_git rev-parse --verify "${RELEASE_SHA}^{commit}")"
             [ "${resolved_sha}" = "${RELEASE_SHA}" ]
             repository_git merge-base --is-ancestor "${RELEASE_SHA}" refs/remotes/origin/main
@@ -396,24 +742,30 @@ jobs:
             repository_git show "${RELEASE_SHA}:deploy/rollback.sh" >"${rollback_runner}"
             chmod 0700 "${rollback_runner}"
             "${rollback_runner}" previous
+          REMOTE
 
       - name: Clean exact remote artifact paths
-        if: always()
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: spyboxd-deploy
-          key: ${{ secrets.VPS_SSH_KEY }}
-          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          timeout: 2m
-          envs: RELEASE_SHA,REMOTE_BUNDLE,REMOTE_CHECKSUM
-          script: |
-            set -eu
+        if: always() && steps.production_ssh.outcome == 'success'
+        run: |
+          deploy/production-ssh.sh run sh -s -- \
+            "${RELEASE_SHA}" "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}" <<'REMOTE'
+          set -eu
+          release_sha="$1"
+          remote_bundle="$2"
+          remote_checksum="$3"
 
-            case "${RELEASE_SHA}" in
-              *[!0-9a-f]*|'') exit 64 ;;
-            esac
-            [ "${#RELEASE_SHA}" -eq 40 ] || exit 64
-            [ "${REMOTE_BUNDLE}" = "/tmp/spyboxd-release-${RELEASE_SHA}.tar.gz" ] || exit 64
-            [ "${REMOTE_CHECKSUM}" = "${REMOTE_BUNDLE}.sha256" ] || exit 64
-            rm -f -- "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}"
+          case "${release_sha}" in
+            *[!0-9a-f]*|'') exit 64 ;;
+          esac
+          [ "${#release_sha}" -eq 40 ] || exit 64
+          [ "${remote_bundle}" = "/tmp/spyboxd-release-${release_sha}.tar.gz" ] || exit 64
+          [ "${remote_checksum}" = "${remote_bundle}.sha256" ] || exit 64
+          rm -f -- "${remote_bundle}" "${remote_checksum}"
+          REMOTE
+
+      - name: Close production SSH and securely remove local key material
+        if: always()
+        run: |
+          if [[ -x deploy/production-ssh.sh ]]; then
+            deploy/production-ssh.sh close
+          fi

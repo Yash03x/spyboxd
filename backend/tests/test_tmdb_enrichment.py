@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sys
+import traceback
 import unittest
 from unittest.mock import patch
+
+import requests
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -15,6 +19,7 @@ from services.tmdb_client import (
     DETAIL_APPEND_ENDPOINTS,
     TMDBClient,
     TMDBConfigurationError,
+    TMDBRequestError,
     select_best_movie_match,
 )
 from services.tmdb_enrichment import (
@@ -44,7 +49,10 @@ class FakeHTTPSession:
 
     def get(self, url, *, params, timeout):
         self.calls.append({"url": url, "params": dict(params), "timeout": timeout})
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 class FakeQuery:
@@ -73,6 +81,7 @@ class FakeSelectionSession:
         self.provider_query = FakeQuery(provider_rows)
         self.query_count = 0
         self.rolled_back = False
+        self.commits = 0
 
     def query(self, *entities):
         self.query_count += 1
@@ -80,6 +89,9 @@ class FakeSelectionSession:
 
     def rollback(self):
         self.rolled_back = True
+
+    def commit(self):
+        self.commits += 1
 
 
 class FakeIdentityConflictSession:
@@ -184,6 +196,37 @@ class TMDBClientTests(unittest.TestCase):
 
         self.assertEqual(sleeps, [0.2])
         self.assertEqual(len(session.calls), 1)
+
+    def test_request_exception_does_not_expose_credentials_in_error_or_traceback(self):
+        api_key = "super-secret-v3-key"
+        bearer_token = "super-secret-bearer-token"
+        request_error = requests.RequestException(
+            "connection failed for "
+            f"https://api.themoviedb.org/3/search/movie?api_key={api_key} "
+            f"with Authorization: Bearer {bearer_token}"
+        )
+        session = FakeHTTPSession([request_error])
+        client = TMDBClient(api_key=api_key, session=session, max_retries=0)
+
+        try:
+            client.search_movies("Arrival")
+        except TMDBRequestError as exc:
+            raised_error = exc
+            serialized_error = str(exc)
+            formatted_traceback = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
+        else:
+            self.fail("TMDBRequestError was not raised")
+
+        self.assertEqual(
+            serialized_error,
+            "TMDB request failed while contacting the upstream service.",
+        )
+        self.assertIsNone(raised_error.__context__)
+        for secret in (api_key, bearer_token):
+            self.assertNotIn(secret, serialized_error)
+            self.assertNotIn(secret, formatted_traceback)
 
     def test_matcher_rejects_a_wrong_year_remake(self):
         results = [
@@ -377,6 +420,29 @@ class TMDBEnrichmentMappingTests(unittest.TestCase):
             ],
         )
         self.assertEqual(stats.errors, [])
+
+    def test_request_credentials_do_not_reach_enrichment_error_json(self):
+        api_key = "persisted-secret-v3-key"
+        bearer_token = "logged-secret-bearer-token"
+        request_error = requests.RequestException(
+            "timeout at "
+            f"https://api.themoviedb.org/3/search/movie?api_key={api_key} "
+            f"Authorization=Bearer%20{bearer_token}"
+        )
+        http_session = FakeHTTPSession([request_error])
+        client = TMDBClient(api_key=api_key, session=http_session, max_retries=0)
+        db = FakeSelectionSession(
+            [(1, "Arrival", 2016, None, None, None, {})],
+        )
+
+        stats = enrich_movies(db, client, region="DE", batch_size=1)
+        cli_json = json.dumps(stats.to_dict())
+
+        self.assertEqual(stats.failed, 1)
+        self.assertEqual(db.commits, 1)
+        self.assertIn("upstream service", cli_json)
+        for secret in (api_key, bearer_token):
+            self.assertNotIn(secret, cli_json)
 
 
 if __name__ == "__main__":

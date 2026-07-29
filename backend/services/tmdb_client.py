@@ -316,11 +316,20 @@ class TMDBClient:
                     params=request_params,
                     timeout=self.timeout_seconds,
                 )
-            except requests.RequestException as exc:
+            except requests.RequestException:
                 if attempt < self.max_retries:
                     self.sleeper(min(2**attempt, 8))
                     continue
-                raise TMDBRequestError(f"TMDB request failed: {exc}") from exc
+                # Request exceptions can embed the prepared URL (including a
+                # v3 API key query parameter) or request headers.  Keep that
+                # exception out of the public error and its exception chain
+                # because callers persist and print this message as enrichment
+                # status, while log handlers may retain exception contexts.
+                response = None
+            if response is None:
+                raise TMDBRequestError(
+                    "TMDB request failed while contacting the upstream service."
+                )
 
             if response.status_code == 404:
                 raise TMDBNotFoundError(f"TMDB resource was not found: {path}")

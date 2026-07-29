@@ -247,6 +247,17 @@ jobs:
           # This assertion intentionally matches a literal shell expression.
           # shellcheck disable=SC2016
           grep -Fq 'runner_path="${current_link}/deploy/run-tmdb-enrichment.sh"' .github/workflows/tmdb-enrichment.yml
+          grep -Fq 'AddressFamily inet' deploy/production-ssh.sh
+          grep -Fq 'ControlMaster auto' deploy/production-ssh.sh
+          grep -Fq 'ssh-keyscan -4' deploy/production-ssh.sh
+          grep -Fq 'scp -4' deploy/production-ssh.sh
+          if grep -n -F 'appleboy/' \
+              .github/workflows/deploy.yml \
+              .github/workflows/rollback.yml \
+              .github/workflows/tmdb-enrichment.yml; then
+            echo 'Production workflows must not execute mutable third-party SSH wrappers.' >&2
+            exit 1
+          fi
           grep -Fq 'proxy_pass http://127.0.0.1:3000;' deploy/nginx/spyboxd.conf
           grep -Fq 'proxy_pass http://127.0.0.1:8000;' deploy/nginx/spyboxd.conf
 
