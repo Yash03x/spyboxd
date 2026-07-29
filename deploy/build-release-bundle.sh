@@ -27,6 +27,11 @@ resolved_head="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD)"
 }
 git -C "${REPO_ROOT}" diff --quiet --ignore-submodules=all "${RELEASE_SHA}" -- . || {
     printf 'Tracked worktree content differs from the requested release SHA\n' >&2
+    git -C "${REPO_ROOT}" diff \
+        --name-status \
+        --no-renames \
+        --ignore-submodules=all \
+        "${RELEASE_SHA}" -- . >&2
     exit 1
 }
 untracked_paths="$(git -C "${REPO_ROOT}" ls-files --others --exclude-standard)"

@@ -324,8 +324,13 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
-          npm prune --omit=dev --no-audit --no-fund
+          npm prune --omit=dev --no-audit --no-fund --package-lock=false
           rm -rf -- .next/cache
+
+          # Next.js owns this tracked type shim and may rewrite it while building.
+          # It is not part of the runtime output, so restore only this known file;
+          # the bundle builder rejects every other tracked worktree change.
+          git restore --source="${GITHUB_SHA}" -- next-env.d.ts
 
           if grep -r -a -F -q -- "${CLERK_SECRET_KEY}" .next; then
             echo 'The build-only Clerk secret was embedded in the frontend output.' >&2
