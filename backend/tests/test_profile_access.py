@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -390,6 +390,45 @@ def test_me_returns_canonical_identity_and_primary_profile_status(database):
         "letterboxd_username": "FilmFan",
         "primary_profile_status": "pending",
     }
+
+
+def test_profile_analysis_exposes_review_spoiler_metadata(database):
+    profile = _profile(1, "Alpha")
+    database.add(profile)
+    database.add(
+        Review(
+            id=1,
+            profile_id=profile.id,
+            movie_title="Spoiler Film",
+            movie_year=2026,
+            review_text="The actual spoiler review.",
+            rating=4.5,
+            published_date=date(2026, 7, 30),
+            contains_spoilers=True,
+            tags=[],
+        )
+    )
+    database.commit()
+
+    analysis = asyncio.run(
+        backend_main.get_analysis(
+            "Alpha",
+            db=database,
+            user=_user("admin_user", admin=True),
+        )
+    )
+
+    assert analysis["recent_reviews"] == [
+        {
+            "movie_title": "Spoiler Film",
+            "movie_year": 2026,
+            "rating": 4.5,
+            "review_text": "The actual spoiler review.",
+            "contains_spoilers": True,
+            "published_date": "2026-07-30",
+            "likes_count": 0,
+        }
+    ]
 
 
 def test_existing_completed_profile_is_tracked_case_insensitively_and_idempotently(database):

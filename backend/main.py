@@ -722,6 +722,7 @@ async def get_analysis(
                 "movie_year": r.movie_year,
                 "rating": _safe_json_float(r.rating),
                 "review_text": r.review_text[:200] + "..." if r.review_text and len(r.review_text) > 200 else r.review_text,
+                "contains_spoilers": bool(r.contains_spoilers),
                 "published_date": r.published_date.isoformat() if r.published_date else None,
                 "likes_count": r.likes_count
             } for r in recent_reviews

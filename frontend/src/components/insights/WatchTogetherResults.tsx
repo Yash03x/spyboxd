@@ -36,6 +36,11 @@ function providerSummary(candidate: WatchTogetherCandidate): string {
   return labels.length > 0 ? labels.slice(0, 2).join(' · ') : 'Availability unknown';
 }
 
+function letterboxdFilmUrl(slug: string | null): string | null {
+  const normalizedSlug = slug?.trim().replace(/^\/+|\/+$/g, '');
+  return normalizedSlug ? `https://letterboxd.com/film/${encodeURIComponent(normalizedSlug)}/` : null;
+}
+
 function CandidateRow({
   candidate,
   index,
@@ -123,6 +128,7 @@ function WhyPanel({ candidate, onClose }: {
   onClose: () => void;
 }) {
   const tmdbUrl = candidate.movie.tmdb_id ? `https://www.themoviedb.org/movie/${candidate.movie.tmdb_id}` : null;
+  const letterboxdUrl = letterboxdFilmUrl(candidate.movie.letterboxd_slug);
   return (
     <aside className="rounded-xl border border-cinema-400/25 bg-[#0a1626] p-5 shadow-2xl shadow-black/30 2xl:sticky 2xl:top-5">
       <div className="flex items-center justify-between gap-3">
@@ -190,13 +196,22 @@ function WhyPanel({ candidate, onClose }: {
         </div>
       )}
 
-      {tmdbUrl ? (
-        <a href={tmdbUrl} target="_blank" rel="noreferrer" className="btn-secondary flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm">
-          View film on TMDB <ExternalLink className="h-4 w-4" />
-        </a>
-      ) : (
-        <p className="rounded-lg border border-white/10 bg-white/[0.025] px-3 py-2 text-center text-xs text-white/40">TMDB link unavailable</p>
-      )}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {letterboxdUrl ? (
+          <a href={letterboxdUrl} target="_blank" rel="noreferrer" className="btn-secondary flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm">
+            View film on Letterboxd <ExternalLink className="h-4 w-4" />
+          </a>
+        ) : (
+          <p className="rounded-lg border border-white/10 bg-white/[0.025] px-3 py-2 text-center text-xs text-white/40">Letterboxd link unavailable</p>
+        )}
+        {tmdbUrl ? (
+          <a href={tmdbUrl} target="_blank" rel="noreferrer" className="btn-secondary flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm">
+            View film on TMDB <ExternalLink className="h-4 w-4" />
+          </a>
+        ) : (
+          <p className="rounded-lg border border-white/10 bg-white/[0.025] px-3 py-2 text-center text-xs text-white/40">TMDB link unavailable</p>
+        )}
+      </div>
     </aside>
   );
 }

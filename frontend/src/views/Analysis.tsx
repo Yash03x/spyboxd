@@ -11,6 +11,7 @@ import ErrorMessage from '../components/ErrorMessage';
 import ActivityChart from '../components/Charts/ActivityChart';
 import RatingDistributionChart from '../components/Charts/RatingDistributionChart';
 import StatsCard from '../components/Charts/StatsCard';
+import SpoilerReviewText from '../components/SpoilerReviewText';
 import { profileApi } from '../services/api';
 
 function formatMovieTitle(title: string, year: number | null): string {
@@ -290,29 +291,38 @@ const Analysis: React.FC = () => {
               <h2 className="text-xl font-semibold text-white">Recent Reviews</h2>
               <div className="mt-5 space-y-3">
                 {analysis.recent_reviews.length > 0 ? (
-                  analysis.recent_reviews.map((review) => (
-                    <div
-                      key={`${review.movie_title}-${review.movie_year ?? 'na'}-${review.published_date ?? 'na'}`}
-                      className="rounded-2xl border border-white/10 bg-white/5 p-4"
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="font-medium text-white">
-                            {formatMovieTitle(review.movie_title, review.movie_year)}
-                          </p>
-                          <p className="mt-1 text-xs text-white/60">
-                            Published {formatDate(review.published_date)}
-                          </p>
+                  analysis.recent_reviews.map((review) => {
+                    const reviewText = review.review_text?.trim();
+                    const movieLabel = formatMovieTitle(review.movie_title, review.movie_year);
+                    return (
+                      <div
+                        key={`${analysis.username}-${review.movie_title}-${review.movie_year ?? 'na'}-${review.published_date ?? 'na'}`}
+                        className="rounded-2xl border border-white/10 bg-white/5 p-4"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="font-medium text-white">{movieLabel}</p>
+                            <p className="mt-1 text-xs text-white/60">
+                              Published {formatDate(review.published_date)}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border border-cinema-400/20 bg-cinema-500/10 px-3 py-1 text-xs font-medium text-cinema-300">
+                            {review.rating !== null ? `${review.rating.toFixed(1)} stars` : 'No rating'}
+                          </div>
                         </div>
-                        <div className="rounded-lg border border-cinema-400/20 bg-cinema-500/10 px-3 py-1 text-xs font-medium text-cinema-300">
-                          {review.rating !== null ? `${review.rating.toFixed(1)} stars` : 'No rating'}
-                        </div>
+                        {reviewText ? (
+                          <div className="mt-3">
+                            <SpoilerReviewText
+                              text={reviewText}
+                              containsSpoilers={review.contains_spoilers}
+                              reviewLabel={movieLabel}
+                              className="text-sm leading-6 text-white/70"
+                            />
+                          </div>
+                        ) : null}
                       </div>
-                      {review.review_text && (
-                        <p className="mt-3 text-sm leading-6 text-white/70">{review.review_text}</p>
-                      )}
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="text-sm text-white/50">No reviews available.</p>
                 )}

@@ -165,6 +165,7 @@ export interface RecentReview {
   movie_year: number | null;
   rating: number | null;
   review_text: string | null;
+  contains_spoilers: boolean;
   published_date: string | null;
   likes_count: number;
 }
@@ -557,6 +558,7 @@ export interface PairMovieObservation {
   rewatch_count: number;
   review_text?: string | null;
   review_date?: string | null;
+  contains_spoilers: boolean;
 }
 
 export interface PairMovieComparison {

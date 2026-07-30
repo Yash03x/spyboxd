@@ -69,8 +69,10 @@ const ProfileManager: React.FC = () => {
   const [untrackingProfile, setUntrackingProfile] = useState<string | null>(null);
   const [trackingProfileId, setTrackingProfileId] = useState<number | null>(null);
   const [adminNotes, setAdminNotes] = useState<Record<number, string>>({});
+  const [residentialSyncFiles, setResidentialSyncFiles] = useState<FileList | null>(null);
   const [exportFiles, setExportFiles] = useState<FileList | null>(null);
   const [hasOwnerPublishingConsent, setHasOwnerPublishingConsent] = useState(false);
+  const residentialSyncInputRef = useRef<HTMLInputElement>(null);
   const exportInputRef = useRef<HTMLInputElement>(null);
 
   const queryClient = useQueryClient();
@@ -241,6 +243,25 @@ const ProfileManager: React.FC = () => {
     onError: (error: Error) => {
       toast.error(`Failed to delete profile: ${error.message}`);
       setDeletingProfile(null);
+    },
+  });
+
+  const residentialSyncUploadMutation = useMutation({
+    mutationFn: (files: FileList) => profileApi.uploadFiles(files, { publish_owner_data: false }),
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      const loadedCount = result.loaded_profiles.length;
+      const sourceKinds = Array.from(new Set((result.imports ?? []).map((item) => item.source_kind)));
+      const provenanceCopy = sourceKinds.length > 0 ? ` Provenance: ${sourceKinds.join(', ')}.` : '';
+      if (loadedCount > 0) {
+        toast.success(`${loadedCount} residential full-sync bundle${loadedCount === 1 ? '' : 's'} imported.${provenanceCopy}`);
+      }
+      if (result.errors?.length) toast.error(result.errors.join(' '));
+      setResidentialSyncFiles(null);
+      if (residentialSyncInputRef.current) residentialSyncInputRef.current.value = '';
+    },
+    onError: (uploadError: Error) => {
+      toast.error(`Residential sync upload failed: ${uploadError.message}`);
     },
   });
 
@@ -582,16 +603,58 @@ const ProfileManager: React.FC = () => {
           transition={{ delay: 0.34 }}
           aria-labelledby="admin-sync-workflow-title"
         >
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,.8fr)] xl:items-start">
             <div className="space-y-2">
               <h2 id="admin-sync-workflow-title" className="text-xl font-bold text-white">Residential Sync Workflow</h2>
               <p className="text-sm text-white/70">VPS scraping is disabled. Full profile syncs come only from the local residential runner.</p>
+              <div className="rounded-xl border border-white/10 bg-noir-900/60 px-4 py-3 text-sm text-white/80">
+                <p>1. Approve pending requests that should enter the sync queue.</p>
+                <p>2. Update `sync-profiles.json` on the residential machine.</p>
+                <p>3. Run `.venv/bin/python scripts/batch_full_sync.py --config sync-profiles.json`.</p>
+                <p>4. Upload the resulting ZIP bundles here if the runner did not upload them directly.</p>
+              </div>
             </div>
-            <div className="max-w-2xl rounded-xl border border-white/10 bg-noir-900/60 px-4 py-3 text-sm text-white/80">
-              <p>1. Approve pending requests that should enter the sync queue.</p>
-              <p>2. Update `sync-profiles.json` on the residential machine.</p>
-              <p>3. Run `.venv/bin/python scripts/batch_full_sync.py --config sync-profiles.json`.</p>
-              <p>4. A successful upload fulfills the request and links it to the requester.</p>
+
+            <div className="rounded-xl border border-cinema-400/20 bg-cinema-500/5 p-4" data-testid="residential-sync-upload">
+              <label className="block">
+                <span className="block text-sm font-semibold text-white">Residential full-sync ZIP bundles</span>
+                <span className="mt-1 block text-xs leading-5 text-white/50">
+                  Upload one or more schema-v2 bundles produced from public Letterboxd HTML. Owner-export publishing stays off for this import.
+                </span>
+                <input
+                  ref={residentialSyncInputRef}
+                  type="file"
+                  accept=".zip,application/zip"
+                  multiple
+                  aria-label="Residential full-sync ZIP bundles"
+                  disabled={residentialSyncUploadMutation.isPending}
+                  onChange={(event) => setResidentialSyncFiles(event.target.files)}
+                  className="mt-3 block w-full text-xs text-white/50 file:mr-3 file:cursor-pointer file:rounded-lg file:border file:border-white/10 file:bg-white/5 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white/70 hover:file:bg-white/10"
+                />
+              </label>
+              <p className="mt-3 flex items-start gap-2 text-xs leading-5 text-white/45">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+                This admin-only path imports public residential snapshots. Use the separate owner-export workflow below for private or deleted account data.
+              </p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-[11px] text-white/35">
+                  {residentialSyncFiles?.length
+                    ? `${residentialSyncFiles.length} ZIP${residentialSyncFiles.length === 1 ? '' : 's'} selected`
+                    : 'A successful upload fulfills matching approved profile requests.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (residentialSyncFiles?.length) {
+                      residentialSyncUploadMutation.mutate(residentialSyncFiles);
+                    }
+                  }}
+                  disabled={!residentialSyncFiles?.length || residentialSyncUploadMutation.isPending}
+                  className="btn-primary flex min-h-10 items-center justify-center gap-2 px-4 py-2 text-xs"
+                >
+                  <Upload className="h-4 w-4" /> {residentialSyncUploadMutation.isPending ? 'Uploading…' : 'Import full sync'}
+                </button>
+              </div>
             </div>
           </div>
         </motion.section>
