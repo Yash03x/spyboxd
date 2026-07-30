@@ -3,6 +3,7 @@
 import { SignOutButton, UserButton, useAuth } from '@clerk/nextjs';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
+import Image from 'next/image';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { Activity, CalendarClock, Film, MessageCircle, Radar, Star, Users } from 'lucide-react';
@@ -100,7 +101,14 @@ function PublicHeader({ isSignedIn }: { isSignedIn: boolean | undefined }) {
   return (
     <header className="flex flex-col gap-5 border-b border-white/10 pb-6 sm:flex-row sm:items-center sm:justify-between">
       <Link href="/" className="flex items-center gap-3" aria-label="Spyboxd public dashboard">
-        <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-cinema-400 to-cinema-600 text-xl font-black text-white shadow-glow">S</span>
+        <Image
+          src="/icon.svg"
+          alt=""
+          width={44}
+          height={44}
+          className="h-11 w-11 rounded-xl border border-cinema-400/20 shadow-glow"
+          priority
+        />
         <span>
           <span className="block text-xl font-bold text-white">Spyboxd</span>
           <span className="block text-xs text-white/45">Aggregate Letterboxd signals</span>
