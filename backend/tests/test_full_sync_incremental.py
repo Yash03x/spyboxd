@@ -449,6 +449,96 @@ def test_second_full_import_preserves_watchlist_added_date_omitted_by_html(datab
     assert refreshed_watchlist_item.added_date_source_kind == "letterboxd_export:watchlist"
 
 
+def test_unavailable_optional_surfaces_preserve_rows_and_are_non_authoritative(database, tmp_path):
+    profile = _create_profile(database)
+    heat = _movie("Heat", 1995, "heat-id", rating=4.0)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    _write_full_html_bundle(
+        first,
+        films=[heat],
+        favorites=[_favorite(heat, 1)],
+        watchlist=[_watchlist_item(heat)],
+    )
+    _write_frame(
+        first / "lists.csv",
+        [{"Title": "Crime", "Description": "Crime films", "Film_Count": 1, "URL": "/viewer/list/crime/"}],
+        ["Title", "Description", "Film_Count", "URL"],
+    )
+    _write_frame(
+        first / "list_items.csv",
+        [{
+            "List_Name": "Crime",
+            "List_URL": "/viewer/list/crime/",
+            "Position": 1,
+            "Name": heat["Name"],
+            "Year": heat["Year"],
+            "Film_ID": heat["Film_ID"],
+            "Slug": heat["Slug"],
+            "Film_URL": heat["Film_URL"],
+            "Poster_URL": "",
+            "Notes": "",
+        }],
+        ["List_Name", "List_URL", "Position", "Name", "Year", "Film_ID", "Slug", "Film_URL", "Poster_URL", "Notes"],
+    )
+    first_manifest_path = first / "manifest.json"
+    first_manifest = json.loads(first_manifest_path.read_text(encoding="utf-8"))
+    first_manifest["counts"]["lists"] = 1
+    first_manifest["counts"]["list_items"] = 1
+    first_manifest_path.write_text(json.dumps(first_manifest), encoding="utf-8")
+    _import_bundle(database, profile, first)
+
+    assert database.query(WatchlistItem).filter_by(profile_id=profile.id).count() == 1
+    assert database.query(ProfileFavoriteMovie).filter_by(profile_id=profile.id).count() == 1
+    assert database.query(MovieList).filter_by(profile_id=profile.id).count() == 1
+    assert database.query(MovieListItem).count() == 1
+
+    _write_full_html_bundle(second, films=[heat])
+    unavailable = {
+        "watchlist": "private_or_forbidden",
+        "lists": "private_or_forbidden",
+        "list_items": "private_or_forbidden",
+        "favorites": "not_visible_on_profile",
+    }
+    for filename in {
+        "watchlist": "watchlist.csv",
+        "lists": "lists.csv",
+        "list_items": "list_items.csv",
+        "favorites": "favorites.csv",
+    }.values():
+        (second / filename).unlink()
+    second_manifest_path = second / "manifest.json"
+    second_manifest = json.loads(second_manifest_path.read_text(encoding="utf-8"))
+    second_manifest["completed_datasets"] = [
+        name for name in second_manifest["completed_datasets"] if name not in unavailable
+    ]
+    second_manifest["unavailable_datasets"] = unavailable
+    for dataset_name in unavailable:
+        second_manifest["counts"].pop(dataset_name, None)
+    second_manifest_path.write_text(json.dumps(second_manifest), encoding="utf-8")
+    _import_bundle(database, profile, second)
+
+    assert database.query(WatchlistItem).filter_by(profile_id=profile.id).count() == 1
+    assert database.query(ProfileFavoriteMovie).filter_by(profile_id=profile.id).count() == 1
+    assert database.query(MovieList).filter_by(profile_id=profile.id).count() == 1
+    assert database.query(MovieListItem).count() == 1
+
+    latest_sync = (
+        database.query(ProfileSync)
+        .filter_by(profile_id=profile.id)
+        .order_by(ProfileSync.id.desc())
+        .first()
+    )
+    dataset_states = {
+        dataset.dataset_name: dataset
+        for dataset in database.query(SyncDataset).filter_by(profile_sync_id=latest_sync.id).all()
+    }
+    for dataset_name, reason in unavailable.items():
+        assert dataset_states[dataset_name].is_authoritative is False
+        assert dataset_states[dataset_name].metadata_payload["unavailable_reason"] == reason
+
+
 def test_second_full_import_preserves_join_date_omitted_by_html(database, tmp_path):
     profile = _create_profile(database)
 

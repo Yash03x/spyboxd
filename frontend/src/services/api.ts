@@ -165,6 +165,7 @@ export interface RecentReview {
   movie_year: number | null;
   rating: number | null;
   review_text: string | null;
+  contains_spoilers: boolean;
   published_date: string | null;
   likes_count: number;
 }
@@ -179,6 +180,7 @@ export interface RecentWatchEvent {
 
 export interface UploadFilesOptions {
   publish_owner_data?: boolean;
+  require_full_sync?: boolean;
 }
 
 // Profile API endpoints
@@ -234,6 +236,7 @@ export const profileApi = {
       formData.append(`files`, file);
     });
     formData.append('publish_owner_data', String(options.publish_owner_data ?? false));
+    formData.append('require_full_sync', String(options.require_full_sync ?? false));
     
     const response = await api.post('/upload/', formData, {
       headers: {
@@ -544,6 +547,7 @@ export interface MovieSummary {
   movie_id: number | null;
   tmdb_id: number | null;
   letterboxd_slug: string | null;
+  letterboxd_url: string | null;
   title: string;
   year: number | null;
   poster_url: string | null;
@@ -557,6 +561,7 @@ export interface PairMovieObservation {
   rewatch_count: number;
   review_text?: string | null;
   review_date?: string | null;
+  contains_spoilers: boolean;
 }
 
 export interface PairMovieComparison {

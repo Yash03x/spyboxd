@@ -187,6 +187,7 @@ export const profileAnalysis = {
       movie_year: 2026,
       rating: 4.5,
       review_text: 'A concise fixture review.',
+      contains_spoilers: true,
       published_date: '2026-07-29',
       likes_count: 0,
     },
@@ -195,6 +196,7 @@ export const profileAnalysis = {
       movie_year: 2026,
       rating: 4,
       review_text: 'A second concise fixture review.',
+      contains_spoilers: false,
       published_date: '2026-07-28',
       likes_count: 0,
     },
@@ -243,7 +245,43 @@ const pairDossier = {
   },
   co_watches: [signalEvent],
   influence_paths: [],
-  agreements: [],
+  agreements: [
+    {
+      movie: {
+        movie_id: 147_509,
+        tmdb_id: 206_487,
+        letterboxd_slug: 'predestination',
+        letterboxd_url: 'https://letterboxd.com/film/predestination/',
+        title: 'Predestination',
+        year: 2014,
+        poster_url: null,
+      },
+      observations: [
+        {
+          username: 'alpha',
+          rating: 5,
+          watched_dates: ['2023-06-19'],
+          liked: true,
+          rewatch_count: 0,
+          review_text: 'The identity loop changes how every earlier scene reads.',
+          review_date: '2023-06-19',
+          contains_spoilers: true,
+        },
+        {
+          username: 'bravo',
+          rating: 5,
+          watched_dates: ['2023-06-19'],
+          liked: false,
+          rewatch_count: 0,
+          review_text: null,
+          review_date: null,
+          contains_spoilers: false,
+        },
+      ],
+      rating_gap: 0,
+      minimum_watch_gap_days: 0,
+    },
+  ],
   disagreements: [],
   monthly_alignment: [],
 };
@@ -265,6 +303,7 @@ const watchTogether = {
         movie_id: 99,
         tmdb_id: 550,
         letterboxd_slug: 'fallback-fixture',
+        letterboxd_url: 'https://example.com/film/not-the-fixture/',
         title: 'Fallback Fixture',
         year: 2024,
         poster_url: MISSING_POSTER_URL,
@@ -335,6 +374,16 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   }
 
   if (path === '/api/me') return json(route, state.currentUser);
+  if (path === '/upload' && method === 'POST') {
+    return json(route, {
+      loaded_profiles: ['alpha', 'bravo'],
+      imports: [
+        { username: 'alpha', source_kind: 'full_html_upload', movies_loaded: 1_200 },
+        { username: 'bravo', source_kind: 'full_html_upload', movies_loaded: 1_163 },
+      ],
+      errors: [],
+    });
+  }
   if (path === '/profiles' && method === 'GET') return json(route, { profiles: state.profiles });
   if (path === '/profiles/tracked' && method === 'GET') return json(route, { profiles: state.profiles });
   const analysisMatch = path.match(/^\/profiles\/([^/]+)\/analysis$/);

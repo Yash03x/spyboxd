@@ -27,6 +27,7 @@ import type {
   TasteDnaResponse,
   TasteTrait,
 } from '../../services/api';
+import SpoilerReviewText from '../SpoilerReviewText';
 import {
   CoverageBanner,
   FeatureState,
@@ -167,7 +168,7 @@ export function PairDossierPanel({ data, coverage }: {
 
   const summary = data.summary;
   const reviewRows = [...(data.agreements ?? []), ...(data.disagreements ?? [])]
-    .filter((row) => row.observations.some((observation) => observation.review_text))
+    .filter((row) => row.observations.some((observation) => observation.review_text?.trim()))
     .slice(0, 1);
 
   return (
@@ -206,29 +207,53 @@ export function PairDossierPanel({ data, coverage }: {
             <PairComparisonTable title="Biggest Disagreements" rows={data.disagreements ?? []} tone="split" />
           </div>
 
-          {reviewRows.map((row) => (
-            <section key={`${row.movie.title}-reviews`} className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
-              <div className="flex items-center gap-3">
-                <MoviePoster movie={row.movie} className="h-14 w-10" />
-                <div>
-                  <h3 className="text-sm font-semibold text-white">Review Face-off</h3>
-                  <p className="mt-1 text-sm text-white/55">{row.movie.title} {row.movie.year ? `(${row.movie.year})` : ''}</p>
+          {reviewRows.map((row) => {
+            const observations = row.observations.slice(0, 2);
+            const writtenReviewCount = observations.filter(
+              (observation) => observation.review_text?.trim(),
+            ).length;
+            const movieLabel = `${row.movie.title}${row.movie.year ? ` (${row.movie.year})` : ''}`;
+
+            return (
+              <section key={`${row.movie.title}-reviews`} className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+                <div className="flex items-center gap-3">
+                  <MoviePoster movie={row.movie} className="h-14 w-10" />
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">
+                      {writtenReviewCount === 1 ? 'Review Spotlight' : 'Review Face-off'}
+                    </h3>
+                    <p className="mt-1 text-sm text-white/55">{movieLabel}</p>
+                  </div>
                 </div>
-              </div>
-              <div className="mt-4 grid gap-4 lg:grid-cols-2 lg:divide-x lg:divide-white/10">
-                {row.observations.slice(0, 2).map((observation, index) => (
-                  <blockquote key={observation.username} className={index > 0 ? 'lg:pl-4' : ''}>
-                    <div className="flex items-center gap-2">
-                      <ProfileAvatar username={observation.username} size="sm" />
-                      <span className="text-xs font-semibold text-white/75">{observation.username}</span>
-                      {observation.rating !== null && <span className="text-xs text-cinema-300">{observation.rating.toFixed(1)} ★</span>}
-                    </div>
-                    <p className="mt-2 line-clamp-3 text-sm leading-6 text-white/55">{observation.review_text}</p>
-                  </blockquote>
-                ))}
-              </div>
-            </section>
-          ))}
+                <div className="mt-4 grid gap-4 lg:grid-cols-2 lg:divide-x lg:divide-white/10">
+                  {observations.map((observation, index) => {
+                    const reviewText = observation.review_text?.trim();
+                    return (
+                      <div key={observation.username} className={index > 0 ? 'lg:pl-4' : ''}>
+                        <div className="flex items-center gap-2">
+                          <ProfileAvatar username={observation.username} size="sm" />
+                          <span className="text-xs font-semibold text-white/75">{observation.username}</span>
+                          {observation.rating !== null && <span className="text-xs text-cinema-300">{observation.rating.toFixed(1)} ★</span>}
+                        </div>
+                        <div className="mt-2">
+                          {reviewText ? (
+                            <SpoilerReviewText
+                              text={reviewText}
+                              containsSpoilers={observation.contains_spoilers}
+                              reviewLabel={`${observation.username}'s review of ${movieLabel}`}
+                              className="line-clamp-3 text-sm leading-6 text-white/55"
+                            />
+                          ) : (
+                            <p className="text-sm italic leading-6 text-white/40">No written review</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
         </>
       )}
     </div>

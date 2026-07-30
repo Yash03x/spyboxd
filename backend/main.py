@@ -27,7 +27,7 @@ from services.data_coverage import (
     extract_data_coverage,
 )
 from services.ingestion import unified_data_loader
-from services.profile_loader import load_profile_data
+from services.profile_loader import load_profile_data, validate_import_bundle
 from services.profile_access import (
     accessible_profiles,
     authorize_profile_usernames,
@@ -722,6 +722,7 @@ async def get_analysis(
                 "movie_year": r.movie_year,
                 "rating": _safe_json_float(r.rating),
                 "review_text": r.review_text[:200] + "..." if r.review_text and len(r.review_text) > 200 else r.review_text,
+                "contains_spoilers": bool(r.contains_spoilers),
                 "published_date": r.published_date.isoformat() if r.published_date else None,
                 "likes_count": r.likes_count
             } for r in recent_reviews
@@ -834,6 +835,7 @@ async def delete_profile(
 async def upload_files(
     files: List[UploadFile] = File(...),
     publish_owner_data: bool = Form(default=False),
+    require_full_sync: bool = Form(default=False),
     db: Session = Depends(get_db),
     _user: ClerkUser = Depends(get_active_upload_user),
 ):
@@ -858,6 +860,12 @@ async def upload_files(
                 
                 # Load profile data from extracted CSVs
                 analyzer_profile = load_profile_data(profile_path, username)
+                if require_full_sync:
+                    validate_import_bundle(analyzer_profile, require_full_manifest=True)
+                    if analyzer_profile.source_kind != "full_html_upload":
+                        raise ValueError(
+                            "Residential imports require a full_html_upload manifest"
+                        )
                 # Official Letterboxd exports carry the authoritative account
                 # username in profile.csv. Schema-v2 full-sync bundles retain
                 # their strict manifest identity inside load_profile_data.

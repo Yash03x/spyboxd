@@ -26,6 +26,37 @@ def test_owner_export_is_rejected_without_explicit_publication_consent():
     assert export.manifest == {}
 
 
+def test_residential_import_rejects_a_bundle_without_a_full_sync_manifest():
+    bundle = SimpleNamespace(
+        username="viewer",
+        source_kind="full_html_upload",
+        manifest={},
+    )
+    uploaded = SimpleNamespace(filename="viewer.zip")
+    db = MagicMock()
+    profile_repo = MagicMock()
+
+    with (
+        patch("backend.main.ProfileRepository", return_value=profile_repo),
+        patch("backend.main.extract_zip_file", return_value="/tmp/viewer"),
+        patch("backend.main.load_profile_data", return_value=bundle),
+        pytest.raises(HTTPException) as raised,
+    ):
+        asyncio.run(
+            upload_files(
+                files=[uploaded],
+                publish_owner_data=False,
+                require_full_sync=True,
+                db=db,
+                _user=ClerkUser(user_id="admin", session_id=None, is_admin=True),
+            )
+        )
+
+    assert raised.value.status_code == 400
+    assert profile_repo.mock_calls == []
+    assert db.mock_calls == []
+
+
 def test_upload_rejects_owner_export_before_any_database_access_without_consent():
     export = SimpleNamespace(
         username="owner",
@@ -44,6 +75,7 @@ def test_upload_rejects_owner_export_before_any_database_access_without_consent(
             upload_files(
                 files=[uploaded],
                 publish_owner_data=False,
+                require_full_sync=False,
                 db=db,
                 _user=ClerkUser(user_id="admin", session_id=None, is_admin=True),
             )

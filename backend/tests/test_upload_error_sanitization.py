@@ -97,6 +97,7 @@ def test_upload_hides_unexpected_exception_details_when_every_import_fails(caplo
             upload_files(
                 files=[uploaded],
                 publish_owner_data=False,
+                require_full_sync=False,
                 db=MagicMock(),
                 _user=_upload_user(),
             )

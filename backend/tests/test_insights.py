@@ -13,6 +13,7 @@ from backend.database.models import (
     MovieWatchProvider,
     Profile,
     ProfileSync,
+    Review,
     SyncDataset,
 )
 from database.models import (
@@ -77,6 +78,16 @@ class InsightCalculationTests(unittest.TestCase):
             normalized_title="test film",
             release_year=2026,
             letterboxd_slug="test-film",
+            letterboxd_url="https://letterboxd.com/film/test-film/",
+        )
+
+    def test_movie_summary_includes_canonical_letterboxd_identity(self) -> None:
+        summary = self.service._movie_summary(self.movie)
+
+        self.assertEqual(summary["letterboxd_slug"], "test-film")
+        self.assertEqual(
+            summary["letterboxd_url"],
+            "https://letterboxd.com/film/test-film/",
         )
 
     def test_same_profile_rewatches_do_not_create_a_group_signal(self) -> None:
@@ -427,6 +438,55 @@ class InsightCalculationTests(unittest.TestCase):
             [observation["watched_dates"] for observation in comparison["observations"]],
             [[], []],
         )
+
+    def test_comparison_exposes_authoritative_review_spoiler_metadata(self) -> None:
+        states = [
+            StateRow(
+                profile_id=profile_id,
+                username=username,
+                movie_id=self.movie.id,
+                rating=rating,
+                liked=False,
+                tags=[],
+                first_watched_date=None,
+                latest_watched_date=None,
+                watch_count=1,
+                rewatch_count=0,
+                movie=self.movie,
+                enrichment=None,
+            )
+            for profile_id, username, rating in [
+                (1, "reviewer", 4.5),
+                (2, "viewer", 4.0),
+            ]
+        ]
+        review = Review(
+            profile_id=1,
+            movie_id=self.movie.id,
+            movie_title=self.movie.title,
+            movie_year=self.movie.release_year,
+            review_text="The actual spoiler review.",
+            contains_spoilers=True,
+            tags=[],
+        )
+
+        comparison = self.service._comparison(
+            self.movie,
+            states,
+            [],
+            {(1, self.movie.id): review},
+        )
+
+        observations = {
+            observation["username"]: observation
+            for observation in comparison["observations"]
+        }
+        self.assertTrue(observations["reviewer"]["contains_spoilers"])
+        self.assertEqual(
+            observations["reviewer"]["review_text"],
+            "The actual spoiler review.",
+        )
+        self.assertFalse(observations["viewer"]["contains_spoilers"])
 
     def test_calendar_intensity_uses_frontend_levels_zero_through_four(self) -> None:
         profiles = [

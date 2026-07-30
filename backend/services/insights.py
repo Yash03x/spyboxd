@@ -555,6 +555,7 @@ class InsightsService:
             "movie_id": movie.id,
             "tmdb_id": movie.tmdb_id,
             "letterboxd_slug": movie.letterboxd_slug,
+            "letterboxd_url": movie.letterboxd_url,
             "title": movie.title,
             "year": movie.release_year,
             "poster_url": poster_url,
@@ -1248,6 +1249,7 @@ class InsightsService:
                     "liked": row.liked,
                     "rewatch_count": row.rewatch_count,
                     "review_text": review.review_text if review else None,
+                    "contains_spoilers": bool(review.contains_spoilers) if review else False,
                     "review_date": (
                         review.published_date.isoformat()
                         if review and review.published_date

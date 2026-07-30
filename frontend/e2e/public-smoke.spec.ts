@@ -178,6 +178,50 @@ test('analysis list panels keep intrinsic heights without animated glass artifac
   expect(shimmerTransformsAfter).toEqual(shimmerTransformsBefore);
 });
 
+test('analysis keeps spoiler review prose hidden until an accessible reveal action', async ({ page }) => {
+  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/[^/]+\/analysis$/, (route) => {
+    const username = new URL(route.request().url()).pathname.split('/')[2];
+    const reviewText = username === 'bravo'
+      ? 'A different spoiler review for bravo.'
+      : 'A concise fixture review.';
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...profileAnalysis,
+        username,
+        recent_reviews: [
+          { ...profileAnalysis.recent_reviews[0], review_text: reviewText },
+          profileAnalysis.recent_reviews[1],
+        ],
+      }),
+    });
+  });
+  await page.goto('/analysis');
+
+  const spoilerText = page.getByText('A concise fixture review.', { exact: true });
+  const reveal = page.getByRole('button', {
+    name: 'Reveal spoiler review for Short Review (2026)',
+  });
+
+  await expect(spoilerText).toBeHidden();
+  await expect(reveal).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByText('A second concise fixture review.', { exact: true })).toBeVisible();
+
+  await reveal.click();
+  await expect(spoilerText).toBeVisible();
+  await expect(page.getByRole('button', {
+    name: 'Hide spoiler review for Short Review (2026)',
+  })).toHaveAttribute('aria-expanded', 'true');
+
+  await page.getByRole('combobox').selectOption('bravo');
+  const nextSpoilerText = page.getByText('A different spoiler review for bravo.', { exact: true });
+  await expect(nextSpoilerText).toBeHidden();
+  await expect(page.getByRole('button', {
+    name: 'Reveal spoiler review for Short Review (2026)',
+  })).toHaveAttribute('aria-expanded', 'false');
+});
+
 test('analysis shows Coverage Notes only for actionable limitations', async ({ page }) => {
   let limitations: string[] = [];
   await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/[^/]+\/analysis$/, (route) => (
@@ -297,6 +341,26 @@ test('compare changes a profile and applies the selected pair', async ({ page })
   await expect(page.getByText('Who watched first?')).toBeVisible();
 });
 
+test('compare labels a single written review as a spotlight and protects spoiler prose', async ({ page }) => {
+  await page.goto('/compare');
+
+  const dossier = page.getByRole('tabpanel', { name: 'Pair Dossier' });
+  const spoilerText = dossier.getByText(
+    'The identity loop changes how every earlier scene reads.',
+    { exact: true },
+  );
+
+  await expect(dossier.getByRole('heading', { name: 'Review Spotlight', exact: true })).toBeVisible();
+  await expect(dossier.getByRole('heading', { name: 'Review Face-off', exact: true })).toHaveCount(0);
+  await expect(dossier.getByText('No written review', { exact: true })).toBeVisible();
+  await expect(spoilerText).toBeHidden();
+
+  await dossier.getByRole('button', {
+    name: "Reveal spoiler review for alpha's review of Predestination (2014)",
+  }).click();
+  await expect(spoilerText).toBeVisible();
+});
+
 test('spy signal selector opens, remains visible, and updates the scan', async ({ page }) => {
   await page.goto('/spy-signals');
 
@@ -342,6 +406,14 @@ test('watch together selector stays in the viewport and broken posters fall back
   await expect(panel).toBeHidden();
 
   await expect(page.getByText('Fallback Fixture', { exact: true }).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByRole('link', { name: 'View film on Letterboxd' })).toHaveAttribute(
+    'href',
+    'https://letterboxd.com/film/fallback-fixture/',
+  );
+  await expect(page.getByRole('link', { name: 'View film on TMDB' })).toHaveAttribute(
+    'href',
+    'https://www.themoviedb.org/movie/550',
+  );
   await expect(page.locator('img[src*="missing-poster"]')).toHaveCount(0);
   const brokenImages = await page.locator('main img').evaluateAll((images) => images.filter((image) => {
     const element = image as HTMLImageElement;

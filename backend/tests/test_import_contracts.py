@@ -441,6 +441,65 @@ class CurrentLetterboxdMarkupTests(unittest.TestCase):
         self.assertEqual(identity["year"], 2024)
         self.assertEqual(identity["poster_url"], "https://letterboxd.com/film/challengers/image-150/")
 
+    def test_spoiler_review_uses_hidden_body_and_persists_spoiler_flag(self) -> None:
+        scraper = EnhancedLetterboxdScraper.__new__(EnhancedLetterboxdScraper)
+        scraper.username = "viewer"
+        scraper.urls = {"reviews": "https://letterboxd.com/viewer/reviews/"}
+        scraper.completed_datasets = set()
+        scraper.unavailable_datasets = {}
+        response = SimpleNamespace(
+            content="""
+                <main>
+                  <article class="production-viewing">
+                    <div class="react-component"
+                         data-component-class="LazyPoster"
+                         data-item-name="Predestination (2014)"
+                         data-item-slug="predestination"
+                         data-item-link="/film/predestination/"
+                         data-postered-identifier='{"uid":"film:147509"}'>
+                    </div>
+                    <svg class="glyph -rating" aria-label="★★★★★"></svg>
+                    <time class="timestamp" datetime="2023-06-19"></time>
+                    <div class="js-review">
+                      <p class="body-text -prose js-spoiler-container">
+                        <em>This review may contain spoilers.
+                          <a data-js-trigger="spoiler.reveal"
+                             data-js-hide-on-trigger="spoiler.reveal">I can handle the truth.</a>
+                        </em>
+                      </p>
+                      <div class="body-text -prose -reset js-review-body js-collapsible-text"
+                           data-js-reveal-on-trigger="spoiler.reveal"
+                           data-full-text-url="/s/full-text/viewing:403034793/"
+                           hidden>
+                        <p>Sarah Snook, a star is born. This is the DARK equivalent for movies.</p>
+                      </div>
+                      <p class="like-link-target" data-count="1"></p>
+                    </div>
+                  </article>
+                </main>
+            """.encode("utf-8")
+        )
+        scraper.fetch_with_retry = Mock(return_value=response)
+
+        reviews = scraper.scrape_reviews()
+
+        self.assertEqual(len(reviews), 1)
+        self.assertEqual(
+            reviews[0]["review_text"],
+            "Sarah Snook, a star is born. This is the DARK equivalent for movies.",
+        )
+        self.assertNotIn("I can handle the truth", reviews[0]["review_text"])
+        self.assertTrue(reviews[0]["contains_spoilers"])
+        self.assertEqual(reviews[0]["rating"], 5.0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper.output_dir = temp_dir
+            scraper._save_reviews()
+            persisted = pd.read_csv(Path(temp_dir) / "reviews.csv", keep_default_na=False)
+
+        self.assertEqual(persisted.loc[0, "Review"], reviews[0]["review_text"])
+        self.assertEqual(persisted.loc[0, "Contains_Spoilers"], "Yes")
+
     def test_empty_state_whitespace_and_svg_rating_are_supported(self) -> None:
         empty = BeautifulSoup('<section class="empty-text">No  lists yet</section>', "html.parser")
         rating = BeautifulSoup('<svg class="glyph -rating" aria-label="★★★½"></svg>', "html.parser")

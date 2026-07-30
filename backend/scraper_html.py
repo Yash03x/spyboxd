@@ -613,12 +613,33 @@ class EnhancedLetterboxdScraper:
                     identity = self._poster_identity(poster)
                     rating = self._extract_rating(review_elem)
 
-                    review_text_elem = review_elem.select_one('.js-review-body, .body-text, .review-text')
+                    # Letterboxd renders a spoiler-reveal control before the hidden
+                    # review body. A grouped selector containing ``.body-text``
+                    # therefore returns the warning in document order, even when
+                    # ``.js-review-body`` appears first in the selector string.
+                    review_text_elem = review_elem.select_one('.js-review-body')
+                    if review_text_elem is None:
+                        for fallback_selector in ('.review-text', '.body-text'):
+                            for candidate in review_elem.select(fallback_selector):
+                                candidate_classes = set(candidate.get('class', []))
+                                inside_spoiler_control = (
+                                    'js-spoiler-container' in candidate_classes
+                                    or candidate.find_parent(class_='js-spoiler-container') is not None
+                                    or candidate.select_one('[data-js-trigger="spoiler.reveal"]') is not None
+                                )
+                                if not inside_spoiler_control:
+                                    review_text_elem = candidate
+                                    break
+                            if review_text_elem is not None:
+                                break
                     review_text = ""
                     if review_text_elem:
                         for script in review_text_elem(["script", "style"]):
                             script.decompose()
                         review_text = review_text_elem.get_text().strip()
+                    contains_spoilers = review_elem.select_one(
+                        '.js-spoiler-container, [data-js-trigger="spoiler.reveal"]'
+                    ) is not None
 
                     date_elem = review_elem.select_one('time.timestamp, time[datetime]')
                     review_date = date_elem.get('datetime', '') if date_elem else ""
@@ -639,6 +660,7 @@ class EnhancedLetterboxdScraper:
                         'review_text': review_text,
                         'review_date': review_date,
                         'review_likes': review_likes,
+                        'contains_spoilers': contains_spoilers,
                         'film_url': identity['film_url'],
                         'film_id': identity['film_id'],
                         'slug': identity['slug'],
@@ -920,12 +942,14 @@ class EnhancedLetterboxdScraper:
             return
         fieldnames = [
             'Name', 'Year', 'Rating', 'Review', 'Review_Date', 'Review_Likes',
-            'Film_ID', 'Slug', 'Film_URL'
+            'Contains_Spoilers', 'Film_ID', 'Slug', 'Film_URL'
         ]
         data = [{
             'Name': review['title'], 'Year': review['year'], 'Rating': review['rating'],
             'Review': review['review_text'], 'Review_Date': review['review_date'],
-            'Review_Likes': review['review_likes'], 'Film_ID': review.get('film_id', ''),
+            'Review_Likes': review['review_likes'],
+            'Contains_Spoilers': 'Yes' if review.get('contains_spoilers', False) else 'No',
+            'Film_ID': review.get('film_id', ''),
             'Slug': review.get('slug', ''), 'Film_URL': review['film_url']
         } for review in self.reviews_data]
         self._write_csv("reviews.csv", data, fieldnames)
