@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { SignOutButton, UserButton, useAuth } from '@clerk/nextjs';
@@ -9,7 +10,6 @@ import {
   HomeIcon,
   ChartBarIcon,
   UserGroupIcon,
-  PlayIcon,
   SignalIcon,
   ScaleIcon,
 } from '@heroicons/react/24/outline';
@@ -121,7 +121,14 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 }}
                 transition={{ duration: 3, repeat: Infinity }}
               >
-                  <PlayIcon className="h-5 w-5 text-white lg:h-6 lg:w-6" />
+                  <Image
+                    src="/icon.svg"
+                    alt=""
+                    width={48}
+                    height={48}
+                    className="h-10 w-10 rounded-xl border border-cinema-400/20 lg:h-12 lg:w-12"
+                    priority
+                  />
                 </motion.div>
               </div>
               <div>

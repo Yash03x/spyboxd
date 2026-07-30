@@ -2,6 +2,7 @@
 
 import { useAuth } from '@clerk/nextjs';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { setApiTokenProvider } from '../services/api';
@@ -57,9 +58,14 @@ export default function Providers({ children }: { children: React.ReactNode }) {
       {authReady ? children : (
         <main className="grid min-h-screen place-items-center px-6" aria-live="polite">
           <div className="text-center">
-            <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-gradient-to-br from-cinema-400 to-cinema-600 shadow-glow">
-              <span className="text-lg font-black text-white">S</span>
-            </div>
+            <Image
+              src="/icon.svg"
+              alt=""
+              width={48}
+              height={48}
+              className="mx-auto h-12 w-12 rounded-xl border border-cinema-400/20 shadow-glow"
+              priority
+            />
             <p className="mt-4 text-sm text-white/55">Preparing Spyboxd…</p>
           </div>
         </main>
