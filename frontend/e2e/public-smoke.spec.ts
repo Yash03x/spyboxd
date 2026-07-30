@@ -1,4 +1,4 @@
-import { expect, test, type ConsoleMessage, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type ConsoleMessage, type Locator, type Page, type TestInfo } from '@playwright/test';
 
 import { installApiMocks, MISSING_POSTER_URL } from './fixtures/api';
 
@@ -10,6 +10,9 @@ function isExpectedMissingPosterError(message: ConsoleMessage): boolean {
 }
 
 async function expectAccountControl(page: Page) {
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  await expect(signOut).toBeVisible();
+  await expectInsideViewport(page, signOut);
   if ((page.viewportSize()?.width ?? 0) < 1024) {
     await page.getByRole('button', { name: 'Open navigation' }).click();
     await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
@@ -17,6 +20,18 @@ async function expectAccountControl(page: Page) {
     return;
   }
   await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
+}
+
+async function expectInsideViewport(page: Page, locator: Locator) {
+  await expect.poll(async () => {
+    const viewport = page.viewportSize();
+    const box = await locator.boundingBox();
+    if (!viewport || !box) return false;
+    return box.x >= 0
+      && box.y >= 0
+      && box.x + box.width <= viewport.width
+      && box.y + box.height <= viewport.height;
+  }).toBe(true);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -58,13 +73,45 @@ test('signed-in private dashboard renders the scoped data and navigates to My Pr
   await expect(page.getByRole('heading', { level: 1, name: 'My Profiles', exact: true })).toBeVisible();
 });
 
+test('private workspace sign out returns to the anonymous dashboard', async ({ page }) => {
+  await page.goto('/dashboard');
+
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  await expect(signOut).toBeVisible();
+  await expectInsideViewport(page, signOut);
+  await signOut.click();
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('link', { name: 'Sign in to monitor profiles' })).toBeVisible();
+});
+
+test('insight workspace sign out returns to the anonymous dashboard', async ({ page }) => {
+  await page.goto('/compare');
+
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  await expect(signOut).toBeVisible();
+  await expectInsideViewport(page, signOut);
+  await signOut.click();
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('link', { name: 'Sign in to monitor profiles' })).toBeVisible();
+});
+
 test('signed-in public homepage remains aggregate-only', async ({ page }) => {
   await page.goto('/');
 
   await expect(page.getByTestId('public-dashboard')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open My Dashboard' })).toBeVisible();
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  await expect(signOut).toBeVisible();
+  await expectInsideViewport(page, signOut);
+  await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
   await expect(page.getByText('@alpha', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Most Active Profile', { exact: true })).toHaveCount(0);
+
+  await signOut.click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('link', { name: 'Sign in to monitor profiles' })).toBeVisible();
 });
 
 test('analysis list panels keep intrinsic heights without animated glass artifacts', async ({ page }) => {

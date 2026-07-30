@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { UserButton, useAuth } from '@clerk/nextjs';
+import { SignOutButton, UserButton, useAuth } from '@clerk/nextjs';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   HomeIcon,
@@ -19,7 +19,7 @@ import {
   SignalIcon as SignalIconSolid,
   ScaleIcon as ScaleIconSolid,
 } from '@heroicons/react/24/solid';
-import { Menu, UsersRound, X } from 'lucide-react';
+import { LogOut, Menu, UsersRound, X } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -85,6 +85,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const isActive = (path: string) => pathname === path || pathname.startsWith(`${path}/`);
   const activeItem = NAVIGATION_ITEMS.find((item) => isActive(item.path));
   const isInsightWorkspace = isActive('/compare') || isActive('/watch-together');
+  const signInHref = `/sign-in?redirect_url=${encodeURIComponent(pathname)}`;
 
   return (
     <motion.div 
@@ -128,15 +129,35 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <p className="hidden text-sm font-medium text-white/60 lg:block">User Analytics</p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setMobileNavOpen((open) => !open)}
-              className="grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-white/70 hover:bg-white/5 hover:text-white lg:hidden"
-              aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
-              aria-expanded={mobileNavOpen}
-            >
-              {mobileNavOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-            </button>
+            <div className="flex items-center gap-2 lg:hidden">
+              {isSignedIn ? (
+                <SignOutButton redirectUrl="/">
+                  <button
+                    type="button"
+                    className="inline-flex h-10 items-center gap-2 rounded-lg border border-white/10 px-3 text-xs font-semibold text-white/70 hover:border-cinema-400/30 hover:bg-cinema-500/10 hover:text-white"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    Sign out
+                  </button>
+                </SignOutButton>
+              ) : (
+                <Link
+                  href={signInHref}
+                  className="inline-flex h-10 items-center rounded-lg border border-white/10 px-3 text-xs font-semibold text-white/70 hover:border-cinema-400/30 hover:bg-cinema-500/10 hover:text-white"
+                >
+                  Sign in
+                </Link>
+              )}
+              <button
+                type="button"
+                onClick={() => setMobileNavOpen((open) => !open)}
+                className="grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-white/70 hover:bg-white/5 hover:text-white"
+                aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
+                aria-expanded={mobileNavOpen}
+              >
+                {mobileNavOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+              </button>
+            </div>
           </motion.div>
 
           <div className={`${mobileNavOpen ? 'mt-4 flex' : 'hidden'} min-h-0 flex-1 flex-col lg:mt-0 lg:flex`}>
@@ -161,7 +182,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </motion.div>
 
             {/* Navigation Items */}
-            <div className="flex-1 space-y-2">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
             {NAVIGATION_ITEMS.map((item, index) => {
               const Icon = isActive(item.path) ? item.activeIcon : item.icon;
               return (
@@ -226,13 +247,32 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             })}
             </div>
 
-            <div className="mt-5 hidden items-center gap-3 border-t border-white/10 pt-4 text-sm text-white/60 lg:flex">
-              {isSignedIn && <><UserButton /> Account</>}
-            </div>
+            {isInsightWorkspace && (
+              <div className="mt-5 hidden items-center justify-between gap-3 border-t border-white/10 pt-4 text-sm text-white/60 lg:flex">
+                {isSignedIn ? (
+                  <>
+                    <div className="flex items-center gap-3"><UserButton /> Account</div>
+                    <SignOutButton redirectUrl="/">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-white/65 hover:border-cinema-400/30 hover:bg-cinema-500/10 hover:text-white"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        Sign out
+                      </button>
+                    </SignOutButton>
+                  </>
+                ) : (
+                  <Link href={signInHref} className="font-semibold text-cinema-300 hover:text-cinema-200">Sign in</Link>
+                )}
+              </div>
+            )}
 
             <div className="mt-5 border-t border-white/10 pt-4 lg:hidden">
-              {isSignedIn && (
-                <div className="flex items-center gap-3 text-sm text-white/60"><UserButton /> Signed in</div>
+              {isSignedIn ? (
+                <div className="flex items-center gap-3 text-sm text-white/60"><UserButton /> Account</div>
+              ) : (
+                <Link href={signInHref} className="text-sm font-semibold text-cinema-300 hover:text-cinema-200">Sign in</Link>
               )}
             </div>
           </div>
@@ -267,6 +307,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 {activeItem?.description || 'Welcome to Spyboxd'}
               </motion.p>
             </div>
+            {!isInsightWorkspace && (
+              isSignedIn ? (
+                <div className="flex items-center gap-3">
+                  <UserButton />
+                  <SignOutButton redirectUrl="/">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-white/70 hover:border-cinema-400/30 hover:bg-cinema-500/10 hover:text-white"
+                    >
+                      <LogOut className="h-4 w-4" />
+                      Sign out
+                    </button>
+                  </SignOutButton>
+                </div>
+              ) : (
+                <Link href={signInHref} className="btn-secondary">Sign in</Link>
+              )
+            )}
           </div>
         </motion.header>
 
