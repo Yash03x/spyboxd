@@ -45,6 +45,8 @@ test('the aggregate dashboard is the anonymous landing page', async ({ page }) =
   await signInLink.click();
   await expect(page).toHaveURL(/\/sign-in(?:\/|\?|$)/);
   await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
+    .toContain('dark');
 });
 
 for (const authenticated of [false, true]) {
