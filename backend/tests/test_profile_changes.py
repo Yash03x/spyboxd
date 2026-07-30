@@ -27,6 +27,7 @@ from backend.services.ingestion import (
     _upsert_source_activities,
     unified_data_loader,
 )
+from backend.services.import_contracts import IMPORTER_VERSION
 from backend.services.profile_changes import get_recent_profile_changes, record_profile_changes
 from backend.services.profile_loader import load_profile_data
 
@@ -116,7 +117,7 @@ class ProfileChangePersistenceTests(TestCase):
             profile_id=1,
             source_kind="letterboxd_export",
             source_fingerprint="sync-20",
-            importer_version="3",
+            importer_version=IMPORTER_VERSION,
             status="running",
         )
         self.db.add_all([self.profile, self.movie, self.sync])
@@ -257,7 +258,7 @@ class ProfileChangePersistenceTests(TestCase):
             profile_id=self.profile.id,
             source_kind="letterboxd_export",
             source_fingerprint="sync-21",
-            importer_version="3",
+            importer_version=IMPORTER_VERSION,
             status="completed",
         )
         self.db.add(current_sync)

@@ -29,6 +29,7 @@ from backend.services.rss_incremental import (
     MAX_RSS_BYTES,
     RSSFeedError,
     RSSFeedTooLarge,
+    _record_poll_failure,
     acquire_profile_feed_lease,
     due_profiles,
     parse_letterboxd_rss,
@@ -652,6 +653,70 @@ def test_no_overlap_marks_overflow_without_mutating_profile_data(database):
     )
     assert blocked["status"] == "full_sync_required"
     assert blocked_client.calls == []
+
+
+def test_stale_overflow_cannot_override_a_newer_authoritative_refresh(database):
+    profile = _seed_authoritative_baseline(database)
+    state = ProfileFeedState(
+        profile_id=profile.id,
+        feed_url="https://letterboxd.com/viewer/rss/",
+        activity_guids=["old-guid"],
+        requires_full_sync=False,
+        consecutive_failures=0,
+    )
+    database.add(state)
+    expected_next_poll_at = datetime(2026, 7, 29, 11, 1, tzinfo=timezone.utc)
+    state.next_poll_at = expected_next_poll_at
+    newer = ProfileSync(
+        id=2,
+        profile_id=profile.id,
+        source_kind="full_html_upload",
+        source_fingerprint="newer-full-baseline",
+        importer_version="4",
+        status="completed",
+        completed_at=datetime(2026, 7, 29, 11, tzinfo=timezone.utc),
+        coverage={},
+        stats={},
+        manifest={},
+    )
+    database.add(newer)
+    database.flush()
+    database.add_all(
+        [
+            SyncDataset(
+                profile_sync_id=newer.id,
+                dataset_name=name,
+                source_row_count=1,
+                imported_row_count=1,
+                is_authoritative=True,
+                metadata_payload={},
+            )
+            for name in ("films", "diary")
+        ]
+    )
+    database.commit()
+
+    result = _record_poll_failure(
+        database,
+        profile_id=profile.id,
+        observed_baseline_id=1,
+        now=datetime(2026, 7, 29, 10, tzinfo=timezone.utc),
+        message="RSS recent window has no overlap with stored GUIDs; full sync required",
+        http_status=200,
+        interval_seconds=600,
+        max_backoff_seconds=3600,
+        requires_full_sync=True,
+        reconciliation_reason="rss_window_no_overlap",
+    )
+
+    database.refresh(state)
+    assert result["requires_full_sync"] is False
+    assert result["reconciled_by_profile_sync_id"] == newer.id
+    assert state.requires_full_sync is False
+    assert state.reconciliation_reason is None
+    assert state.last_error is None
+    assert state.consecutive_failures == 0
+    assert state.next_poll_at.replace(tzinfo=timezone.utc) == expected_next_poll_at
 
 
 def test_http_body_cap_fails_before_any_incremental_sync(database):
