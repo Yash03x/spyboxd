@@ -25,6 +25,7 @@ from backend.database.models import (
     Rating,
     Review,
     UserTrackedProfile,
+    WatchEvent,
     WatchlistItem,
 )
 from backend.database.repository import AnalyticsRepository
@@ -77,6 +78,7 @@ def database():
             WatchlistItem.__table__,
             Rating.__table__,
             Review.__table__,
+            WatchEvent.__table__,
         ],
     )
     session = sessionmaker(bind=engine, expire_on_commit=False)()
@@ -750,21 +752,57 @@ def test_global_dashboard_snapshot_excludes_unready_and_inactive_profiles(databa
     pending = _profile(2, "Pending", completed=False)
     inactive = _profile(3, "Inactive")
     inactive.is_active = False
-    database.add_all([ready, pending, inactive])
+    movie = Movie(
+        id=1,
+        canonical_key="test:dashboard-film",
+        title="Dashboard Film",
+        normalized_title="dashboard film",
+    )
+    database.add_all([ready, pending, inactive, movie])
     database.add_all(
         [
             Rating(id=1, profile_id=ready.id, movie_title="Ready Film", rating=4.0),
             Rating(id=2, profile_id=pending.id, movie_title="Pending Film", rating=2.0),
             Rating(id=3, profile_id=inactive.id, movie_title="Inactive Film", rating=1.0),
+            WatchEvent(
+                id=1,
+                profile_id=ready.id,
+                movie_id=movie.id,
+                event_key="ready-watch",
+                watched_date=datetime(2026, 7, 15).date(),
+                rating=4.0,
+                source_kind="diary_csv",
+            ),
+            WatchEvent(
+                id=2,
+                profile_id=pending.id,
+                movie_id=movie.id,
+                event_key="pending-watch",
+                watched_date=datetime(2026, 7, 15).date(),
+                rating=2.0,
+                source_kind="diary_csv",
+            ),
+            WatchEvent(
+                id=3,
+                profile_id=inactive.id,
+                movie_id=movie.id,
+                event_key="inactive-watch",
+                watched_date=datetime(2026, 7, 15).date(),
+                rating=1.0,
+                source_kind="diary_csv",
+            ),
         ]
     )
     database.commit()
 
-    snapshot = AnalyticsRepository(database).build_dashboard_analytics_snapshot()
+    snapshot = AnalyticsRepository(database).build_dashboard_analytics_snapshot(
+        now=datetime(2026, 7, 30, tzinfo=timezone.utc),
+    )
 
     assert snapshot["system_stats"]["total_profiles"] == 1
     assert snapshot["system_stats"]["total_movies_tracked"] == 1
     assert snapshot["rating_distribution"] == {"4.0": 1}
+    assert sum(point["movies_watched"] for point in snapshot["activity_data"]) == 1
 
 
 def test_admin_allowlist_is_server_side_and_metadata_boolean_is_strict(monkeypatch):

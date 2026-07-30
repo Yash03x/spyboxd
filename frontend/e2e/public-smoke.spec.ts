@@ -114,6 +114,25 @@ test('signed-in public homepage remains aggregate-only', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'Sign in to monitor profiles' })).toBeVisible();
 });
 
+test('watching activity identifies month-to-date events and excludes them from the completed-month average', async ({ page }) => {
+  await page.goto('/');
+
+  const activityChart = page.getByRole('region', { name: 'Watching Activity' });
+  await expect(activityChart).toBeVisible();
+  await expect(activityChart.getByText(
+    'Monthly watch events · July 2026 is month to date; average uses completed months',
+    { exact: true },
+  )).toBeVisible();
+  await expect(activityChart.getByLabel('Average watch events per completed month')).toHaveText('15.0');
+  await expect(activityChart.getByText('Avg/Completed Month', { exact: true })).toBeVisible();
+  await expect(activityChart.getByRole('img')).toHaveAccessibleName(
+    /July 2026 is month to date and is excluded from the completed-month average.*15\.0 watch events per completed month/,
+  );
+  await expect(activityChart.getByRole('list', { name: 'Watching Activity data points' })).toContainText(
+    'July 2026, month to date: 90 watch events; average rating 3.9',
+  );
+});
+
 test('analysis list panels keep intrinsic heights without animated glass artifacts', async ({ page }) => {
   await page.goto('/analysis');
 

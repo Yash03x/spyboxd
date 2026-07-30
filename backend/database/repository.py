@@ -2,7 +2,7 @@ import math
 from collections import defaultdict
 from itertools import combinations
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, false, func, and_, or_, extract
+from sqlalchemy import and_, case, desc, extract, false, func, or_
 from .models import (
     Movie,
     MovieList,
@@ -20,7 +20,7 @@ from .models import (
     WatchEvent,
     WatchlistItem,
 )
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
 
 
@@ -30,6 +30,34 @@ def _format_month_bucket(year: int, month: int) -> str:
 
 RATING_MIN = 0.0
 RATING_MAX = 5.0
+DASHBOARD_SNAPSHOT_FORMAT_VERSION = 2
+DASHBOARD_ACTIVITY_MONTHS = 12
+
+
+def _shift_month_start(month_start: date, offset: int) -> date:
+    """Move a first-of-month date by ``offset`` calendar months."""
+    month_index = month_start.year * 12 + month_start.month - 1 + offset
+    year, zero_based_month = divmod(month_index, 12)
+    return date(year, zero_based_month + 1, 1)
+
+
+def _coerce_utc_now(value: Optional[datetime] = None) -> datetime:
+    timestamp = value or datetime.now(timezone.utc)
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def _dashboard_snapshot_meta(as_of: date) -> Dict[str, Any]:
+    current_month_start = as_of.replace(day=1)
+    return {
+        "format_version": DASHBOARD_SNAPSHOT_FORMAT_VERSION,
+        "activity_window_start": _shift_month_start(
+            current_month_start,
+            -(DASHBOARD_ACTIVITY_MONTHS - 1),
+        ).isoformat(),
+        "activity_as_of": as_of.isoformat(),
+    }
 
 
 def _coerce_finite_float(value: Any) -> Optional[float]:
@@ -786,34 +814,94 @@ class RatingRepository:
         
         return {str(rating): count for rating, count in results}
     
-    def get_monthly_watch_stats(self, profile_id: int, months: int = 12) -> List[Dict]:
-        """Get monthly watching statistics"""
-        cutoff_date = datetime.utcnow().date() - timedelta(days=months * 30)
-        year_bucket = extract('year', Rating.watched_date)
-        month_bucket = extract('month', Rating.watched_date)
+    def _get_monthly_watch_activity(
+        self,
+        profile_ids: Optional[List[int]],
+        *,
+        months: int,
+        as_of: Optional[date] = None,
+    ) -> List[Dict]:
+        """Aggregate active dated watch occurrences into calendar months."""
+        if months <= 0 or (profile_ids is not None and not profile_ids):
+            return []
 
-        results = self.db.query(
-            year_bucket.label('year'),
-            month_bucket.label('month'),
-            func.count(Rating.id).label('count'),
-            func.avg(Rating.rating).label('avg_rating')
+        activity_as_of = as_of or datetime.now(timezone.utc).date()
+        current_month_start = activity_as_of.replace(day=1)
+        window_start = _shift_month_start(current_month_start, -(months - 1))
+        year_bucket = extract("year", WatchEvent.watched_date)
+        month_bucket = extract("month", WatchEvent.watched_date)
+        valid_rating = case(
+            (
+                and_(
+                    WatchEvent.rating >= 0.5,
+                    WatchEvent.rating <= RATING_MAX,
+                ),
+                WatchEvent.rating,
+            ),
+            else_=None,
+        )
+
+        query = self.db.query(
+            year_bucket.label("year"),
+            month_bucket.label("month"),
+            func.count(WatchEvent.id).label("watch_count"),
+            func.avg(valid_rating).label("avg_rating"),
         ).filter(
-            Rating.profile_id == profile_id,
-            Rating.watched_date >= cutoff_date,
-            Rating.rating.is_(None) | and_(Rating.rating >= RATING_MIN, Rating.rating <= RATING_MAX),
-        ).group_by(
-            year_bucket,
-            month_bucket
-        ).order_by(year_bucket, month_bucket).all()
-        
-        return [
-            {
-                'month': _format_month_bucket(year, month),
-                'movies_watched': count,
-                'average_rating': _safe_round(avg_rating, 2)
+            WatchEvent.watched_date >= window_start,
+            WatchEvent.watched_date <= activity_as_of,
+            WatchEvent.superseded_at.is_(None),
+        )
+        if profile_ids is not None:
+            query = query.filter(WatchEvent.profile_id.in_(profile_ids))
+
+        results = (
+            query.group_by(year_bucket, month_bucket)
+            .order_by(year_bucket, month_bucket)
+            .all()
+        )
+        if not results:
+            return []
+
+        activity_by_month = {
+            _format_month_bucket(year, month): {
+                "movies_watched": int(watch_count),
+                "average_rating": _safe_round(avg_rating, 2),
             }
-            for year, month, count, avg_rating in results
-        ]
+            for year, month, watch_count, avg_rating in results
+        }
+
+        activity = []
+        for offset in range(months):
+            month_start = _shift_month_start(window_start, offset)
+            month_key = _format_month_bucket(month_start.year, month_start.month)
+            monthly_values = activity_by_month.get(month_key)
+            activity.append(
+                {
+                    "month": month_key,
+                    "movies_watched": (
+                        monthly_values["movies_watched"] if monthly_values else 0
+                    ),
+                    "average_rating": (
+                        monthly_values["average_rating"] if monthly_values else None
+                    ),
+                    "is_partial": month_start == current_month_start,
+                }
+            )
+        return activity
+
+    def get_monthly_watch_stats(
+        self,
+        profile_id: int,
+        months: int = 12,
+        *,
+        as_of: Optional[date] = None,
+    ) -> List[Dict]:
+        """Get calendar-aligned monthly watch-event statistics for one profile."""
+        return self._get_monthly_watch_activity(
+            [profile_id],
+            months=months,
+            as_of=as_of,
+        )
 
     def get_global_rating_distribution(
         self,
@@ -839,39 +927,16 @@ class RatingRepository:
     def get_global_monthly_activity(
         self,
         profile_ids: Optional[List[int]] = None,
+        *,
+        months: int = DASHBOARD_ACTIVITY_MONTHS,
+        as_of: Optional[date] = None,
     ) -> List[Dict]:
-        """Get monthly activity across all or an explicit profile scope."""
-        cutoff_date = datetime.now().date() - timedelta(days=365)
-        year_bucket = extract('year', Rating.watched_date)
-        month_bucket = extract('month', Rating.watched_date)
-
-        query = self.db.query(
-            year_bucket.label('year'),
-            month_bucket.label('month'),
-            func.count(Rating.id).label('movies_watched'),
-            func.avg(Rating.rating).label('avg_rating')
-        ).filter(
-            Rating.watched_date >= cutoff_date,
-            Rating.watched_date.isnot(None),
-            Rating.rating.is_(None) | and_(Rating.rating >= RATING_MIN, Rating.rating <= RATING_MAX),
+        """Get calendar-aligned monthly watch-event activity for a profile scope."""
+        return self._get_monthly_watch_activity(
+            profile_ids,
+            months=months,
+            as_of=as_of,
         )
-        if profile_ids is not None:
-            query = query.filter(
-                Rating.profile_id.in_(profile_ids) if profile_ids else false()
-            )
-        results = query.group_by(
-            year_bucket,
-            month_bucket
-        ).order_by(year_bucket, month_bucket).all()
-        
-        return [
-            {
-                'month': _format_month_bucket(year, month),
-                'movies_watched': count,
-                'average_rating': _safe_round(avg_rating, 2)
-            }
-            for year, month, count, avg_rating in results
-        ]
 
 class ReviewRepository:
     def __init__(self, db: Session):
@@ -1037,7 +1102,10 @@ class AnalyticsRepository:
         group_limit: int = 6,
         top_movies_limit: int = 10,
         usernames: Optional[List[str]] = None,
+        *,
+        now: Optional[datetime] = None,
     ) -> Dict[str, Any]:
+        generated_at = _coerce_utc_now(now)
         if usernames is None:
             usernames = [
                 username
@@ -1065,12 +1133,13 @@ class AnalyticsRepository:
             ),
             "activity_data": rating_repo.get_global_monthly_activity(
                 profile_ids=profile_ids,
+                as_of=generated_at.date(),
             ),
             "group_signals": self.get_group_correlation_metrics(
                 usernames=usernames,
                 limit=group_limit,
             ),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": generated_at.isoformat(),
         }
 
     def _get_latest_metrics_record(self) -> Optional[SystemMetrics]:
@@ -1099,13 +1168,18 @@ class AnalyticsRepository:
         self,
         group_limit: int = 6,
         top_movies_limit: int = 10,
+        *,
+        now: Optional[datetime] = None,
     ) -> Dict[str, Any]:
+        requested_at = _coerce_utc_now(now)
+        expected_meta = _dashboard_snapshot_meta(requested_at.date())
         latest_metrics = self._get_latest_metrics_record()
         latest_profile_update = self._get_latest_profile_update()
         current_profile_count = self._get_profile_count()
 
         if latest_metrics and isinstance(latest_metrics.metrics, dict):
             dashboard_snapshot = latest_metrics.metrics.get("dashboard_snapshot")
+            snapshot_meta = latest_metrics.metrics.get("dashboard_snapshot_meta")
             snapshot_timestamp = _naive_utc(latest_metrics.timestamp)
             cached_profile_count = None
             if isinstance(dashboard_snapshot, dict):
@@ -1114,11 +1188,11 @@ class AnalyticsRepository:
                     .get("system_stats", {})
                     .get("total_profiles")
                 )
-            if dashboard_snapshot and (
+            if dashboard_snapshot and snapshot_meta == expected_meta and (
                 cached_profile_count == current_profile_count
+                and snapshot_timestamp is not None
                 and (
                     latest_profile_update is None
-                    or snapshot_timestamp is None
                     or latest_profile_update <= snapshot_timestamp
                 )
             ):
@@ -1127,24 +1201,32 @@ class AnalyticsRepository:
         return self.refresh_dashboard_analytics_snapshot(
             group_limit=group_limit,
             top_movies_limit=top_movies_limit,
+            now=requested_at,
         )
 
     def refresh_dashboard_analytics_snapshot(
         self,
         group_limit: int = 6,
         top_movies_limit: int = 10,
+        *,
+        now: Optional[datetime] = None,
     ) -> Dict[str, Any]:
+        refreshed_at = _coerce_utc_now(now)
         snapshot = self.build_dashboard_analytics_snapshot(
             group_limit=group_limit,
             top_movies_limit=top_movies_limit,
+            now=refreshed_at,
         )
         system_stats = snapshot["system_stats"]
-        metrics_payload = {"dashboard_snapshot": snapshot}
+        metrics_payload = {
+            "dashboard_snapshot": snapshot,
+            "dashboard_snapshot_meta": _dashboard_snapshot_meta(refreshed_at.date()),
+        }
 
         latest_metrics = self._get_latest_metrics_record()
         if latest_metrics:
             existing_metrics = latest_metrics.metrics if isinstance(latest_metrics.metrics, dict) else {}
-            latest_metrics.timestamp = datetime.now(timezone.utc)
+            latest_metrics.timestamp = refreshed_at
             latest_metrics.total_profiles = system_stats["total_profiles"]
             latest_metrics.total_movies_tracked = system_stats["total_movies_tracked"]
             latest_metrics.total_reviews = system_stats["total_reviews"]
@@ -1155,7 +1237,7 @@ class AnalyticsRepository:
             }
         else:
             latest_metrics = SystemMetrics(
-                timestamp=datetime.now(timezone.utc),
+                timestamp=refreshed_at,
                 total_profiles=system_stats["total_profiles"],
                 total_movies_tracked=system_stats["total_movies_tracked"],
                 total_reviews=system_stats["total_reviews"],

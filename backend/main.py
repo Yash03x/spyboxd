@@ -128,6 +128,7 @@ class PublicActivityPoint(BaseModel):
     month: str
     movies_watched: int = Field(ge=0)
     average_rating: Optional[float] = Field(default=None, ge=0, le=5)
+    is_partial: bool
 
 
 class PublicSignalCounts(BaseModel):
@@ -225,6 +226,7 @@ def _public_dashboard_payload(
                 "month": point["month"],
                 "movies_watched": _safe_nonnegative_int(point.get("movies_watched")),
                 "average_rating": _safe_public_rating(point.get("average_rating")),
+                "is_partial": point.get("is_partial") is True,
             }
             for point in activity_data
             if isinstance(point, dict)
