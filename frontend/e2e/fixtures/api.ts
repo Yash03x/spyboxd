@@ -149,7 +149,7 @@ const publicDashboard = {
   timestamp: '2026-07-29T12:00:00Z',
 };
 
-const profileAnalysis = {
+export const profileAnalysis = {
   username: 'alpha',
   total_films: 1_200,
   rated_films: 900,

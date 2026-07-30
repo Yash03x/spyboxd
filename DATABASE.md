@@ -123,9 +123,12 @@ No Letterboxd import depends on these tables or on a TMDB credential.
 ### `app_users`, `user_tracked_profiles`, and `profile_access_requests`
 
 `app_users` maps a verified Clerk user ID to the local access model and supports
-local account disablement. `user_tracked_profiles` is the many-to-many access
-mapping between an app user and a completed canonical profile. It does not own
-or duplicate the profile's Letterboxd data.
+local account disablement. New accounts also store a canonical, case-insensitively
+unique `letterboxd_username`; `primary_profile_required` distinguishes mandatory
+profile onboarding from grandfathered and administrative accounts.
+`user_tracked_profiles` is the many-to-many access mapping between an app user
+and a completed canonical profile. It does not own or duplicate the profile's
+Letterboxd data.
 
 `profile_access_requests` stores an exact Letterboxd username requested by one
 user. A completed profile already in the database is attached immediately;
@@ -202,3 +205,6 @@ Residential machine
 - Migration `20260730_0008` adds the per-user access model and a case-insensitive
   unique profile-username index. It aborts before changing the schema if legacy
   usernames collide after case normalization.
+- Migration `20260730_0009` adds each account's canonical Letterboxd username,
+  case-insensitive uniqueness, and primary-profile onboarding state while
+  grandfathering pre-existing accounts.
