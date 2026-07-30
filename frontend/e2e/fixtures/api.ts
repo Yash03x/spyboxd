@@ -503,7 +503,10 @@ export async function installApiMocks(
   }
 
   await page.addInitScript(({ signedIn }) => {
-    const user = signedIn ? {
+    const effectiveSignedIn = signedIn && document.cookie.split(';').some((cookie) => (
+      cookie.trim() === 'spyboxd-e2e-auth=1'
+    ));
+    const user = effectiveSignedIn ? {
       id: 'user_e2e',
       firstName: 'E2E',
       lastName: 'User',
@@ -513,7 +516,7 @@ export async function installApiMocks(
       hasImage: false,
       organizationMemberships: [],
     } : null;
-    const session = signedIn ? {
+    const session = effectiveSignedIn ? {
       id: 'sess_e2e',
       status: 'active',
       user,
@@ -532,7 +535,7 @@ export async function installApiMocks(
     const clerk = {
       loaded: true,
       status: 'ready',
-      isSignedIn: false,
+      isSignedIn: effectiveSignedIn,
       client: resources.client,
       session: resources.session,
       user: resources.user,
@@ -558,7 +561,11 @@ export async function installApiMocks(
       buildAfterSignOutUrl: () => '/',
       openSignIn: () => undefined,
       load: async () => undefined,
-      signOut: async () => undefined,
+      signOut: async (options?: { redirectUrl?: string }) => {
+        document.cookie = 'spyboxd-e2e-auth=; Max-Age=0; Path=/; SameSite=Lax';
+        document.cookie = 'spyboxd-e2e-auth=; Max-Age=0; Path=/; Domain=localhost; SameSite=Lax';
+        window.location.assign(options?.redirectUrl ?? '/');
+      },
       mountUserButton(node: HTMLElement) {
         const button = document.createElement('button');
         button.type = 'button';

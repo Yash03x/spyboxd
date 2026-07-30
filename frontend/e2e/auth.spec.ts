@@ -1,6 +1,17 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import { installApiMocks } from './fixtures/api';
+
+const publicDashboardUrl = /^http:\/\/(?:127\.0\.0\.1|localhost):8000\/api\/public\/dashboard$/;
+
+async function expectPublicAuthControl(page: Page, authenticated: boolean) {
+  if (authenticated) {
+    await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
+    return;
+  }
+  await expect(page.getByRole('link', { name: 'Sign in to monitor profiles' })).toBeVisible();
+}
 
 test('the aggregate dashboard is the anonymous landing page', async ({ page }) => {
   await installApiMocks(page, { authenticated: false });
@@ -30,7 +41,47 @@ test('the aggregate dashboard is the anonymous landing page', async ({ page }) =
   expect(apiRequests.length).toBeGreaterThanOrEqual(1);
   expect(apiRequests.every(({ path }) => path === '/api/public/dashboard')).toBe(true);
   expect(apiRequests.every(({ authorization }) => authorization === undefined)).toBe(true);
+
+  await signInLink.click();
+  await expect(page).toHaveURL(/\/sign-in(?:\/|\?|$)/);
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
 });
+
+for (const authenticated of [false, true]) {
+  const authState = authenticated ? 'signed-in' : 'anonymous';
+
+  test(`the ${authState} public auth header remains available while aggregate data loads`, async ({ page }) => {
+    await installApiMocks(page, { authenticated });
+    let releaseRequest!: () => void;
+    const requestGate = new Promise<void>((resolve) => {
+      releaseRequest = resolve;
+    });
+    await page.route(publicDashboardUrl, async (route) => {
+      await requestGate;
+      await route.fallback();
+    });
+
+    await page.goto('/');
+
+    await expectPublicAuthControl(page, authenticated);
+    await expect(page.getByText('Loading Spyboxd totals…')).toBeVisible();
+
+    releaseRequest();
+    await expect(page.getByRole('heading', { name: /without exposing anyone's profile/i })).toBeVisible();
+  });
+
+  test(`the ${authState} public auth header remains available when aggregate data fails`, async ({ page }) => {
+    await installApiMocks(page, { authenticated });
+    await page.route(publicDashboardUrl, (route) => (
+      route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Unavailable' }) })
+    ));
+
+    await page.goto('/');
+
+    await expectPublicAuthControl(page, authenticated);
+    await expect(page.getByText('The public dashboard could not be loaded.')).toBeVisible();
+  });
+}
 
 for (const path of ['/dashboard', '/profiles', '/analysis', '/compare', '/spy-signals', '/watch-together', '/u/alpha']) {
   test(`an anonymous visitor cannot bypass auth with ${path}`, async ({ page }) => {
