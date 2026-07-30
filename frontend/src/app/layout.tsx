@@ -10,7 +10,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ClerkProvider afterSignOutUrl="/">
+    <ClerkProvider
+      afterSignOutUrl="/"
+      localization={{
+        formFieldLabel__username: 'Letterboxd username',
+        formFieldInputPlaceholder__username: 'e.g. yash03x',
+        formFieldLabel__emailAddress_username: 'Email or Letterboxd username',
+        formFieldInputPlaceholder__emailAddress_username: 'Enter email or Letterboxd username',
+      }}
+    >
       <html lang="en">
         <body>
           <Providers>{children}</Providers>

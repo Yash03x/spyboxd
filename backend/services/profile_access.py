@@ -20,7 +20,7 @@ from database.models import (
 )
 
 
-PROFILE_USERNAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,49}")
+PROFILE_USERNAME = re.compile(r"[A-Za-z0-9_]{2,15}")
 REQUEST_STATUSES = {"pending", "approved", "rejected", "fulfilled"}
 ADMIN_DECISIONS = {"approved", "rejected"}
 
@@ -43,34 +43,33 @@ def normalize_profile_username(raw_username: str) -> tuple[str, str]:
     return username, username.casefold()
 
 
+def _normalize_stored_profile_lookup(raw_username: str) -> str:
+    """Normalize an existing profile key without re-validating legacy data.
+
+    New identities and requests must follow Letterboxd's current username
+    rules. Existing rows may predate that validation, however, and users must
+    still be able to remove one from their monitoring set.
+    """
+
+    username = (raw_username or "").strip().lstrip("@")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a profile username.",
+        )
+    return username.casefold()
+
+
 def ensure_app_user(db: Session, clerk_user: ClerkUser) -> AppUser:
-    app_user = (
+    # Every authenticated entry point goes through identity provisioning. This
+    # prevents a new account from bypassing mandatory onboarding by visiting a
+    # route other than /api/me first.
+    provision_app_user_identity(db, clerk_user)
+    return (
         db.query(AppUser)
         .filter(AppUser.clerk_user_id == clerk_user.user_id)
-        .first()
+        .one()
     )
-    if app_user is not None:
-        if not app_user.is_active:
-            raise HTTPException(status_code=403, detail="User access is disabled")
-        return app_user
-
-    app_user = AppUser(clerk_user_id=clerk_user.user_id)
-    db.add(app_user)
-    try:
-        db.commit()
-        db.refresh(app_user)
-        return app_user
-    except IntegrityError:
-        # A concurrent first request may have inserted the same Clerk identity.
-        db.rollback()
-        app_user = (
-            db.query(AppUser)
-            .filter(AppUser.clerk_user_id == clerk_user.user_id)
-            .one()
-        )
-        if not app_user.is_active:
-            raise HTTPException(status_code=403, detail="User access is disabled")
-        return app_user
 
 
 def _tracked_profile_mapping(db: Session, app_user_id: int) -> dict[str, Profile]:
@@ -362,6 +361,7 @@ def _add_tracking(
     app_user_id: int,
     profile_id: int,
     source: str,
+    enforce_limit: bool = True,
 ) -> UserTrackedProfile:
     # Serialize count-and-insert for one user so concurrent requests cannot
     # both observe a free slot and exceed the per-user tracking cap.
@@ -376,17 +376,18 @@ def _add_tracking(
         .first()
     )
     if tracked is None:
-        tracked_count = (
-            db.query(UserTrackedProfile.id)
-            .filter(UserTrackedProfile.user_id == app_user_id)
-            .count()
-        )
-        max_tracked = _positive_limit("SPYBOXD_MAX_TRACKED_PROFILES_PER_USER", 25)
-        if tracked_count >= max_tracked:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"You can track at most {max_tracked} profiles.",
+        if enforce_limit:
+            tracked_count = (
+                db.query(UserTrackedProfile.id)
+                .filter(UserTrackedProfile.user_id == app_user_id)
+                .count()
             )
+            max_tracked = _positive_limit("SPYBOXD_MAX_TRACKED_PROFILES_PER_USER", 25)
+            if tracked_count >= max_tracked:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"You can track at most {max_tracked} profiles.",
+                )
         tracked = UserTrackedProfile(
             user_id=app_user_id,
             profile_id=profile_id,
@@ -423,6 +424,305 @@ def profile_summary(profile: Profile) -> dict[str, Any]:
     }
 
 
+def _missing_required_identity() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "Your account is missing its required Letterboxd username. "
+            "Sign out and complete sign-up again, or contact an administrator."
+        ),
+    )
+
+
+def _identity_status_without_provisioning(
+    db: Session,
+    *,
+    app_user: AppUser,
+    username: str,
+    normalized_username: str,
+) -> dict[str, Any]:
+    """Describe a grandfathered identity without creating access or a request."""
+
+    profile = _single_profile_by_normalized_username(db, normalized_username)
+    if profile is not None:
+        tracked = (
+            db.query(UserTrackedProfile.id)
+            .filter(
+                UserTrackedProfile.user_id == app_user.id,
+                UserTrackedProfile.profile_id == profile.id,
+            )
+            .first()
+        )
+        if tracked is not None:
+            return {
+                "letterboxd_username": username,
+                "primary_profile_status": "tracked",
+            }
+
+    request = (
+        db.query(ProfileAccessRequest)
+        .filter(
+            ProfileAccessRequest.user_id == app_user.id,
+            ProfileAccessRequest.normalized_username == normalized_username,
+        )
+        .first()
+    )
+    if request is not None:
+        request_status = (
+            request.status
+            if request.status in {"pending", "approved", "rejected"}
+            else "unlinked"
+        )
+        return {
+            "letterboxd_username": username,
+            "primary_profile_status": request_status,
+        }
+
+    if (
+        profile is not None
+        and profile.is_active
+        and profile.scraping_status == "completed"
+    ):
+        return {
+            "letterboxd_username": username,
+            "primary_profile_status": "available",
+        }
+
+    return {
+        "letterboxd_username": username,
+        "primary_profile_status": "unlinked",
+    }
+
+
+def _provision_app_user_identity_once(
+    db: Session,
+    clerk_user: ClerkUser,
+    *,
+    claimed_username: Optional[str],
+    claimed_normalized_username: Optional[str],
+) -> dict[str, Any]:
+    app_user = (
+        db.query(AppUser)
+        .filter(AppUser.clerk_user_id == clerk_user.user_id)
+        .first()
+    )
+    if app_user is None:
+        if claimed_username is None and not clerk_user.is_admin:
+            raise _missing_required_identity()
+        app_user = AppUser(
+            clerk_user_id=clerk_user.user_id,
+            letterboxd_username=claimed_username,
+            # Admin/service compatibility is intentionally exempt. All new
+            # ordinary accounts must finish the primary-profile flow.
+            primary_profile_required=not clerk_user.is_admin,
+        )
+        db.add(app_user)
+        db.flush()
+    elif not app_user.is_active:
+        raise HTTPException(status_code=403, detail="User access is disabled")
+
+    # Admin identities remain compatible even if an older application process
+    # inserted their row after the migration's grandfathering UPDATE.
+    if clerk_user.is_admin and app_user.primary_profile_required:
+        app_user.primary_profile_required = False
+        db.flush()
+
+    stored_username: Optional[str] = app_user.letterboxd_username
+    stored_normalized_username: Optional[str] = None
+    if stored_username is not None:
+        stored_username, stored_normalized_username = normalize_profile_username(
+            stored_username
+        )
+
+    if claimed_username is not None:
+        if stored_username is None:
+            app_user.letterboxd_username = claimed_username
+            stored_username = claimed_username
+            stored_normalized_username = claimed_normalized_username
+            db.flush()
+        elif stored_normalized_username != claimed_normalized_username:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Your Clerk username no longer matches the Letterboxd username "
+                    "linked to this Spyboxd account. Contact an administrator to migrate it."
+                ),
+            )
+
+    if stored_username is None or stored_normalized_username is None:
+        if app_user.primary_profile_required:
+            raise _missing_required_identity()
+        db.commit()
+        return {
+            "letterboxd_username": None,
+            "primary_profile_status": "unconfigured",
+        }
+
+    if not app_user.primary_profile_required:
+        identity = _identity_status_without_provisioning(
+            db,
+            app_user=app_user,
+            username=stored_username,
+            normalized_username=stored_normalized_username,
+        )
+        db.commit()
+        return identity
+
+    _lock_user_access_mutations(db, app_user.id)
+    profile = _single_profile_by_normalized_username(
+        db,
+        stored_normalized_username,
+    )
+    tracked = None
+    if profile is not None:
+        tracked = (
+            db.query(UserTrackedProfile)
+            .filter(
+                UserTrackedProfile.user_id == app_user.id,
+                UserTrackedProfile.profile_id == profile.id,
+            )
+            .first()
+        )
+    if tracked is not None:
+        db.commit()
+        return {
+            "letterboxd_username": stored_username,
+            "primary_profile_status": "tracked",
+        }
+
+    request = (
+        db.query(ProfileAccessRequest)
+        .filter(
+            ProfileAccessRequest.user_id == app_user.id,
+            ProfileAccessRequest.normalized_username
+            == stored_normalized_username,
+        )
+        .first()
+    )
+
+    # An automatic first-login retry must not undo a moderator's rejection.
+    if request is not None and request.status == "rejected":
+        db.commit()
+        return {
+            "letterboxd_username": stored_username,
+            "primary_profile_status": "rejected",
+        }
+
+    if (
+        profile is not None
+        and profile.is_active
+        and profile.scraping_status == "completed"
+    ):
+        _add_tracking(
+            db,
+            app_user_id=app_user.id,
+            profile_id=profile.id,
+            source="direct",
+            # The mandatory primary identity is not an optional monitoring slot.
+            enforce_limit=False,
+        )
+        if request is not None:
+            request.status = "fulfilled"
+            request.fulfilled_profile_id = profile.id
+            request.resolved_at = datetime.now(timezone.utc)
+        db.commit()
+        return {
+            "letterboxd_username": stored_username,
+            "primary_profile_status": "tracked",
+        }
+
+    if request is not None:
+        request_status = (
+            request.status
+            if request.status in {"pending", "approved", "rejected"}
+            else "unlinked"
+        )
+        db.commit()
+        return {
+            "letterboxd_username": stored_username,
+            "primary_profile_status": request_status,
+        }
+
+    db.add(
+        ProfileAccessRequest(
+            user_id=app_user.id,
+            requested_username=stored_username,
+            normalized_username=stored_normalized_username,
+            status="pending",
+        )
+    )
+    db.flush()
+    db.commit()
+    return {
+        "letterboxd_username": stored_username,
+        "primary_profile_status": "pending",
+    }
+
+
+def provision_app_user_identity(
+    db: Session,
+    clerk_user: ClerkUser,
+) -> dict[str, Any]:
+    """Atomically bind a Clerk identity to its mandatory Letterboxd profile.
+
+    Clerk's stable subject remains the authorization key. The signed username is
+    copied once into the local user row, then the existing shared-profile access
+    model either grants the completed profile or queues exactly one sync request.
+    A migration marker keeps pre-existing users and admins on their old behavior.
+    """
+
+    if clerk_user.user_id == "ingestion-token" and clerk_user.session_id is None:
+        return {
+            "letterboxd_username": None,
+            "primary_profile_status": "unconfigured",
+        }
+
+    claimed_username: Optional[str] = None
+    claimed_normalized_username: Optional[str] = None
+    if clerk_user.letterboxd_username is not None:
+        claimed_username, claimed_normalized_username = normalize_profile_username(
+            clerk_user.letterboxd_username
+        )
+
+    for attempt in range(2):
+        try:
+            return _provision_app_user_identity_once(
+                db,
+                clerk_user,
+                claimed_username=claimed_username,
+                claimed_normalized_username=claimed_normalized_username,
+            )
+        except IntegrityError as exc:
+            db.rollback()
+            concurrent_user = (
+                db.query(AppUser)
+                .filter(AppUser.clerk_user_id == clerk_user.user_id)
+                .first()
+            )
+            if concurrent_user is not None and attempt == 0:
+                continue
+            if claimed_normalized_username is not None:
+                conflicting_user = (
+                    db.query(AppUser)
+                    .filter(
+                        func.lower(AppUser.letterboxd_username)
+                        == claimed_normalized_username
+                    )
+                    .first()
+                )
+                if conflicting_user is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="This Letterboxd username is already linked to another Spyboxd account.",
+                    ) from exc
+            raise
+        except Exception:
+            db.rollback()
+            raise
+
+    raise RuntimeError("Unreachable identity provisioning retry state")
+
+
 def request_summary(
     request: ProfileAccessRequest,
     *,
@@ -454,6 +754,17 @@ def request_summary(
     return summary
 
 
+def _request_is_required_primary(request: ProfileAccessRequest) -> bool:
+    app_user = request.user
+    return bool(
+        app_user is not None
+        and app_user.primary_profile_required
+        and app_user.letterboxd_username
+        and app_user.letterboxd_username.casefold()
+        == request.normalized_username.casefold()
+    )
+
+
 def fulfill_pending_requests(
     db: Session,
     profile: Profile,
@@ -466,6 +777,7 @@ def fulfill_pending_requests(
     normalized = profile.username.casefold()
     requests = (
         db.query(ProfileAccessRequest)
+        .options(joinedload(ProfileAccessRequest.user))
         .filter(
             ProfileAccessRequest.normalized_username == normalized,
             ProfileAccessRequest.status.in_(("pending", "approved")),
@@ -482,6 +794,7 @@ def fulfill_pending_requests(
                 app_user_id=request.user_id,
                 profile_id=profile.id,
                 source="request_fulfillment",
+                enforce_limit=not _request_is_required_primary(request),
             )
         except HTTPException as exc:
             if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
@@ -757,6 +1070,7 @@ def decide_profile_request(
                     app_user_id=request.user_id,
                     profile_id=profile.id,
                     source="request_fulfillment",
+                    enforce_limit=not _request_is_required_primary(request),
                 )
             except HTTPException as exc:
                 if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
@@ -770,8 +1084,16 @@ def decide_profile_request(
 
 
 def untrack_profile(db: Session, clerk_user: ClerkUser, username: str) -> bool:
-    _, normalized = normalize_profile_username(username)
+    normalized = _normalize_stored_profile_lookup(username)
     app_user = ensure_app_user(db, clerk_user)
+    primary_username = app_user.letterboxd_username
+    if app_user.primary_profile_required and primary_username is not None:
+        normalized_primary = primary_username.casefold()
+        if normalized == normalized_primary:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Your primary Letterboxd profile cannot be untracked.",
+            )
     _lock_user_access_mutations(db, app_user.id)
     profile = _single_profile_by_normalized_username(
         db,

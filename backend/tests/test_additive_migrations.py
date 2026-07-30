@@ -22,7 +22,8 @@ class AdditiveMigrationContractTests(unittest.TestCase):
         config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
         script = ScriptDirectory.from_config(config)
 
-        self.assertEqual(script.get_heads(), ["20260730_0008"])
+        self.assertEqual(script.get_heads(), ["20260730_0009"])
+        self.assertEqual(script.get_revision("20260730_0009").down_revision, "20260730_0008")
         self.assertEqual(script.get_revision("20260730_0008").down_revision, "20260729_0007")
         self.assertEqual(script.get_revision("20260729_0007").down_revision, "20260729_0006")
         self.assertEqual(script.get_revision("20260729_0006").down_revision, "20260729_0005")
@@ -89,7 +90,12 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "profile_source_activities": {"profile_id", "movie_id", "activity_type", "activity_date", "date_semantics"},
             "movie_lists": {"tags"},
             "watchlist_items": {"added_date_source_kind"},
-            "app_users": {"clerk_user_id", "is_active"},
+            "app_users": {
+                "clerk_user_id",
+                "letterboxd_username",
+                "primary_profile_required",
+                "is_active",
+            },
             "user_tracked_profiles": {"user_id", "profile_id", "source"},
             "profile_access_requests": {
                 "user_id",
@@ -129,11 +135,36 @@ class AdditiveMigrationContractTests(unittest.TestCase):
         self.assertIn("uq_profiles_username_lower", profile_indexes)
         self.assertTrue(profile_indexes["uq_profiles_username_lower"].unique)
 
+        app_user_indexes = {
+            index.name: index for index in Base.metadata.tables["app_users"].indexes
+        }
+        self.assertIn(
+            "uq_app_users_letterboxd_username_lower",
+            app_user_indexes,
+        )
+        self.assertTrue(
+            app_user_indexes["uq_app_users_letterboxd_username_lower"].unique
+        )
+
         migration_source = (
             REPO_ROOT / "alembic/versions/20260730_0008_add_profile_access.py"
         ).read_text()
         self.assertIn("HAVING count(*) > 1", migration_source)
         self.assertIn("uq_profiles_username_lower", migration_source)
+
+        identity_migration_source = (
+            REPO_ROOT
+            / "alembic/versions/20260730_0009_add_letterboxd_identity.py"
+        ).read_text()
+        self.assertIn(
+            "uq_app_users_letterboxd_username_lower",
+            identity_migration_source,
+        )
+        self.assertIn(
+            "UPDATE app_users SET primary_profile_required = false",
+            identity_migration_source,
+        )
+        self.assertIn("server_default=sa.text(\"true\")", identity_migration_source)
 
 
 @unittest.skipUnless(
@@ -155,7 +186,7 @@ class AdditiveMigrationPostgresTests(unittest.TestCase):
             connection.execute(text("SET TRANSACTION READ ONLY"))
             try:
                 current_revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                self.assertEqual(current_revision, "20260730_0008")
+                self.assertEqual(current_revision, "20260730_0009")
 
                 counts = connection.execute(
                     text(

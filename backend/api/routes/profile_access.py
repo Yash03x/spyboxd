@@ -10,9 +10,9 @@ from auth import ClerkUser, get_admin_user, get_current_user
 from database.connection import get_db
 from services.profile_access import (
     decide_profile_request,
-    ensure_app_user,
     list_profile_catalog,
     list_profile_requests,
+    provision_app_user_identity,
     track_profile_by_id,
     track_or_request_profile,
     untrack_profile,
@@ -36,8 +36,12 @@ def get_me(
     user: ClerkUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    ensure_app_user(db, user)
-    return {"user_id": user.user_id, "is_admin": user.is_admin}
+    identity = provision_app_user_identity(db, user)
+    return {
+        "user_id": user.user_id,
+        "is_admin": user.is_admin,
+        **identity,
+    }
 
 
 @router.get("/profiles/catalog")

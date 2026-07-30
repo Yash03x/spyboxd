@@ -10,6 +10,7 @@ async function expectPublicAuthControl(page: Page, authenticated: boolean) {
     await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
     return;
   }
+  await expect(page.getByRole('link', { name: 'Create account' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Sign in to monitor profiles' })).toBeVisible();
 }
 
@@ -33,6 +34,8 @@ test('the aggregate dashboard is the anonymous landing page', async ({ page }) =
   await expect(page.getByTestId('public-dashboard')).toBeVisible();
   await expect(page.getByRole('heading', { name: /without exposing anyone's profile/i })).toBeVisible();
   const signInLink = page.getByRole('link', { name: 'Sign in to monitor profiles' });
+  const createAccountLink = page.getByRole('link', { name: 'Create account' });
+  await expect(createAccountLink).toHaveAttribute('href', '/sign-up');
   await expect(signInLink).toBeVisible();
   await expect(signInLink).toHaveAttribute('href', '/sign-in?redirect_url=%2Fprofiles');
   await expect(page.getByRole('link', { name: 'Sign in for private tools' }))
@@ -47,6 +50,25 @@ test('the aggregate dashboard is the anonymous landing page', async ({ page }) =
   await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
     .toContain('dark');
+});
+
+test('sign-up uses one required Letterboxd username as the Spyboxd identity', async ({ page }) => {
+  await installApiMocks(page, { authenticated: false });
+
+  await page.goto('/sign-up');
+
+  await expect(page.getByRole('heading', {
+    level: 1,
+    name: 'Your Letterboxd username is your Spyboxd username.',
+  })).toBeVisible();
+  await expect(page.getByText(/automatically monitor it if it is already synced/i)).toBeVisible();
+  const usernameInput = page.getByRole('textbox', { name: 'Letterboxd username' });
+  await expect(usernameInput).toBeVisible();
+  await expect(usernameInput).toHaveAttribute('required', '');
+  await expect(usernameInput).toHaveAttribute('minlength', '2');
+  await expect(usernameInput).toHaveAttribute('maxlength', '15');
+  await expect(usernameInput).toHaveAttribute('pattern', '[A-Za-z0-9_]{2,15}');
+  await expect(page.locator('[data-force-redirect-url="/profiles?onboarding=1"]')).toBeAttached();
 });
 
 for (const authenticated of [false, true]) {
