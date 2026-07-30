@@ -189,13 +189,13 @@ jobs:
           timeout --signal=TERM --kill-after=2m 30m \
             deploy/production-ssh.sh run sh -s -- \
               "${RELEASE_SHA}" "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}" \
-              "${CLERK_BRIDGE_EDGE}" "${REPOSITORY_URL}" <<'REMOTE'
+              "${REPOSITORY_URL}" "${CLERK_BRIDGE_EDGE}" <<'REMOTE'
             set -eu
             RELEASE_SHA="$1"
             REMOTE_BUNDLE="$2"
             REMOTE_CHECKSUM="$3"
-            CLERK_BRIDGE_EDGE="${4:-}"
-            REPOSITORY_URL="$5"
+            REPOSITORY_URL="$4"
+            CLERK_BRIDGE_EDGE="${5:-}"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'')
