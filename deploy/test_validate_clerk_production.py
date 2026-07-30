@@ -527,6 +527,16 @@ class ClerkProductionValidatorTests(unittest.TestCase):
             workflow,
         )
 
+    def test_external_smoke_redirect_probe_is_line_terminated(self) -> None:
+        workflow = (SCRIPT.parents[1] / ".github/workflows/deploy.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "--write-out '%{http_code} %{redirect_url}\\n' --max-time 10",
+            workflow,
+        )
+
     def test_runtime_rejects_development_key_previous_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             frontend, api, manifest, _ = self.write_runtime_files(Path(directory))
