@@ -1,51 +1,26 @@
-import type { Metadata } from 'next';
+'use client';
+
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { useParams } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
+import { profileApi } from '../../../services/api';
+import LoadingSpinner from '../../../components/LoadingSpinner';
+import ErrorMessage from '../../../components/ErrorMessage';
 
-const API_URL = process.env.API_URL ?? 'http://localhost:8000';
+export default function ProfileSnapshotPage() {
+  const params = useParams<{ username: string }>();
+  const username = params.username;
+  const profileQuery = useQuery({
+    queryKey: ['profile-snapshot', username],
+    queryFn: () => profileApi.getProfileSnapshot(username),
+    enabled: Boolean(username),
+  });
 
-interface Props {
-  params: Promise<{ username: string }>;
-}
-
-async function getPublicProfile(username: string) {
-  try {
-    const res = await fetch(
-      `${API_URL}/public/profile/${encodeURIComponent(username)}`,
-      { next: { revalidate: 3600 } }
-    );
-    if (!res.ok) return null;
-    return res.json();
-  } catch {
-    return null;
+  if (profileQuery.isLoading) return <LoadingSpinner message="Loading profile…" />;
+  if (profileQuery.error || !profileQuery.data) {
+    return <ErrorMessage message="This profile is unavailable or you do not have access." />;
   }
-}
-
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { username } = await params;
-  const profile = await getPublicProfile(username);
-
-  if (!profile) {
-    return { title: `${username} — Spyboxd` };
-  }
-
-  const description = `${profile.total_films} films watched · ${profile.avg_rating?.toFixed(1)}★ avg · ${profile.total_reviews} reviews`;
-
-  return {
-    title: `${profile.username} on Spyboxd`,
-    description,
-    openGraph: {
-      title: `${profile.username} on Spyboxd`,
-      description,
-    },
-  };
-}
-
-export default async function PublicProfilePage({ params }: Props) {
-  const { username } = await params;
-  const profile = await getPublicProfile(username);
-
-  if (!profile) notFound();
+  const profile = profileQuery.data;
 
   return (
     <main className="min-h-screen flex items-center justify-center px-4 py-12">
@@ -78,9 +53,9 @@ export default async function PublicProfilePage({ params }: Props) {
         </div>
 
         <p className="text-center text-xs text-white/30">
-          Powered by{' '}
-          <Link href="/" className="text-cinema-400 font-medium hover:text-cinema-300 transition-colors">
-            Spyboxd
+          Back to{' '}
+          <Link href="/dashboard" className="text-cinema-400 font-medium hover:text-cinema-300 transition-colors">
+            My Dashboard
           </Link>
         </p>
       </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { profileApi, dashboardApi, changesApi } from '../services/api';
@@ -34,30 +34,60 @@ import { useCurrentUser } from '../hooks/useCurrentUser';
 
 const Dashboard: React.FC = () => {
   const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
+  const [dashboardScope, setDashboardScope] = useState<'tracked' | 'global'>('global');
   const router = useRouter();
+  const queryClient = useQueryClient();
   const currentUserQuery = useCurrentUser();
   const isAdmin = currentUserQuery.data?.is_admin ?? false;
+  const isGlobalAdminView = isAdmin && dashboardScope === 'global';
+  const effectiveDashboardScope: 'tracked' | 'global' = isGlobalAdminView ? 'global' : 'tracked';
   
   const { data: profiles, isLoading, error, refetch } = useQuery({
-    queryKey: ['profiles'],
-    queryFn: profileApi.getProfiles,
+    queryKey: ['profiles', 'dashboard', effectiveDashboardScope],
+    queryFn: () => isGlobalAdminView ? profileApi.getProfiles() : profileApi.getTrackedProfiles(),
+    enabled: currentUserQuery.isSuccess,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
 
   const { data: analytics, isLoading: analyticsLoading, refetch: refetchAnalytics } = useQuery({
-    queryKey: ['dashboard-analytics'],
-    queryFn: dashboardApi.getAnalytics,
+    queryKey: ['dashboard-analytics', effectiveDashboardScope],
+    queryFn: () => dashboardApi.getAnalytics(isGlobalAdminView ? 'global' : 'tracked'),
+    enabled: currentUserQuery.isSuccess,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
 
   const recentChangesQuery = useQuery({
-    queryKey: ['recent-changes', 'latest-sync', 6],
-    queryFn: () => changesApi.getRecentChanges({ limit: 6, latestSyncOnly: true }),
+    queryKey: ['recent-changes', 'latest-sync', 6, effectiveDashboardScope, (profiles ?? []).map((profile) => profile.username)],
+    queryFn: () => changesApi.getRecentChanges({
+      profiles: isGlobalAdminView ? undefined : (profiles ?? []).map((profile) => profile.username),
+      limit: 6,
+      latestSyncOnly: true,
+    }),
+    enabled: currentUserQuery.isSuccess && (isGlobalAdminView || (profiles?.length ?? 0) > 0),
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
+
+  const adminScopeToggle = isAdmin ? (
+    <div className="inline-flex rounded-xl border border-white/10 bg-black/20 p-1" aria-label="Dashboard scope">
+      <button
+        type="button"
+        onClick={() => setDashboardScope('tracked')}
+        className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${dashboardScope === 'tracked' ? 'bg-cinema-500 text-white' : 'text-white/55 hover:text-white'}`}
+      >
+        Monitored
+      </button>
+      <button
+        type="button"
+        onClick={() => setDashboardScope('global')}
+        className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${dashboardScope === 'global' ? 'bg-cinema-500 text-white' : 'text-white/55 hover:text-white'}`}
+      >
+        Global admin
+      </button>
+    </div>
+  ) : null;
 
   // Handle profile deletion
   const handleDeleteProfile = async (username: string) => {
@@ -65,7 +95,13 @@ const Dashboard: React.FC = () => {
       setDeletingProfile(username);
       try {
         await profileApi.deleteProfile(username);
-        await Promise.all([refetch(), refetchAnalytics()]);
+        await Promise.all([
+          refetch(),
+          refetchAnalytics(),
+          queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+          queryClient.invalidateQueries({ queryKey: ['profile-catalog'] }),
+          queryClient.invalidateQueries({ queryKey: ['recent-changes'] }),
+        ]);
       } catch (error) {
         console.error('Failed to delete profile:', error);
       } finally {
@@ -93,11 +129,14 @@ const Dashboard: React.FC = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
       >
-        <div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
           <h1 className="mb-2 text-4xl font-bold text-white text-glow">Dashboard</h1>
           <p className="text-white/60">
-            {isAdmin ? 'Analytics across the Letterboxd profiles you manage.' : 'Analytics across the Letterboxd profiles you track.'}
+            {isGlobalAdminView ? 'Analytics across the complete managed profile library.' : 'Analytics across the Letterboxd profiles you monitor.'}
           </p>
+          </div>
+          {adminScopeToggle}
         </div>
         <section className="card-cinema flex min-h-80 flex-col items-center justify-center px-6 text-center">
           <motion.div
@@ -107,11 +146,11 @@ const Dashboard: React.FC = () => {
           >
             <FilmIcon className="h-10 w-10 text-cinema-400" />
           </motion.div>
-          <h2 className="mt-6 text-2xl font-bold text-white">{isAdmin ? 'Add the first managed profile' : 'Choose your first profile'}</h2>
+          <h2 className="mt-6 text-2xl font-bold text-white">{isGlobalAdminView ? 'Add the first managed profile' : 'Choose your first monitored profile'}</h2>
           <p className="mt-3 max-w-lg text-sm leading-6 text-white/60">
-            {isAdmin
+            {isGlobalAdminView
               ? 'Create a placeholder or publish the first residential full sync to start the managed library.'
-              : 'Add an existing Letterboxd profile instantly, or request a new username for the next residential sync. Your dashboard and analysis will use only the profiles you track.'}
+              : 'Choose an existing Letterboxd profile, or request a new username for the next residential sync. This dashboard uses only the profiles you monitor.'}
           </p>
           <button
             type="button"
@@ -119,7 +158,7 @@ const Dashboard: React.FC = () => {
             className="btn-primary mt-6 flex items-center gap-2"
           >
             <PlusIcon className="h-5 w-5" />
-            {isAdmin ? 'Manage profiles' : 'Add or request a profile'}
+            {isGlobalAdminView ? 'Manage profiles' : 'Choose or request a profile'}
           </button>
         </section>
       </motion.div>
@@ -170,7 +209,7 @@ const Dashboard: React.FC = () => {
             Dashboard
           </h1>
           <p className="text-white/60">
-            {isAdmin ? 'Analytics across the Letterboxd profiles you manage' : 'Analytics across the Letterboxd profiles you track'}
+            {isGlobalAdminView ? 'Analytics across the complete managed profile library' : 'Analytics across the Letterboxd profiles you monitor'}
           </p>
         </div>
         
@@ -180,6 +219,7 @@ const Dashboard: React.FC = () => {
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}
         >
+          {adminScopeToggle}
           <motion.button 
             onClick={handleRefreshAll}
             className="btn-secondary flex items-center space-x-2"
@@ -197,7 +237,7 @@ const Dashboard: React.FC = () => {
             whileTap={{ scale: 0.95 }}
           >
             <PlusIcon className="w-5 h-5" />
-            <span>{isAdmin ? 'Manage Profiles' : 'Add or manage profiles'}</span>
+            <span>{isGlobalAdminView ? 'Manage Profiles' : 'Choose monitored profiles'}</span>
           </motion.button>
         </motion.div>
       </motion.div>
@@ -210,7 +250,7 @@ const Dashboard: React.FC = () => {
         transition={{ delay: 0.4 }}
       >
         <StatsCard
-          title={isAdmin ? 'Managed Profiles' : 'Your Profiles'}
+          title={isGlobalAdminView ? 'Managed Profiles' : 'Monitored Profiles'}
           value={totalProfiles}
           subtitle={`${activeProfiles} ready for analysis`}
           icon={Users}
@@ -218,18 +258,18 @@ const Dashboard: React.FC = () => {
         />
         
         <StatsCard
-          title={isAdmin ? 'Films in Managed Set' : 'Films in Your Set'}
+          title={isGlobalAdminView ? 'Films in Managed Set' : 'Films in Monitored Set'}
           value={totalMovies}
-          subtitle={`Across ${isAdmin ? 'managed' : 'tracked'} profiles`}
+          subtitle={`Across ${isGlobalAdminView ? 'managed' : 'monitored'} profiles`}
           icon={Film}
           gradient="from-blue-500/20 to-blue-600/10"
           delay={0.1}
         />
         
         <StatsCard
-          title={isAdmin ? 'Reviews in Managed Set' : 'Reviews in Your Set'}
+          title={isGlobalAdminView ? 'Reviews in Managed Set' : 'Reviews in Monitored Set'}
           value={totalReviews}
-          subtitle={`Across ${isAdmin ? 'managed' : 'tracked'} profiles`}
+          subtitle={`Across ${isGlobalAdminView ? 'managed' : 'monitored'} profiles`}
           icon={MessageCircle}
           gradient="from-purple-500/20 to-purple-600/10"
           delay={0.2}
@@ -238,7 +278,7 @@ const Dashboard: React.FC = () => {
         <StatsCard
           title="Group Average"
           value={avgRating.toFixed(1)}
-          subtitle={`${activeProfiles} ${isAdmin ? 'managed' : 'tracked'} profiles synced`}
+          subtitle={`${activeProfiles} ${isGlobalAdminView ? 'managed' : 'monitored'} profiles synced`}
           icon={Star}
           gradient="from-yellow-500/20 to-yellow-600/10"
           delay={0.3}
@@ -389,7 +429,7 @@ const Dashboard: React.FC = () => {
       >
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-white">
-            {isAdmin ? 'Managed Profiles' : 'Your Profiles'}
+            {isGlobalAdminView ? 'Managed Profiles' : 'Monitored Profiles'}
           </h2>
           <span className="text-white/60 text-sm">
             {profilesArray.length} {profilesArray.length === 1 ? 'profile' : 'profiles'} loaded
@@ -407,7 +447,7 @@ const Dashboard: React.FC = () => {
                   key={profile.username}
                   profile={profile}
                   index={index}
-                  onDelete={isAdmin ? handleDeleteProfile : undefined}
+                  onDelete={isGlobalAdminView ? handleDeleteProfile : undefined}
                   isDeleting={deletingProfile === profile.username}
                 />
               ))}
@@ -449,7 +489,7 @@ const Dashboard: React.FC = () => {
                   whileTap={{ scale: 0.95 }}
                 >
                   <PlusIcon className="w-5 h-5" />
-                  <span>{isAdmin ? 'Manage Profiles' : 'Add or request a profile'}</span>
+                  <span>{isGlobalAdminView ? 'Manage Profiles' : 'Choose or request a profile'}</span>
                 </motion.button>
                 
                 <motion.button 

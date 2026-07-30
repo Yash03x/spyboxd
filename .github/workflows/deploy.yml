@@ -761,20 +761,43 @@ jobs:
           done
           [[ "${frontend_ready}" == true ]]
 
-          read -r root_status root_redirect < <(
+          root_status="$(
+            curl --silent --show-error --output /dev/null \
+              --write-out '%{http_code}' --max-time 10 \
+              --header 'Cache-Control: no-cache' \
+              https://spyboxd.com/ 2>/dev/null || true
+          )"
+          [[ "${root_status}" =~ ^2[0-9][0-9]$ ]]
+
+          public_dashboard="$(curl --silent --show-error --fail --max-time 10 \
+            --header 'Cache-Control: no-cache' \
+            https://api.spyboxd.com/api/public/dashboard)"
+          jq --exit-status '
+            (keys | sort) == (["activity_data", "data_health", "rating_distribution", "signal_counts", "system_stats", "timestamp"] | sort)
+            and (.system_stats | keys | sort) == (["global_avg_rating", "total_movies_tracked", "total_profiles", "total_reviews"] | sort)
+            and (.signal_counts | keys | sort) == (["one_day_gap_events", "one_day_gap_pair_hits", "profiles_analyzed", "profiles_with_diary_dates", "same_day_events", "same_day_pair_hits", "shared_titles"] | sort)
+          ' <<<"${public_dashboard}" >/dev/null
+
+          read -r private_status private_redirect < <(
             curl --silent --show-error --output /dev/null \
               --write-out '%{http_code} %{redirect_url}\n' --max-time 10 \
               --header 'Cache-Control: no-cache' \
-              https://spyboxd.com/ 2>/dev/null || true
+              https://spyboxd.com/dashboard 2>/dev/null || true
           )
-          [[ "${root_status}" =~ ^30[1278]$ ]]
-          [[ "${root_redirect}" == https://spyboxd.com/sign-in* ]]
+          [[ "${private_status}" =~ ^30[1278]$ ]]
+          [[ "${private_redirect}" == https://spyboxd.com/sign-in* ]]
 
           protected_api_status="$(curl --silent --show-error --output /dev/null \
             --write-out '%{http_code}' --max-time 10 \
             --header 'Cache-Control: no-cache' \
             https://api.spyboxd.com/profiles/ 2>/dev/null || true)"
           [[ "${protected_api_status}" == 401 ]]
+
+          protected_profile_status="$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' --max-time 10 \
+            --header 'Cache-Control: no-cache' \
+            https://api.spyboxd.com/public/profile/privacy-check 2>/dev/null || true)"
+          [[ "${protected_profile_status}" == 401 ]]
 
       - name: Roll back externally unhealthy activation
         if: always() && steps.activate.outcome == 'success' && steps.external_smoke.outcome == 'failure'

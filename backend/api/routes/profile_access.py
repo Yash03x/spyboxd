@@ -11,7 +11,9 @@ from database.connection import get_db
 from services.profile_access import (
     decide_profile_request,
     ensure_app_user,
+    list_profile_catalog,
     list_profile_requests,
+    track_profile_by_id,
     track_or_request_profile,
     untrack_profile,
 )
@@ -36,6 +38,32 @@ def get_me(
 ):
     ensure_app_user(db, user)
     return {"user_id": user.user_id, "is_admin": user.is_admin}
+
+
+@router.get("/profiles/catalog")
+def get_profile_catalog(
+    search: Optional[str] = Query(default=None, max_length=100),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    user: ClerkUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return list_profile_catalog(
+        db,
+        user,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/profiles/{profile_id}/tracking")
+def create_profile_tracking(
+    profile_id: int,
+    user: ClerkUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return track_profile_by_id(db, user, profile_id)
 
 
 @router.get("/profiles/requests")

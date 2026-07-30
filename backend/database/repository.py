@@ -971,6 +971,22 @@ class AnalyticsRepository:
             "global_avg_rating": _safe_round(global_avg_rating, 2) or 0.0,
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
+
+    def get_public_profile_health(self) -> Dict[str, Any]:
+        """Return aggregate sync health without exposing profile records."""
+
+        active_profiles = self.db.query(Profile).filter(Profile.is_active.is_(True))
+        completed_profiles = active_profiles.filter(
+            Profile.scraping_status == "completed"
+        ).count()
+        latest_sync = active_profiles.filter(
+            Profile.scraping_status == "completed"
+        ).with_entities(func.max(Profile.last_scraped_at)).scalar()
+        return {
+            "active_profiles": active_profiles.count(),
+            "completed_profiles": completed_profiles,
+            "last_synced_at": latest_sync.isoformat() if latest_sync else None,
+        }
     
     def get_top_rated_movies(
         self,
@@ -1022,6 +1038,19 @@ class AnalyticsRepository:
         top_movies_limit: int = 10,
         usernames: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        if usernames is None:
+            usernames = [
+                username
+                for (username,) in (
+                    self.db.query(Profile.username)
+                    .filter(
+                        Profile.is_active.is_(True),
+                        Profile.scraping_status == "completed",
+                    )
+                    .order_by(Profile.id.asc())
+                    .all()
+                )
+            ]
         rating_repo = RatingRepository(self.db)
         profile_ids = self._profile_ids_for_usernames(usernames)
 
@@ -1056,7 +1085,15 @@ class AnalyticsRepository:
         return _naive_utc(latest_profile_update)
 
     def _get_profile_count(self) -> int:
-        return self.db.query(func.count(Profile.id)).scalar() or 0
+        return (
+            self.db.query(func.count(Profile.id))
+            .filter(
+                Profile.is_active.is_(True),
+                Profile.scraping_status == "completed",
+            )
+            .scalar()
+            or 0
+        )
 
     def get_dashboard_analytics_snapshot(
         self,

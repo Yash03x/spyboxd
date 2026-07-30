@@ -119,6 +119,35 @@ const groupSignals = {
   follow_paths: [],
 };
 
+const publicDashboard = {
+  system_stats: {
+    total_profiles: profiles.length,
+    total_movies_tracked: 4_321,
+    total_reviews: 680,
+    global_avg_rating: 3.7,
+  },
+  rating_distribution: { '3.5': 120, '4.0': 240, '4.5': 80 },
+  activity_data: [
+    { month: '2026-06', movies_watched: 20, average_rating: 3.8 },
+    { month: '2026-07', movies_watched: 24, average_rating: 3.9 },
+  ],
+  signal_counts: {
+    profiles_analyzed: profiles.length,
+    profiles_with_diary_dates: profiles.length,
+    shared_titles: 42,
+    same_day_events: 1,
+    one_day_gap_events: 0,
+    same_day_pair_hits: 1,
+    one_day_gap_pair_hits: 0,
+  },
+  data_health: {
+    active_profiles: profiles.length,
+    completed_profiles: profiles.length,
+    last_synced_at: '2026-07-29T12:00:00Z',
+  },
+  timestamp: '2026-07-29T12:00:00Z',
+};
+
 const dataCoverage = {
   generated_at: '2026-07-29T12:00:00Z',
   overall_score: 100,
@@ -234,6 +263,10 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   const path = url.pathname.replace(/\/$/, '') || '/';
   const method = route.request().method();
 
+  if (path === '/api/public/dashboard' && method === 'GET') {
+    return json(route, publicDashboard);
+  }
+
   if (route.request().headers().authorization !== 'Bearer e2e-token') {
     return route.fulfill({
       status: 401,
@@ -244,6 +277,43 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
 
   if (path === '/api/me') return json(route, { user_id: 'user_e2e', is_admin: isAdmin });
   if (path === '/profiles' && method === 'GET') return json(route, { profiles: state.profiles });
+  if (path === '/profiles/tracked' && method === 'GET') return json(route, { profiles: state.profiles });
+  if (path === '/profiles/catalog' && method === 'GET') {
+    const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
+    const limit = Number(url.searchParams.get('limit') ?? 100);
+    const offset = Number(url.searchParams.get('offset') ?? 0);
+    const matchingProfiles = profiles
+      .map((profile, index) => ({ profile, id: index + 1 }))
+      .filter(({ profile }) => !search
+        || profile.username.toLowerCase().includes(search)
+        || (profile.display_name ?? '').toLowerCase().includes(search));
+    return json(route, {
+      profiles: matchingProfiles.slice(offset, offset + limit).map(({ profile, id }) => ({
+        id,
+        username: profile.username,
+        display_name: profile.display_name,
+        profile_image_url: profile.profile_image_url,
+        total_films: profile.total_films,
+        is_tracked: state.profiles.some((tracked) => tracked.username === profile.username),
+      })),
+      total: matchingProfiles.length,
+      limit,
+      offset,
+    });
+  }
+  const trackMatch = path.match(/^\/profiles\/(\d+)\/tracking$/);
+  if (trackMatch && method === 'POST') {
+    const profile = profiles[Number(trackMatch[1]) - 1];
+    if (!profile) return route.fulfill({ status: 404, body: '' });
+    if (!state.profiles.some((tracked) => tracked.username === profile.username)) {
+      state.profiles.push({ ...profile });
+    }
+    return json(route, {
+      message: `${profile.username} is now monitored.`,
+      status: 'tracked',
+      profile: { ...profile, id: Number(trackMatch[1]), is_active: true },
+    });
+  }
   if (path === '/profiles/requests' && method === 'GET') return json(route, { requests: state.requests });
   if (path === '/profiles/requests' && method === 'POST') {
     const payload = route.request().postDataJSON() as { username: string };
@@ -282,6 +352,10 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
     const username = decodeURIComponent(untrackMatch[1]);
     state.profiles = state.profiles.filter((profile) => profile.username !== username);
     return json(route, { message: 'Profile removed from your tracked profiles.', status: 'untracked', username });
+  }
+  const deleteProfileMatch = path.match(/^\/profiles\/([^/]+)$/);
+  if (deleteProfileMatch && method === 'DELETE') {
+    return json(route, { message: `${decodeURIComponent(deleteProfileMatch[1])} deleted.` });
   }
   if (path === '/admin/profile-requests' && method === 'GET') return json(route, { requests: isAdmin ? state.requests : [] });
   if (path === '/api/dashboard/analytics') {

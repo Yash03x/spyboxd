@@ -52,9 +52,9 @@ API / PostgreSQL
   └─ dashboard snapshot cache in system_metrics.metrics
 
 Frontend
-  ├─ Clerk-authenticated private analytics workspace
-  ├─ per-user tracked-profile visibility and exact-username requests
-  └─ explicit public share pages at /u/<username>
+  ├─ aggregate-only public dashboard at /
+  ├─ Clerk-authenticated private analytics workspace at /dashboard
+  └─ per-user profile catalog, monitoring choices, and new-profile requests
 ```
 
 ## Quick Start
@@ -182,14 +182,18 @@ The enrichment command caches details and provider results, retries transient fa
 - `POST /upload/` is the write path for profile data.
 - Profiles and imported movie data are stored once globally; `user_tracked_profiles`
   controls which profiles each signed-in user can select or analyze.
-- `GET /api/dashboard/analytics` uses the cached global snapshot for admins and
-  computes an access-scoped response for ordinary users. The global snapshot is
-  refreshed after uploads, profile deletes, and data clears.
-- Health checks and `GET /public/profile/{username}` are public. Profile lists,
-  analytics, activity, access requests, and management screens require sign-in.
-- A signed-in user can track a completed profile immediately by exact username.
-  Missing or incomplete profiles become requests for the next residential sync;
-  no global profile directory is exposed to ordinary users.
+- `GET /api/dashboard/analytics` defaults to each ordinary caller's personal
+  monitoring set. An omitted scope preserves the prior global default for admins;
+  admins can explicitly switch between `scope=tracked` and `scope=global`. The
+  global snapshot is refreshed after uploads, profile deletes, and data clears.
+- Health checks and `GET /api/public/dashboard` are public. The dashboard response
+  is a strict aggregate allowlist with no usernames, profile pairs, film titles,
+  watch dates, or profile-level activity.
+- Profile snapshots, lists, analytics, activity, access requests, and management
+  screens require sign-in. The former `/u/<username>` share URL is also protected.
+- A signed-in user can browse the completed profile catalog and choose profiles
+  to monitor. Missing or incomplete usernames become requests for the next
+  residential sync.
 - Admin mutations require a strict boolean admin session claim or a Clerk user ID
   in the server-side `CLERK_ADMIN_USER_IDS` allowlist.
 - Production releases fail closed unless the frontend live keys and backend JWKS
@@ -209,16 +213,20 @@ The enrichment command caches details and provider results, retries transient fa
 - `GET /health`
 - `GET /ready`
 - `GET /health/rss`
-- `GET /public/profile/{username}`
+- `GET /api/public/dashboard`
 
 ### Signed-in workspace
 
 - `GET /api/me`
 - `GET /profiles/`
+- `GET /profiles/tracked`
+- `GET /profiles/catalog`
+- `POST /profiles/{profile_id}/tracking`
 - `POST /profiles/requests`
 - `GET /profiles/requests`
 - `DELETE /profiles/{username}/tracking`
 - `GET /profiles/{username}/analysis`
+- `GET /public/profile/{username}` (legacy path; authenticated and access-scoped)
 - `GET /api/dashboard/analytics`
 - `GET /api/spy-signals?event_source=ratings|events`
 - `GET /api/data-coverage`

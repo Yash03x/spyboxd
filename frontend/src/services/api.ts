@@ -108,6 +108,22 @@ export interface ProfileRequestSubmission {
   request: ProfileRequest | null;
 }
 
+export interface ProfileCatalogItem {
+  id: number;
+  username: string;
+  display_name: string | null;
+  profile_image_url: string | null;
+  total_films: number;
+  is_tracked: boolean;
+}
+
+export interface ProfileCatalogResponse {
+  profiles: ProfileCatalogItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export const authApi = {
   getCurrentUser: async (): Promise<CurrentUser> => {
     const response = await api.get('/api/me');
@@ -171,6 +187,30 @@ export const profileApi = {
     return response.data.profiles || [];
   },
 
+  getTrackedProfiles: async (): Promise<ProfileInfo[]> => {
+    const response = await api.get('/profiles/tracked');
+    return response.data.profiles || [];
+  },
+
+  getCatalog: async (search?: string, limit = 100): Promise<ProfileCatalogResponse> => {
+    const response = await api.get('/profiles/catalog', {
+      params: {
+        limit,
+        ...(search?.trim() ? { search: search.trim() } : {}),
+      },
+    });
+    return response.data;
+  },
+
+  trackExisting: async (profileId: number): Promise<{
+    message: string;
+    status: 'tracked';
+    profile: ProfileRequestProfile;
+  }> => {
+    const response = await api.post(`/profiles/${profileId}/tracking`);
+    return response.data;
+  },
+
   // Get profile analysis
   getAnalysis: async (username: string): Promise<ProfileAnalysis> => {
     const response = await api.get(`/profiles/${username}/analysis`);
@@ -225,6 +265,15 @@ export const profileApi = {
 
   stopTracking: async (username: string): Promise<{ message: string; status: 'untracked'; username: string }> => {
     const response = await api.delete(`/profiles/${encodeURIComponent(username)}/tracking`);
+    return response.data;
+  },
+
+  getProfileSnapshot: async (username: string): Promise<ProfileInfo & {
+    bio?: string | null;
+    location?: string | null;
+    website?: string | null;
+  }> => {
+    const response = await api.get(`/public/profile/${encodeURIComponent(username)}`);
     return response.data;
   },
 };
@@ -410,11 +459,39 @@ export interface DashboardAnalytics {
   timestamp: string;
 }
 
+export interface PublicDashboardAnalytics {
+  system_stats: Omit<SystemStats, 'last_updated'>;
+  rating_distribution: Record<string, number>;
+  activity_data: ActivityData[];
+  signal_counts: {
+    profiles_analyzed: number;
+    profiles_with_diary_dates: number;
+    shared_titles: number;
+    same_day_events: number;
+    one_day_gap_events: number;
+    same_day_pair_hits: number;
+    one_day_gap_pair_hits: number;
+  };
+  data_health: {
+    active_profiles: number;
+    completed_profiles: number;
+    last_synced_at: string | null;
+  };
+  timestamp: string;
+}
+
 // Dashboard API endpoints
 export const dashboardApi = {
   // Get dashboard analytics
-  getAnalytics: async (): Promise<DashboardAnalytics> => {
-    const response = await api.get('/api/dashboard/analytics');
+  getAnalytics: async (scope: 'tracked' | 'global' = 'tracked'): Promise<DashboardAnalytics> => {
+    const response = await api.get('/api/dashboard/analytics', { params: { scope } });
+    return response.data;
+  },
+};
+
+export const publicDashboardApi = {
+  getAnalytics: async (): Promise<PublicDashboardAnalytics> => {
+    const response = await api.get('/api/public/dashboard');
     return response.data;
   },
 };

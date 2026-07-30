@@ -33,6 +33,9 @@ def _dependency_names(route: APIRoute) -> set[str]:
 def test_data_bearing_reads_require_a_clerk_user():
     protected_reads = {
         "/profiles/",
+        "/profiles/tracked",
+        "/profiles/catalog",
+        "/public/profile/{username}",
         "/api/dashboard/analytics",
         "/api/spy-signals",
         "/profiles/{username}/analysis",
@@ -51,8 +54,8 @@ def test_data_bearing_reads_require_a_clerk_user():
         assert "get_current_user" in _dependency_names(_route("GET", path)), path
 
 
-def test_health_and_explicit_share_profile_remain_public():
-    public_reads = {"/health", "/ready", "/health/rss", "/public/profile/{username}"}
+def test_health_and_aggregate_dashboard_remain_public():
+    public_reads = {"/health", "/ready", "/health/rss", "/api/public/dashboard"}
     for path in public_reads:
         dependencies = _dependency_names(_route("GET", path))
         assert "get_current_user" not in dependencies
@@ -69,3 +72,4 @@ def test_existing_mutations_keep_admin_or_ingestion_auth():
     for method, path in admin_routes:
         assert "get_admin_user" in _dependency_names(_route(method, path))
     assert "get_active_upload_user" in _dependency_names(_route("POST", "/upload/"))
+    assert "get_current_user" in _dependency_names(_route("POST", "/profiles/{profile_id}/tracking"))

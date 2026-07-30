@@ -42,20 +42,29 @@ test.afterEach(async ({ page }, testInfo: TestInfo) => {
   expect(errors, 'The page must not emit console errors or uncaught exceptions').toEqual([]);
 });
 
-test('signed-in homepage renders the scoped dashboard and navigates to My Profiles', async ({ page }) => {
-  await page.goto('/');
+test('signed-in private dashboard renders the scoped data and navigates to My Profiles', async ({ page }) => {
+  await page.goto('/dashboard');
 
   await expect(page).toHaveTitle(/Spyboxd/);
   await expect(page.getByRole('heading', { level: 1, name: 'Dashboard', exact: true })).toBeVisible();
-  await expect(page.getByText('Your Profiles', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Monitored Profiles', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('10 profiles loaded')).toBeVisible();
   await expectAccountControl(page);
 
-  const manageProfiles = page.getByRole('button', { name: 'Add or manage profiles' });
+  const manageProfiles = page.getByRole('button', { name: 'Choose monitored profiles' });
   await expect(manageProfiles).toBeVisible();
   await manageProfiles.click();
   await expect(page).toHaveURL(/\/profiles$/);
   await expect(page.getByRole('heading', { level: 1, name: 'My Profiles', exact: true })).toBeVisible();
+});
+
+test('signed-in public homepage remains aggregate-only', async ({ page }) => {
+  await page.goto('/');
+
+  await expect(page.getByTestId('public-dashboard')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open My Dashboard' })).toBeVisible();
+  await expect(page.getByText('@alpha', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Most Active Profile', { exact: true })).toHaveCount(0);
 });
 
 test('profiles can be searched without hiding matching data', async ({ page }) => {
@@ -63,9 +72,41 @@ test('profiles can be searched without hiding matching data', async ({ page }) =
 
   await expect(page.getByRole('heading', { level: 1, name: 'My Profiles', exact: true })).toBeVisible();
   await page.getByPlaceholder('Search profiles...').fill('charlie');
-  await expect(page.getByText('@charlie', { exact: true })).toBeVisible();
+  const trackedGrid = page.getByTestId('tracked-profile-grid');
+  await expect(trackedGrid.getByText('@charlie', { exact: true })).toBeVisible();
   await expect(page.getByText('1 of 10 tracked profiles')).toBeVisible();
-  await expect(page.getByText('@alpha', { exact: true })).toHaveCount(0);
+  await expect(trackedGrid.getByText('@alpha', { exact: true })).toHaveCount(0);
+});
+
+test('a signed-in user can choose an existing profile from the catalog', async ({ page }) => {
+  await page.goto('/profiles');
+
+  await expect(page.getByText('10 monitored', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Stop monitoring bravo' }).click();
+  await expect(page.getByText('9 monitored', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Monitor bravo' }).click();
+  await expect(page.getByText('10 monitored', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop monitoring bravo' })).toBeVisible();
+});
+
+test('available-profile search is server-backed and reports the bounded result set', async ({ page }) => {
+  const catalogRequests: URL[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/profiles/catalog') catalogRequests.push(url);
+  });
+
+  await page.goto('/profiles');
+  const catalog = page.getByRole('region', { name: 'Choose profiles to monitor' });
+  await catalog.getByPlaceholder('Search available profiles...').fill('juliet');
+
+  await expect(catalog.getByTestId('profile-catalog-result-summary')).toHaveText('1 matching synced profile');
+  await expect(catalog.getByText(/^@juliet · /)).toBeVisible();
+  await expect(catalog.getByText(/^@alpha · /)).toHaveCount(0);
+  await expect.poll(() => catalogRequests.some((url) => (
+    url.searchParams.get('search') === 'juliet'
+      && url.searchParams.get('limit') === '100'
+  ))).toBe(true);
 });
 
 test('a new Letterboxd username becomes a visible pending request', async ({ page }) => {
