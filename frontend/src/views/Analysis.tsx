@@ -173,9 +173,9 @@ const Analysis: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+          <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-3">
             <motion.div
-              className="card-cinema xl:col-span-2"
+              className="analysis-panel xl:col-span-2"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
@@ -215,7 +215,7 @@ const Analysis: React.FC = () => {
             </motion.div>
 
             <motion.div
-              className="card-cinema"
+              className="analysis-panel"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.25 }}
@@ -242,9 +242,9 @@ const Analysis: React.FC = () => {
             </motion.div>
           </div>
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">
             <motion.div
-              className="card-cinema"
+              className="analysis-panel"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3 }}
@@ -279,7 +279,7 @@ const Analysis: React.FC = () => {
             </motion.div>
 
             <motion.div
-              className="card-cinema"
+              className="analysis-panel"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.35 }}

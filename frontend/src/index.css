@@ -78,6 +78,12 @@
            hover:from-cinema-500/20 hover:to-cinema-600/10 hover:border-cinema-400/30
            transition-all duration-500;
   }
+
+  /* Stable treatment for tall, non-interactive analysis panels. */
+  .analysis-panel {
+    @apply rounded-2xl border border-cinema-400/20 bg-gradient-to-br
+           from-cinema-500/10 to-cinema-600/5 p-6;
+  }
   
   .card-noir {
     @apply bg-noir-800/50 backdrop-blur-md rounded-2xl border border-noir-700/50 

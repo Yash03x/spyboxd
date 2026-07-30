@@ -67,6 +67,54 @@ test('signed-in public homepage remains aggregate-only', async ({ page }) => {
   await expect(page.getByText('Most Active Profile', { exact: true })).toHaveCount(0);
 });
 
+test('analysis list panels keep intrinsic heights without animated glass artifacts', async ({ page }) => {
+  await page.goto('/analysis');
+
+  const watchesPanel = page.getByRole('heading', { name: 'Recent Watches', exact: true }).locator('..');
+  const coveragePanel = page.getByRole('heading', { name: 'Coverage Notes', exact: true }).locator('..');
+  const ratingsPanel = page.getByRole('heading', { name: 'Recent Ratings', exact: true }).locator('..');
+  const reviewsPanel = page.getByRole('heading', { name: 'Recent Reviews', exact: true }).locator('..');
+
+  await expect(ratingsPanel).toBeVisible();
+  for (const panel of [watchesPanel, coveragePanel, ratingsPanel, reviewsPanel]) {
+    const compositorStyles = await panel.evaluate((element) => {
+      const styles = window.getComputedStyle(element);
+      return {
+        backdropFilter: styles.backdropFilter,
+        boxShadow: styles.boxShadow,
+        transitionDuration: styles.transitionDuration,
+      };
+    });
+    expect(compositorStyles).toEqual({
+      backdropFilter: 'none',
+      boxShadow: 'none',
+      transitionDuration: '0s',
+    });
+  }
+
+  if ((page.viewportSize()?.width ?? 0) >= 1280) {
+    const [watchesBox, coverageBox, ratingsBox, reviewsBox] = await Promise.all([
+      watchesPanel.boundingBox(),
+      coveragePanel.boundingBox(),
+      ratingsPanel.boundingBox(),
+      reviewsPanel.boundingBox(),
+    ]);
+    expect(coverageBox!.height).toBeLessThan(watchesBox!.height);
+    expect(reviewsBox!.height).toBeLessThan(ratingsBox!.height);
+  }
+
+  const shimmers = page.getByTestId('stats-card-shimmer');
+  expect(await shimmers.count()).toBeGreaterThan(0);
+  const shimmerTransformsBefore = await shimmers.evaluateAll((elements) => (
+    elements.map((element) => window.getComputedStyle(element).transform)
+  ));
+  await page.waitForTimeout(300);
+  const shimmerTransformsAfter = await shimmers.evaluateAll((elements) => (
+    elements.map((element) => window.getComputedStyle(element).transform)
+  ));
+  expect(shimmerTransformsAfter).toEqual(shimmerTransformsBefore);
+});
+
 test('profiles can be searched without hiding matching data', async ({ page }) => {
   await page.goto('/profiles');
 

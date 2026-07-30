@@ -41,19 +41,10 @@ const StatsCard: React.FC<StatsCardProps> = ({
       }}
     >
       {/* Animated background gradient */}
-      <motion.div
-        className="absolute inset-0 bg-gradient-to-r from-transparent via-cinema-400/5 to-transparent"
-        animate={{
-          x: ['-100%', '100%'],
-        }}
-        transition={{
-          duration: 3,
-          repeat: Infinity,
-          repeatType: 'loop',
-          ease: 'linear',
-        }}
-        style={{ opacity: 0 }}
-        whileHover={{ opacity: 1 }}
+      <div
+        aria-hidden="true"
+        data-testid="stats-card-shimmer"
+        className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-cinema-400/5 to-transparent opacity-0 group-hover:translate-x-full group-hover:opacity-100 group-hover:transition-transform group-hover:duration-1000 group-hover:ease-linear"
       />
 
       <div className="relative z-10">
@@ -91,17 +82,9 @@ const StatsCard: React.FC<StatsCardProps> = ({
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: delay + 0.2, duration: 0.5 }}
         >
-          <motion.h3 
-            className="text-3xl font-bold text-white text-glow"
-            animate={{ textShadow: [
-              "0 0 20px rgba(229, 81, 0, 0.5)",
-              "0 0 30px rgba(229, 81, 0, 0.7)",
-              "0 0 20px rgba(229, 81, 0, 0.5)"
-            ]}}
-            transition={{ duration: 2, repeat: Infinity }}
-          >
+          <h3 className="text-3xl font-bold text-white text-glow">
             {typeof value === 'number' ? value.toLocaleString() : value}
-          </motion.h3>
+          </h3>
         </motion.div>
 
         {/* Title and Subtitle */}
