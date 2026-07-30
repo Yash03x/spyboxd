@@ -763,7 +763,7 @@ jobs:
 
           read -r root_status root_redirect < <(
             curl --silent --show-error --output /dev/null \
-              --write-out '%{http_code} %{redirect_url}' --max-time 10 \
+              --write-out '%{http_code} %{redirect_url}\n' --max-time 10 \
               --header 'Cache-Control: no-cache' \
               https://spyboxd.com/ 2>/dev/null || true
           )
