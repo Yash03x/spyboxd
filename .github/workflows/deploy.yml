@@ -193,7 +193,7 @@ jobs:
             RELEASE_SHA="$1"
             REMOTE_BUNDLE="$2"
             REMOTE_CHECKSUM="$3"
-            CLERK_BRIDGE_EDGE="$4"
+            CLERK_BRIDGE_EDGE="${4:-}"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'')
