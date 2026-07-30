@@ -27,11 +27,11 @@ interface LayoutProps {
 
 const NAVIGATION_ITEMS = [
   {
-    path: '/',
-    label: 'Dashboard',
+    path: '/dashboard',
+    label: 'My Dashboard',
     icon: HomeIcon,
     activeIcon: HomeIconSolid,
-    description: 'Overview & Analytics',
+    description: 'Your Profile Overview',
   },
   {
     path: '/spy-signals',
@@ -82,7 +82,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     setCurrentTime(new Date());
   }, []);
 
-  const isActive = (path: string) => pathname === path || (path !== '/' && pathname.startsWith(`${path}/`));
+  const isActive = (path: string) => pathname === path || pathname.startsWith(`${path}/`);
   const activeItem = NAVIGATION_ITEMS.find((item) => isActive(item.path));
   const isInsightWorkspace = isActive('/compare') || isActive('/watch-together');
 
@@ -256,7 +256,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 animate={{ x: 0, opacity: 1 }}
                 transition={{ delay: 0.5 }}
               >
-                {activeItem?.label || 'Dashboard'}
+                {activeItem?.label || 'My Dashboard'}
               </motion.h2>
               <motion.p 
                 className="text-white/60 text-sm mt-1"

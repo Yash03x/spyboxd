@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Query, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes.activity import router as activity_router
@@ -22,7 +22,7 @@ from database.connection import engine, get_db, init_db
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from services.data_coverage import (
     extract_data_coverage,
 )
@@ -35,6 +35,7 @@ from services.profile_access import (
     fulfill_pending_requests,
     reopen_fulfilled_requests_for_profile,
     require_profile_access,
+    tracked_profiles,
 )
 from services.operational_health import (
     application_revision,
@@ -116,6 +117,145 @@ class ProfileUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class PublicSystemStats(BaseModel):
+    total_profiles: int = Field(ge=0)
+    total_movies_tracked: int = Field(ge=0)
+    total_reviews: int = Field(ge=0)
+    global_avg_rating: float = Field(ge=0, le=5)
+
+
+class PublicActivityPoint(BaseModel):
+    month: str
+    movies_watched: int = Field(ge=0)
+    average_rating: Optional[float] = Field(default=None, ge=0, le=5)
+
+
+class PublicSignalCounts(BaseModel):
+    profiles_analyzed: int = Field(ge=0)
+    profiles_with_diary_dates: int = Field(ge=0)
+    shared_titles: int = Field(ge=0)
+    same_day_events: int = Field(ge=0)
+    one_day_gap_events: int = Field(ge=0)
+    same_day_pair_hits: int = Field(ge=0)
+    one_day_gap_pair_hits: int = Field(ge=0)
+
+
+class PublicDataHealth(BaseModel):
+    active_profiles: int = Field(ge=0)
+    completed_profiles: int = Field(ge=0)
+    last_synced_at: Optional[datetime]
+
+
+class PublicDashboardResponse(BaseModel):
+    system_stats: PublicSystemStats
+    rating_distribution: dict[str, int]
+    activity_data: list[PublicActivityPoint]
+    signal_counts: PublicSignalCounts
+    data_health: PublicDataHealth
+    timestamp: datetime
+
+
+def _safe_nonnegative_int(value) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, numeric)
+
+
+def _safe_public_timestamp(value) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
+def _safe_public_rating(value, default: Optional[float] = None) -> Optional[float]:
+    numeric = _safe_json_float(value)
+    if numeric is None or not 0 <= numeric <= 5:
+        return default
+    return numeric
+
+
+def _public_dashboard_payload(
+    snapshot: dict,
+    profile_health: dict,
+) -> dict:
+    """Allowlist an aggregate-only dashboard response.
+
+    The cached internal snapshot deliberately contains usernames, profile pairs,
+    titles, watch dates, and other private workspace details. Never return or
+    shallow-copy that object from an anonymous endpoint.
+    """
+
+    system_stats = snapshot.get("system_stats") or {}
+    raw_summary = (snapshot.get("group_signals") or {}).get("summary") or {}
+    activity_data = snapshot.get("activity_data") or []
+    rating_distribution = {}
+    for rating, count in (snapshot.get("rating_distribution") or {}).items():
+        numeric_rating = _safe_json_float(rating)
+        if (
+            numeric_rating is None
+            or not 0.5 <= numeric_rating <= 5.0
+            or abs(numeric_rating * 2 - round(numeric_rating * 2)) > 1e-9
+        ):
+            continue
+        rating_distribution[f"{numeric_rating:.1f}"] = _safe_nonnegative_int(count)
+
+    return {
+        "system_stats": {
+            "total_profiles": _safe_nonnegative_int(system_stats.get("total_profiles")),
+            "total_movies_tracked": _safe_nonnegative_int(system_stats.get("total_movies_tracked")),
+            "total_reviews": _safe_nonnegative_int(system_stats.get("total_reviews")),
+            "global_avg_rating": _safe_public_rating(
+                system_stats.get("global_avg_rating"),
+                0.0,
+            ) or 0.0,
+        },
+        "rating_distribution": rating_distribution,
+        "activity_data": [
+            {
+                "month": point["month"],
+                "movies_watched": _safe_nonnegative_int(point.get("movies_watched")),
+                "average_rating": _safe_public_rating(point.get("average_rating")),
+            }
+            for point in activity_data
+            if isinstance(point, dict)
+            and isinstance(point.get("month"), str)
+            and re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", point["month"])
+        ],
+        "signal_counts": {
+            key: _safe_nonnegative_int(raw_summary.get(key))
+            for key in (
+                "profiles_analyzed",
+                "profiles_with_diary_dates",
+                "shared_titles",
+                "same_day_events",
+                "one_day_gap_events",
+                "same_day_pair_hits",
+                "one_day_gap_pair_hits",
+            )
+        },
+        "data_health": {
+            "active_profiles": _safe_nonnegative_int(profile_health.get("active_profiles")),
+            "completed_profiles": _safe_nonnegative_int(profile_health.get("completed_profiles")),
+            "last_synced_at": (
+                _safe_public_timestamp(profile_health.get("last_synced_at"))
+                if profile_health.get("last_synced_at")
+                else None
+            ),
+        },
+        "timestamp": _safe_public_timestamp(snapshot.get("timestamp")),
+    }
+
+
 def _get_cors_origins() -> List[str]:
     configured = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
     if configured:
@@ -161,11 +301,12 @@ def _refresh_dashboard_snapshot_cache(db: Session) -> None:
 
 
 def _record_owner_export_publication_consent(analyzer_profile, publish_owner_data: bool) -> None:
-    """Require an explicit admin attestation before owner-export data becomes public.
+    """Require an explicit admin attestation before owner-export data becomes shared.
 
     Official exports can contain records that are not visible on a public
-    Letterboxd profile. Spyboxd's analytics routes are public, so importing an
-    export is a publication action, not merely a file upload.
+    Letterboxd profile. Spyboxd stores profiles once for its signed-in shared
+    workspace, so importing an export is a publication action to authorized
+    users, not merely a private file upload.
     """
     if getattr(analyzer_profile, "source_kind", None) != "letterboxd_export":
         return
@@ -247,16 +388,19 @@ def rss_health_check(db: Session = Depends(get_db)):
 
 
 @app.get("/public/profile/{username}")
-async def get_public_profile(username: str, db: Session = Depends(get_db)):
+async def get_public_profile(
+    username: str,
+    db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
+):
     """
-    Public profile snapshot used by share pages/OG images.
-    Only exposes completed, active profiles.
+    Signed-in profile snapshot used by the legacy share-page URL.
+    Access is limited to profiles visible to the caller.
     """
-    profile_repo = ProfileRepository(db)
     rating_repo = RatingRepository(db)
 
-    profile = profile_repo.get_profile_by_username(username)
-    if not profile or not profile.is_active:
+    profile = require_profile_access(db, user, username)
+    if not profile.is_active:
         raise HTTPException(status_code=404, detail="Profile not found")
 
     if profile.scraping_status != "completed":
@@ -325,18 +469,10 @@ def extract_zip_file(uploaded_file, temp_dir):
     return extract_dir
 
 # Profile Management Endpoints
-@app.get("/profiles/")
-async def list_profiles(
-    db: Session = Depends(get_db),
-    user: ClerkUser = Depends(get_current_user),
-):
-    """Get active profiles visible to the signed-in user."""
+def _serialize_profiles(db: Session, profiles) -> dict:
     rating_repo = RatingRepository(db)
-    
-    profiles = [profile for profile in accessible_profiles(db, user) if profile.is_active]
-    
     profile_list = []
-    for profile in profiles:
+    for profile in (profile for profile in profiles if profile.is_active):
         profile_dict = profile.to_dict()
         all_entries = rating_repo.get_ratings_by_profile(profile.id)
         
@@ -361,24 +497,73 @@ async def list_profiles(
     
     return {"profiles": profile_list}
 
-@app.get("/api/dashboard/analytics")
-async def get_consolidated_dashboard_analytics(
+
+@app.get("/profiles/")
+async def list_profiles(
     db: Session = Depends(get_db),
     user: ClerkUser = Depends(get_current_user),
 ):
-    """Get dashboard analytics over profiles visible to the signed-in user."""
-    ensure_app_user(db, user)
+    """Get the caller's profiles, or the managed global library for admins."""
+
+    return _serialize_profiles(db, accessible_profiles(db, user))
+
+
+@app.get("/profiles/tracked")
+async def list_tracked_profiles(
+    db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
+):
+    """Get the caller's personal monitoring set without an admin bypass."""
+
+    return _serialize_profiles(db, tracked_profiles(db, user))
+
+
+@app.get("/api/dashboard/analytics")
+async def get_consolidated_dashboard_analytics(
+    scope: Optional[str] = Query(default=None, pattern="^(tracked|global)$"),
+    db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
+):
+    """Get dashboard analytics with backward-compatible admin defaults."""
     analytics_repo = AnalyticsRepository(db)
-    if not user.is_admin:
-        usernames = authorize_profile_usernames(db, user, None)
-        return analytics_repo.build_dashboard_analytics_snapshot(
+    effective_scope = scope or ("global" if user.is_admin else "tracked")
+    if effective_scope == "global":
+        ensure_app_user(db, user)
+        if not user.is_admin:
+            raise HTTPException(status_code=403, detail="Admin role required for global analytics")
+        return analytics_repo.get_dashboard_analytics_snapshot(
             group_limit=6,
             top_movies_limit=10,
-            usernames=usernames,
         )
-    return analytics_repo.get_dashboard_analytics_snapshot(
+
+    usernames = [
+        profile.username
+        for profile in tracked_profiles(db, user)
+        if profile.is_active and profile.scraping_status == "completed"
+    ]
+    return analytics_repo.build_dashboard_analytics_snapshot(
         group_limit=6,
         top_movies_limit=10,
+        usernames=usernames,
+    )
+
+
+@app.get("/api/public/dashboard", response_model=PublicDashboardResponse)
+async def get_public_dashboard_analytics(
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Return one identity-free aggregate snapshot for the public homepage."""
+
+    analytics_repo = AnalyticsRepository(db)
+    snapshot = analytics_repo.get_dashboard_analytics_snapshot(
+        group_limit=6,
+        top_movies_limit=10,
+    )
+    response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=300"
+    return _public_dashboard_payload(
+        snapshot,
+        analytics_repo.get_public_profile_health(),
     )
 
 

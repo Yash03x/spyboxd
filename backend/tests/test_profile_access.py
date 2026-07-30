@@ -35,10 +35,13 @@ from backend.services.profile_access import (
     authorize_profile_usernames,
     decide_profile_request,
     fulfill_pending_requests,
+    list_profile_catalog,
     list_profile_requests,
     reopen_fulfilled_requests_for_profile,
     require_profile_access,
+    track_profile_by_id,
     track_or_request_profile,
+    tracked_profiles,
     untrack_profile,
 )
 
@@ -112,6 +115,153 @@ def test_existing_completed_profile_is_tracked_case_insensitively_and_idempotent
     with pytest.raises(HTTPException) as raised:
         authorize_profile_usernames(database, _user(), ["Beta"])
     assert raised.value.status_code == 403
+
+
+def test_signed_in_catalog_lists_only_selectable_profiles_and_tracks_by_id(database):
+    selectable = _profile(1, "Alpha")
+    selectable.display_name = "Alpha Viewer"
+    pending = _profile(2, "Pending", completed=False)
+    inactive = _profile(3, "Inactive")
+    inactive.is_active = False
+    database.add_all([selectable, pending, inactive])
+    database.add(
+        Rating(
+            id=1,
+            profile_id=selectable.id,
+            movie_title="Catalog Film",
+            movie_year=2026,
+            rating=4.0,
+        )
+    )
+    database.commit()
+
+    initial = list_profile_catalog(database, _user())
+    assert initial["total"] == 1
+    assert initial["profiles"] == [
+        {
+            "id": 1,
+            "username": "Alpha",
+            "display_name": "Alpha Viewer",
+            "profile_image_url": None,
+            "total_films": 1,
+            "is_tracked": False,
+        }
+    ]
+
+    tracked = track_profile_by_id(database, _user(), selectable.id)
+    assert tracked["status"] == "tracked"
+    assert list_profile_catalog(database, _user())["profiles"][0]["is_tracked"] is True
+
+    with pytest.raises(HTTPException) as unavailable:
+        track_profile_by_id(database, _user(), pending.id)
+    assert unavailable.value.status_code == 404
+
+
+def test_profile_catalog_tracking_is_isolated_per_user(database):
+    database.add(_profile(1, "Alpha"))
+    database.commit()
+
+    track_profile_by_id(database, _user("first"), 1)
+
+    assert list_profile_catalog(database, _user("first"))["profiles"][0]["is_tracked"] is True
+    assert list_profile_catalog(database, _user("second"))["profiles"][0]["is_tracked"] is False
+
+
+def test_admin_personal_monitoring_is_separate_from_global_library_access(database):
+    alpha = _profile(1, "Alpha")
+    beta = _profile(2, "Beta")
+    database.add_all([alpha, beta])
+    database.commit()
+    admin_user = _user("admin", admin=True)
+
+    track_profile_by_id(database, admin_user, alpha.id)
+
+    assert [profile.username for profile in tracked_profiles(database, admin_user)] == ["Alpha"]
+    assert {profile.username for profile in accessible_profiles(database, admin_user)} == {"Alpha", "Beta"}
+
+
+def test_non_admin_cannot_request_global_dashboard_scope(database):
+    with pytest.raises(HTTPException) as forbidden:
+        asyncio.run(
+            backend_main.get_consolidated_dashboard_analytics(
+                scope="global",
+                db=database,
+                user=_user(),
+            )
+        )
+    assert forbidden.value.status_code == 403
+
+
+def test_omitted_dashboard_scope_preserves_admin_global_default(database, monkeypatch):
+    sentinel = {"scope": "global"}
+    monkeypatch.setattr(
+        backend_main.AnalyticsRepository,
+        "get_dashboard_analytics_snapshot",
+        lambda self, *, group_limit, top_movies_limit: sentinel,
+    )
+
+    result = asyncio.run(
+        backend_main.get_consolidated_dashboard_analytics(
+            scope=None,
+            db=database,
+            user=_user("admin", admin=True),
+        )
+    )
+
+    assert result is sentinel
+
+
+def test_omitted_dashboard_scope_defaults_non_admin_to_tracked_profiles(database):
+    alpha = _profile(1, "Alpha")
+    beta = _profile(2, "Beta")
+    database.add_all([alpha, beta])
+    database.add_all(
+        [
+            Rating(id=1, profile_id=alpha.id, movie_title="Alpha Film", rating=4.0),
+            Rating(id=2, profile_id=beta.id, movie_title="Beta Film", rating=1.0),
+        ]
+    )
+    database.commit()
+    track_profile_by_id(database, _user(), alpha.id)
+
+    result = asyncio.run(
+        backend_main.get_consolidated_dashboard_analytics(
+            scope=None,
+            db=database,
+            user=_user(),
+        )
+    )
+
+    assert result["system_stats"]["total_profiles"] == 1
+    assert result["system_stats"]["total_movies_tracked"] == 1
+    assert result["rating_distribution"] == {"4.0": 1}
+
+
+def test_explicit_tracked_dashboard_scope_limits_admin_to_personal_set(database):
+    alpha = _profile(1, "Alpha")
+    beta = _profile(2, "Beta")
+    database.add_all([alpha, beta])
+    database.add_all(
+        [
+            Rating(id=1, profile_id=alpha.id, movie_title="Alpha Film", rating=4.0),
+            Rating(id=2, profile_id=beta.id, movie_title="Beta Film", rating=1.0),
+        ]
+    )
+    database.commit()
+    admin_user = _user("admin", admin=True)
+    track_profile_by_id(database, admin_user, alpha.id)
+
+    result = asyncio.run(
+        backend_main.get_consolidated_dashboard_analytics(
+            scope="tracked",
+            db=database,
+            user=admin_user,
+        )
+    )
+
+    assert result["system_stats"]["total_profiles"] == 1
+    assert result["system_stats"]["total_movies_tracked"] == 1
+    assert result["rating_distribution"] == {"4.0": 1}
 
 
 def test_unknown_request_is_casefolded_idempotent_and_fulfills_only_after_sync(database):
@@ -593,6 +743,28 @@ def test_dashboard_snapshot_never_treats_empty_scope_as_global(database):
     assert empty["rating_distribution"] == {}
     assert empty["activity_data"] == []
     assert empty["group_signals"]["summary"]["profiles_analyzed"] == 0
+
+
+def test_global_dashboard_snapshot_excludes_unready_and_inactive_profiles(database):
+    ready = _profile(1, "Ready")
+    pending = _profile(2, "Pending", completed=False)
+    inactive = _profile(3, "Inactive")
+    inactive.is_active = False
+    database.add_all([ready, pending, inactive])
+    database.add_all(
+        [
+            Rating(id=1, profile_id=ready.id, movie_title="Ready Film", rating=4.0),
+            Rating(id=2, profile_id=pending.id, movie_title="Pending Film", rating=2.0),
+            Rating(id=3, profile_id=inactive.id, movie_title="Inactive Film", rating=1.0),
+        ]
+    )
+    database.commit()
+
+    snapshot = AnalyticsRepository(database).build_dashboard_analytics_snapshot()
+
+    assert snapshot["system_stats"]["total_profiles"] == 1
+    assert snapshot["system_stats"]["total_movies_tracked"] == 1
+    assert snapshot["rating_distribution"] == {"4.0": 1}
 
 
 def test_admin_allowlist_is_server_side_and_metadata_boolean_is_strict(monkeypatch):

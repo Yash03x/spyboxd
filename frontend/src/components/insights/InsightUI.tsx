@@ -18,20 +18,22 @@ export function formatCalendarDate(value: string | null | undefined): string {
 }
 
 export function ProfileAvatar({ profile, username, size = 'md' }: {
-  profile?: ProfileInfo;
+  profile?: Pick<ProfileInfo, 'username'> & Partial<Pick<ProfileInfo, 'profile_image_url' | 'avatar_url'>>;
   username?: string;
   size?: 'sm' | 'md' | 'lg';
 }) {
   const name = profile?.username ?? username ?? '?';
   const imageUrl = profile?.profile_image_url ?? profile?.avatar_url;
+  const [failedUrl, setFailedUrl] = React.useState<string | null>(null);
   const dimensions = size === 'lg' ? 'h-11 w-11 text-sm' : size === 'sm' ? 'h-7 w-7 text-[10px]' : 'h-9 w-9 text-xs';
 
-  if (imageUrl) {
+  if (imageUrl && imageUrl !== failedUrl) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
         src={imageUrl}
         alt=""
+        onError={() => setFailedUrl(imageUrl)}
         className={`${dimensions} shrink-0 rounded-full border border-cinema-400/35 object-cover`}
       />
     );

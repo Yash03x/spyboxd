@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Optional, Sequence
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, text
+from sqlalchemy import false, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -15,6 +15,7 @@ from database.models import (
     AppUser,
     Profile,
     ProfileAccessRequest,
+    Rating,
     UserTrackedProfile,
 )
 
@@ -122,13 +123,132 @@ def accessible_profiles(db: Session, clerk_user: ClerkUser) -> list[Profile]:
     app_user = ensure_app_user(db, clerk_user)
     if clerk_user.is_admin:
         return db.query(Profile).order_by(Profile.updated_at.desc()).all()
+    return tracked_profiles(db, clerk_user, app_user=app_user)
+
+
+def tracked_profiles(
+    db: Session,
+    clerk_user: ClerkUser,
+    *,
+    app_user: Optional[AppUser] = None,
+) -> list[Profile]:
+    """Return only the caller's personal monitoring set, including for admins."""
+
+    resolved_user = app_user or ensure_app_user(db, clerk_user)
     return (
         db.query(Profile)
         .join(UserTrackedProfile, UserTrackedProfile.profile_id == Profile.id)
-        .filter(UserTrackedProfile.user_id == app_user.id)
+        .filter(UserTrackedProfile.user_id == resolved_user.id)
         .order_by(Profile.updated_at.desc())
         .all()
     )
+
+
+def list_profile_catalog(
+    db: Session,
+    clerk_user: ClerkUser,
+    *,
+    search: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List completed profiles a signed-in user can choose to monitor.
+
+    The catalog intentionally exposes only recognition fields and aggregate film
+    counts. Pending, errored, and inactive profiles stay in the admin library
+    and are never offered as selectable monitoring targets.
+    """
+
+    app_user = ensure_app_user(db, clerk_user)
+    tracked_profile_ids = {
+        profile_id
+        for (profile_id,) in (
+            db.query(UserTrackedProfile.profile_id)
+            .filter(UserTrackedProfile.user_id == app_user.id)
+            .all()
+        )
+    }
+
+    query = db.query(Profile).filter(
+        Profile.is_active.is_(True),
+        Profile.scraping_status == "completed",
+    )
+    normalized_search = (search or "").strip().casefold()
+    if normalized_search:
+        pattern = f"%{normalized_search}%"
+        query = query.filter(
+            func.lower(Profile.username).like(pattern)
+            | func.lower(func.coalesce(Profile.display_name, "")).like(pattern)
+        )
+
+    total = query.count()
+    profiles = (
+        query.order_by(func.lower(Profile.username).asc(), Profile.id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    profile_ids = [profile.id for profile in profiles]
+    rating_counts = {
+        profile_id: count
+        for profile_id, count in (
+            db.query(Rating.profile_id, func.count(Rating.id))
+            .filter(Rating.profile_id.in_(profile_ids) if profile_ids else false())
+            .group_by(Rating.profile_id)
+            .all()
+        )
+    }
+
+    return {
+        "profiles": [
+            {
+                "id": profile.id,
+                "username": profile.username,
+                "display_name": profile.display_name,
+                "profile_image_url": profile.profile_image_url,
+                "total_films": rating_counts.get(profile.id, 0),
+                "is_tracked": profile.id in tracked_profile_ids,
+            }
+            for profile in profiles
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def track_profile_by_id(
+    db: Session,
+    clerk_user: ClerkUser,
+    profile_id: int,
+) -> dict[str, Any]:
+    """Idempotently monitor one selectable catalog profile for this user."""
+
+    app_user = ensure_app_user(db, clerk_user)
+    profile = (
+        db.query(Profile)
+        .filter(
+            Profile.id == profile_id,
+            Profile.is_active.is_(True),
+            Profile.scraping_status == "completed",
+        )
+        .first()
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Selectable profile not found")
+
+    _add_tracking(
+        db,
+        app_user_id=app_user.id,
+        profile_id=profile.id,
+        source="direct",
+    )
+    db.commit()
+    return {
+        "message": f"{profile.username} is now monitored.",
+        "status": "tracked",
+        "profile": profile_summary(profile),
+    }
 
 
 def authorize_profile_usernames(

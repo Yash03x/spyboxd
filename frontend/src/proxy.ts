@@ -1,9 +1,9 @@
 import { clerkMiddleware } from '@clerk/nextjs/server';
 
 const PUBLIC_ROUTE_PATTERNS = [
+  /^\/$/,
   /^\/sign-in(?:\/.*)?$/,
   /^\/sign-up(?:\/.*)?$/,
-  /^\/u(?:\/.*)?$/,
 ];
 
 export default clerkMiddleware(async (auth, request) => {

@@ -22,6 +22,7 @@ import {
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
+import { ProfileAvatar } from '../components/insights/InsightUI';
 import toast from 'react-hot-toast';
 
 const REQUEST_STATUS_COPY: Record<ProfileRequestStatus, { label: string; description: string; className: string }> = {
@@ -47,6 +48,9 @@ const REQUEST_STATUS_COPY: Record<ProfileRequestStatus, { label: string; descrip
   },
 };
 
+const PROFILE_CATALOG_RESULT_LIMIT = 100;
+const PROFILE_CATALOG_SEARCH_DELAY_MS = 250;
+
 
 const ProfileManager: React.FC = () => {
   const searchParams = useSearchParams();
@@ -55,12 +59,15 @@ const ProfileManager: React.FC = () => {
   const isAdmin = currentUserQuery.data?.is_admin ?? false;
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [catalogSearchTerm, setCatalogSearchTerm] = useState('');
+  const [debouncedCatalogSearchTerm, setDebouncedCatalogSearchTerm] = useState('');
   const [requestedUsername, setRequestedUsername] = useState('');
   const [isAddingProfile, setIsAddingProfile] = useState(false);
   const [newProfileUsername, setNewProfileUsername] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
   const [untrackingProfile, setUntrackingProfile] = useState<string | null>(null);
+  const [trackingProfileId, setTrackingProfileId] = useState<number | null>(null);
   const [adminNotes, setAdminNotes] = useState<Record<number, string>>({});
   const [exportFiles, setExportFiles] = useState<FileList | null>(null);
   const [hasOwnerPublishingConsent, setHasOwnerPublishingConsent] = useState(false);
@@ -75,9 +82,25 @@ const ProfileManager: React.FC = () => {
     }
   }, [isAdmin, searchParams, router]);
 
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedCatalogSearchTerm(catalogSearchTerm.trim());
+    }, PROFILE_CATALOG_SEARCH_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [catalogSearchTerm]);
+
   const { data: profiles, isLoading, error } = useQuery({
     queryKey: ['profiles'],
     queryFn: profileApi.getProfiles,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const adminTrackedProfilesQuery = useQuery({
+    queryKey: ['profiles', 'tracked', 'profile-manager'],
+    queryFn: profileApi.getTrackedProfiles,
+    enabled: isAdmin,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -86,6 +109,16 @@ const ProfileManager: React.FC = () => {
     queryKey: ['profile-requests'],
     queryFn: profileApi.getRequests,
     staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const profileCatalogQuery = useQuery({
+    queryKey: ['profile-catalog', debouncedCatalogSearchTerm],
+    queryFn: () => profileApi.getCatalog(
+      debouncedCatalogSearchTerm,
+      PROFILE_CATALOG_RESULT_LIMIT,
+    ),
+    staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
 
@@ -99,7 +132,9 @@ const ProfileManager: React.FC = () => {
 
   const refreshProfileSurfaces = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+    queryClient.invalidateQueries({ queryKey: ['profile-catalog'] }),
     queryClient.invalidateQueries({ queryKey: ['profile-requests'] }),
+    queryClient.invalidateQueries({ queryKey: ['admin-profile-requests'] }),
     queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] }),
     queryClient.invalidateQueries({ queryKey: ['recent-changes'] }),
   ]);
@@ -117,6 +152,22 @@ const ProfileManager: React.FC = () => {
     },
     onError: (requestError: Error) => {
       toast.error(`Could not submit profile: ${requestError.message}`);
+    },
+  });
+
+  const trackCatalogProfileMutation = useMutation({
+    mutationFn: async (profileId: number) => {
+      setTrackingProfileId(profileId);
+      return profileApi.trackExisting(profileId);
+    },
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      setTrackingProfileId(null);
+      toast.success(`${result.profile.username} added to your monitored profiles.`);
+    },
+    onError: (trackError: Error) => {
+      setTrackingProfileId(null);
+      toast.error(`Could not monitor profile: ${trackError.message}`);
     },
   });
 
@@ -164,7 +215,7 @@ const ProfileManager: React.FC = () => {
   const addProfileMutation = useMutation({
     mutationFn: profileApi.createProfile,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      void refreshProfileSurfaces();
       setIsAddingProfile(false);
       setNewProfileUsername('');
       toast.success('Profile added successfully.');
@@ -180,7 +231,7 @@ const ProfileManager: React.FC = () => {
       return profileApi.deleteProfile(username);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      void refreshProfileSurfaces();
       toast.success('Profile deleted successfully.');
       setDeletingProfile(null);
     },
@@ -193,7 +244,7 @@ const ProfileManager: React.FC = () => {
   const exportUploadMutation = useMutation({
     mutationFn: (files: FileList) => profileApi.uploadFiles(files, { publish_owner_data: true }),
     onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      void refreshProfileSurfaces();
       const loadedCount = result.loaded_profiles.length;
       const sourceKinds = Array.from(new Set((result.imports ?? []).map((item) => item.source_kind)));
       const provenanceCopy = sourceKinds.length > 0 ? ` Provenance: ${sourceKinds.join(', ')}.` : '';
@@ -209,6 +260,14 @@ const ProfileManager: React.FC = () => {
   });
 
   const profilesArray = Array.isArray(profiles) ? profiles : [];
+  const catalogProfiles = profileCatalogQuery.data?.profiles ?? [];
+  const catalogTotal = profileCatalogQuery.data?.total ?? 0;
+  const catalogResultLimit = profileCatalogQuery.data?.limit ?? PROFILE_CATALOG_RESULT_LIMIT;
+  const catalogProfileNoun = catalogTotal === 1 ? 'profile' : 'profiles';
+  const isCatalogSearchPending = catalogSearchTerm.trim() !== debouncedCatalogSearchTerm;
+  const monitoredProfileCount = isAdmin
+    ? adminTrackedProfilesQuery.data?.length
+    : profilesArray.length;
   const normalizedRequestedUsername = requestedUsername.trim().replace(/^@/, '');
   const filteredProfiles = profilesArray.filter((profile) => {
     const matchesSearch = profile.username.toLowerCase().includes(searchTerm.toLowerCase());
@@ -288,6 +347,99 @@ const ProfileManager: React.FC = () => {
         className="card-cinema"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
+        aria-labelledby="profile-catalog-title"
+      >
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 id="profile-catalog-title" className="text-xl font-bold text-white">Choose profiles to monitor</h2>
+              <span className="rounded-lg border border-cinema-400/25 bg-cinema-500/10 px-2.5 py-1 text-xs font-semibold text-cinema-200">
+                {isAdmin && adminTrackedProfilesQuery.error
+                  ? 'Monitoring count unavailable'
+                  : `${monitoredProfileCount ?? '…'} monitored`}
+              </span>
+            </div>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-white/60">
+              Select any synced profile already in Spyboxd. Your choices are private to your account, power the Monitored view in My Dashboard, and can be changed at any time.
+              {isAdmin ? ' The default global admin dashboard and library controls remain explicit and separate.' : ''}
+            </p>
+          </div>
+          <label className="relative w-full lg:max-w-sm">
+            <span className="sr-only">Search available profiles</span>
+            <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-white/40" />
+            <input
+              type="search"
+              placeholder="Search available profiles..."
+              value={catalogSearchTerm}
+              onChange={(event) => setCatalogSearchTerm(event.target.value)}
+              className="input-field w-full pl-10"
+            />
+          </label>
+        </div>
+
+        {profileCatalogQuery.isLoading || profileCatalogQuery.isFetching || isCatalogSearchPending ? (
+          <p className="mt-5 text-sm text-white/45">
+            {catalogSearchTerm.trim() ? 'Searching synced profiles…' : 'Loading available profiles…'}
+          </p>
+        ) : profileCatalogQuery.error ? (
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-400/20 bg-red-400/5 p-4">
+            <p className="text-sm text-red-200">Available profiles could not be loaded.</p>
+            <button type="button" onClick={() => void profileCatalogQuery.refetch()} className="btn-secondary px-3 py-2 text-xs">Try again</button>
+          </div>
+        ) : catalogProfiles.length === 0 ? (
+          <p className="mt-5 rounded-xl border border-white/10 bg-black/15 p-4 text-sm text-white/45">
+            {catalogSearchTerm.trim() ? 'No synced profiles match that search.' : 'No synced profiles are available yet.'}
+          </p>
+        ) : (
+          <>
+            <p className="mt-5 text-xs text-white/45" data-testid="profile-catalog-result-summary">
+              {catalogProfiles.length === catalogTotal
+                ? `${catalogTotal.toLocaleString()} ${debouncedCatalogSearchTerm ? 'matching ' : ''}synced ${catalogProfileNoun}`
+                : `Showing ${catalogProfiles.length.toLocaleString()} of ${catalogTotal.toLocaleString()} ${debouncedCatalogSearchTerm ? 'matching ' : ''}synced ${catalogProfileNoun}`}
+              {catalogTotal > catalogProfiles.length
+                ? ` · Results are limited to ${catalogResultLimit.toLocaleString()} per search; refine the search to find the rest.`
+                : ''}
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {catalogProfiles.map((profile) => {
+                const isBusy = trackingProfileId === profile.id || untrackingProfile === profile.username;
+                return (
+                  <article key={profile.id} className="flex min-w-0 items-center gap-3 rounded-xl border border-white/10 bg-black/15 p-3">
+                    <ProfileAvatar profile={profile} size="lg" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold text-white">{profile.display_name || profile.username}</p>
+                      <p className="truncate text-xs text-white/45">@{profile.username} · {profile.total_films.toLocaleString()} films</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => {
+                        if (profile.is_tracked) {
+                          untrackProfileMutation.mutate(profile.username);
+                        } else {
+                          trackCatalogProfileMutation.mutate(profile.id);
+                        }
+                      }}
+                      aria-label={`${profile.is_tracked ? 'Stop monitoring' : 'Monitor'} ${profile.username}`}
+                      className={profile.is_tracked
+                        ? 'rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:bg-emerald-400/20 disabled:opacity-50'
+                        : 'rounded-lg border border-cinema-400/25 bg-cinema-500/10 px-3 py-2 text-xs font-semibold text-cinema-200 transition-colors hover:bg-cinema-500/20 disabled:opacity-50'}
+                    >
+                      {isBusy ? 'Saving…' : profile.is_tracked ? 'Monitoring' : 'Monitor'}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </motion.section>
+
+      <motion.section
+        className="card-cinema"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.3 }}
       >
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,.75fr)] lg:items-end">
@@ -297,9 +449,9 @@ const ProfileManager: React.FC = () => {
                 <UserPlus className="h-5 w-5" />
               </span>
               <div>
-                <h2 className="text-xl font-bold text-white">Track a Letterboxd profile</h2>
+                <h2 className="text-xl font-bold text-white">Request a profile that is not listed</h2>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">
-                  Existing profiles are added immediately. New usernames are sent for review and, once accepted, queued for the next residential full sync.
+                  Enter a Letterboxd username that Spyboxd does not have yet. It will be sent for review and, once accepted, queued for the next residential full sync.
                 </p>
               </div>
             </div>
@@ -648,7 +800,7 @@ const ProfileManager: React.FC = () => {
       >
         <AnimatePresence mode="popLayout">
           {filteredProfiles.length > 0 ? (
-            <motion.div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6" layout>
+            <motion.div data-testid="tracked-profile-grid" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6" layout>
               {filteredProfiles.map((profile) => {
                 const badge = getStatusBadge(profile.scraping_status);
                 const coverageSummary =
