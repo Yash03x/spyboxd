@@ -260,6 +260,9 @@ jobs:
           grep -Fq 'ControlMaster auto' deploy/production-ssh.sh
           grep -Fq 'ssh-keyscan -4' deploy/production-ssh.sh
           grep -Fq 'scp -4' deploy/production-ssh.sh
+          grep -Fq 'REPOSITORY_URL: https://github.com/' .github/workflows/deploy.yml
+          grep -Fq 'github.repository' .github/workflows/deploy.yml
+          grep -Fq 'repository_git remote set-url origin "${REPOSITORY_URL}"' .github/workflows/deploy.yml
           if grep -n -F 'appleboy/' \
               .github/workflows/deploy.yml \
               .github/workflows/rollback.yml \

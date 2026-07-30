@@ -1,296 +1,106 @@
 # Spyboxd
 
-Spyboxd is a shared Letterboxd analytics app built around one production-safe ingestion model:
+[![Production CI](https://github.com/Yash03x/spyboxd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Yash03x/spyboxd/actions/workflows/ci.yml)
+[![Deploy Production](https://github.com/Yash03x/spyboxd/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/Yash03x/spyboxd/actions/workflows/deploy.yml)
 
-- scrape a complete public-profile snapshot on a residential machine
-- upload the generated dataset to the API
-- poll Letterboxd's public RSS feed conservatively for later diary/review activity
-- serve cached analytics from PostgreSQL
+**Live product: [spyboxd.com](https://spyboxd.com)**
 
-The backend does not perform server-side full-HTML scraping from the VPS. RSS
-is a separate additions-only observation layer over the last full snapshot.
+Spyboxd turns public Letterboxd histories into group analytics, taste comparisons, co-watch signals, and practical movie recommendations. The public homepage shows an identity-free view of the collection; the signed-in workspace lets each account monitor its own set of profiles.
 
-## Stack
+[Open Spyboxd](https://spyboxd.com) · [Sign in](https://spyboxd.com/sign-in) · [Create an account](https://spyboxd.com/sign-up)
 
-- Backend: FastAPI + SQLAlchemy + PostgreSQL
-- Frontend: Next.js App Router + React Query + Clerk
-- Local sync runner: Python scripts calling the HTML scraper from a residential machine
+## Product
 
-## Features
+| Surface | What it provides |
+| --- | --- |
+| Public dashboard | Aggregate profile, film, review, rating, activity, signal, freshness, and coverage metrics without exposing profile identities. |
+| My Dashboard | A private overview of the profiles an account monitors, including group activity, rating patterns, recent changes, and Spy Signals. |
+| Spy Signals | Same-film watches on the same day or within a selected gap, group co-watch patterns, and occurrence-aware Rewatch Echoes. |
+| Compare | Pair Dossier, Taste DNA, Taste Through Time, and Signal Calendar views for two selected profiles. |
+| Watch Together | Ranked group picks from unseen films, watchlist overlap, collective blind spots, or an imported public list. Results can be filtered by runtime, genre, offer type, and availability country. |
+| Analysis | Single-profile rating distributions, diary activity, recent watches, ratings, reviews, and data limitations when an import has known gaps. |
+| My Profiles | Private monitoring choices over the shared profile catalog, plus requests for profiles that still need a full import. |
 
-Existing routes remain available:
+New accounts use their exact Letterboxd username as their Spyboxd handle and primary profile. If that profile is already imported, Spyboxd links it immediately; otherwise it creates a pending request for the next residential full sync.
 
-- Dashboard for group-level activity and aggregate statistics
-- Spy Signals for same-day and configurable day-gap co-watch detection
-- My Profiles for tracking an existing imported account or requesting a new residential sync
-- Analysis for a single profile's ratings and activity
+## Data architecture
 
-Additive insight routes:
+Spyboxd separates complete profile collection from production serving. The production server does not perform full Letterboxd HTML scraping.
 
-- Compare: Pair Dossier, Taste DNA, and Signal Calendar for selected profiles
-- Watch Together: ranked unseen-by-all or shared-watchlist candidates with group-fit explanations and country-aware provider availability
-- Data coverage: per-surface freshness, row counts, and honest missing-data warnings
-- Optional TMDB enrichment: genres, runtimes, credits, keywords, artwork, and regional watch providers
+```mermaid
+flowchart LR
+    L["Letterboxd public HTML"] --> R["Residential full sync"]
+    R --> B["Validated schema-v2 bundle"]
+    B --> I["Authenticated atomic ingestion"]
 
-The timing views use individual `watch_events`, so repeat diary entries are preserved. Sequence is presented as a follow pattern, not proof of influence.
+    F["Letterboxd RSS"] --> W["Conservative RSS worker"]
+    T["TMDB and watch-provider data"] --> E["Scheduled cache enrichment"]
 
-`GET /api/spy-signals` keeps `event_source=ratings` as its compatibility default. The Spy Signals frontend opts into `event_source=events`, which uses authoritative active diary events and falls back per profile to the legacy stored date only when no authoritative diary has ever been imported.
-
-## Current Architecture
-
-```text
-Residential machine
-  └─ scripts/local_full_sync.py
-       └─ backend/scraper_html.py
-            └─ ZIP upload to /upload/
-
-API / PostgreSQL
-  ├─ services/profile_loader.py
-  ├─ services/ingestion.py
-  ├─ services/rss_incremental.py + rss_worker.py
-  ├─ sync lineage + canonical movies + per-profile film state + watch events
-  └─ dashboard snapshot cache in system_metrics.metrics
-
-Frontend
-  ├─ aggregate-only public dashboard at /
-  ├─ Clerk-authenticated private analytics workspace at /dashboard
-  └─ per-user profile catalog, monitoring choices, and new-profile requests
+    I --> P[(PostgreSQL)]
+    W --> P
+    E --> P
+    P --> C["Cached aggregate analytics"]
+    P --> A["FastAPI"]
+    C --> A
+    A --> N["Next.js and Clerk"]
 ```
 
-## Quick Start
+- A residential runner captures complete public profile surfaces and produces a manifest-backed bundle only when the requested datasets and recorded counts are internally consistent.
+- The API validates each bundle, resolves canonical movies, and commits profile state, watch occurrences, lists, watchlists, reviews, compatibility tables, and sync lineage in one transaction.
+- PostgreSQL stores each imported profile and canonical movie once. Per-user access is represented separately through account-to-profile mappings rather than duplicated profile data.
+- The RSS worker observes recent public diary and review additions between full syncs. RSS is never treated as complete history and never deletes data.
+- TMDB enrichment is independent of Letterboxd ingestion. It adds cached metadata and country-specific streaming, rental, and purchase availability when present.
+- Expensive global dashboard analytics are cached after data-changing operations; ordinary account dashboards are calculated only over that account's monitored profiles.
 
-### Prerequisites
+## Privacy and access
 
-- Python 3.12+
-- Node.js 20.9+
-- PostgreSQL 15+
+- `/` and the public dashboard API expose a strict aggregate allowlist. They do not return usernames, profile pairs, film titles, watch dates, or profile-level activity.
+- Profile snapshots, lists, activity, analytics, requests, and management tools require a Clerk-authenticated session.
+- Ordinary accounts can access only profiles they monitor. Their monitoring choices and profile requests are private to that account.
+- Administrative mutations require a trusted boolean admin claim or a server-side Clerk user-ID allowlist; ingestion uses a separate upload token.
+- Clerk's stable user ID remains the authorization key. The signed Letterboxd username claim supplies the account's display handle and primary-profile link.
 
-### Local development
+## Data integrity
 
-```bash
-git clone <repository-url>
-cd letterboxd-reviewer
+Spyboxd is deliberately explicit about what its sources can and cannot establish.
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --require-hashes -r requirements-dev.lock
+- Full residential snapshots are the reconciliation source for public profile state. RSS is an additions-only freshness layer and cannot prove deletions or complete watch, list, favorite, or watchlist history.
+- Repeat diary entries are stored as individual watch events instead of being collapsed into one film-level date.
+- Missing or private Letterboxd fields are reported through coverage metadata rather than inferred.
+- Timing views describe temporal association and follow patterns, not influence or causality.
+- Availability country means the country where streaming, rental, or purchase offers are checked; `Worldwide` means any supported country, not a film's origin or language.
+- Linking a Letterboxd username connects its public profile data; it is not independent proof that the registrant owns that Letterboxd account.
 
-cp .env.example .env
-cp frontend/.env.example frontend/.env.local
+## Production
 
-createdb spyboxd
-PYTHONPATH=backend alembic upgrade head
+Spyboxd runs as three hardened systemd services behind Nginx and TLS:
 
-cd frontend
-npm ci
-cd ..
-```
+- a Next.js frontend on a loopback-only port;
+- a FastAPI application backed by PostgreSQL;
+- an independent Letterboxd RSS worker.
 
-Run the app:
+Production releases are built and tested by GitHub Actions, packaged as an exact-revision artifact, and deployed into versioned release directories. The pipeline audits locked dependencies, migrates and tests PostgreSQL, checks model/migration parity, lints and builds the frontend, runs Playwright smoke coverage, and validates deployment assets. Alembic migrations run before atomic activation; local and public readiness checks must report the expected revision, and an unhealthy activation restores a compatible retained release without downgrading the database.
 
-```bash
-source .venv/bin/activate
-cd backend
-uvicorn main:app --reload --port 8000
-```
+Nginx terminates TLS, rate-limits the public API and upload path, and proxies only to loopback services. UFW keeps application ports private. Runtime services use a dedicated unprivileged account and restrictive systemd sandboxing. TMDB cache enrichment runs as a separate bounded production workflow.
 
-```bash
-cd frontend
-npm run dev
-```
+## Technology
 
-## Residential Sync Workflow
+- **Frontend:** Next.js App Router, React, TanStack Query, Clerk, Tailwind CSS, Framer Motion, Chart.js
+- **Backend:** FastAPI, SQLAlchemy, Alembic, Pydantic
+- **Data:** PostgreSQL, normalized movie/profile state, occurrence-level watch events, cached analytics
+- **Ingestion:** Python residential scraper, validated ZIP imports, incremental RSS observation, TMDB enrichment
+- **Operations:** Nginx, systemd, GitHub Actions, exact-SHA releases, guarded rollback
 
-The HTML scraper is fail-closed: a schema-v2 bundle is written only when every requested public surface finishes and its manifest counts match the CSVs. Empty public watchlists and lists require an explicit Letterboxd empty state; favorites require either a recognized favorites container (including Letterboxd's empty owner container) or an explicit empty state. When a retained sync directory is reused, only scraper-owned CSVs for newly unavailable surfaces are removed, so stale private data cannot enter the next bundle and unrelated files remain untouched.
+## Repository map
 
-Set an ingestion token on the API:
+- [`frontend/`](frontend/) — public dashboard and authenticated analytics workspace
+- [`backend/`](backend/) — API, authorization, ingestion, analytics, RSS, and enrichment services
+- [`alembic/`](alembic/) — additive PostgreSQL schema migrations
+- [`scripts/`](scripts/) — residential full-sync, archive import, batch sync, and enrichment entry points
+- [`deploy/`](deploy/) — production Nginx, systemd, release, health, and rollback assets
+- [`.github/workflows/`](.github/workflows/) — CI, production deployment, rollback, and scheduled enrichment
+- [`DATABASE.md`](DATABASE.md) — normalized schema, lineage, compatibility tables, and integrity rules
 
-```bash
-INGESTION_API_TOKEN=replace-with-a-long-random-secret
-```
+## Data sources and attribution
 
-Single profile sync:
-
-```bash
-python scripts/local_full_sync.py <username> \
-  --api-base-url http://localhost:8000 \
-  --upload-token "$INGESTION_API_TOKEN"
-```
-
-Repeatable batch sync:
-
-1. Copy `scripts/sync-profiles.example.json` to `sync-profiles.json`.
-2. Fill in usernames and API URL.
-3. Export `INGESTION_API_TOKEN`.
-4. Run:
-
-```bash
-python scripts/batch_full_sync.py --config sync-profiles.json
-```
-
-For a local correction run that should write directly to the configured database, first scrape to a retained directory and then import its validated bundle:
-
-```bash
-python backend/scraper_html.py <username> --output data/scraped/<username>
-python scripts/import_local_archive.py <username> data/scraped/<username>
-```
-
-The importer accepts either a directory or ZIP, requires the full schema-v2 manifest, checks username and dataset counts, rejects unsafe ZIP members, and commits one profile sync atomically.
-
-## Incremental RSS Activity
-
-After a profile has one completed full sync, the RSS worker checks only the
-official `https://letterboxd.com/<username>/rss/` feed. It upserts observed
-public diary entries and reviews by their stable feed/viewing ID. It never
-deletes data, replaces the full snapshot, or treats the feed's rolling window
-as complete history.
-
-Run one due-profile cycle:
-
-```bash
-PYTHONPATH=backend python -m rss_worker --once
-```
-
-Run the long-lived worker:
-
-```bash
-PYTHONPATH=backend python -m rss_worker
-```
-
-The default per-profile interval is ten minutes. The worker checks the due queue
-once a minute, sends feed requests sequentially with a three-second pause, and
-uses exponential failure backoff capped at 24 hours. These settings are
-configurable through the `SPYBOXD_RSS_*` environment variables.
-RSS cannot prove deletions or observe watchlist, favorites, private activity,
-profile metadata, or complete list membership, so periodic/manual residential
-full syncs remain the reconciliation source.
-
-Public HTML does not expose every account-only Letterboxd field. Tags, comments, and private data remain marked unavailable instead of being inferred. A user's official Letterboxd export can still be supported as a separate source without weakening the public-snapshot contract.
-
-## Optional TMDB Enrichment
-
-Letterboxd ingestion works without TMDB. After setting `TMDB_API_TOKEN` (preferred) or `TMDB_API_KEY`, enrich imported canonical movies separately:
-
-```bash
-python scripts/enrich_tmdb.py --region DE
-```
-
-The enrichment command caches details and provider results, retries transient failures, and supports bounded or dry runs. Streaming availability is region-specific and is displayed as unavailable when the cache has no matching provider data.
-
-## Runtime Model
-
-- `POST /upload/` is the write path for profile data.
-- Profiles and imported movie data are stored once globally; `user_tracked_profiles`
-  controls which profiles each signed-in user can select or analyze.
-- `GET /api/dashboard/analytics` defaults to each ordinary caller's personal
-  monitoring set. An omitted scope preserves the prior global default for admins;
-  admins can explicitly switch between `scope=tracked` and `scope=global`. The
-  global snapshot is refreshed after uploads, profile deletes, and data clears.
-- Health checks and `GET /api/public/dashboard` are public. The dashboard response
-  is a strict aggregate allowlist with no usernames, profile pairs, film titles,
-  watch dates, or profile-level activity.
-- Profile snapshots, lists, analytics, activity, access requests, and management
-  screens require sign-in. The former `/u/<username>` share URL is also protected.
-- A signed-in user can browse the completed profile catalog and choose profiles
-  to monitor. Missing or incomplete usernames become requests for the next
-  residential sync.
-- Admin mutations require a strict boolean admin session claim or a Clerk user ID
-  in the server-side `CLERK_ADMIN_USER_IDS` allowlist.
-- Production releases fail closed unless the frontend live keys and backend JWKS
-  configuration identify the same Clerk production instance.
-- The one-time development-to-live Clerk cutover additionally requires the
-  production GitHub environment variable `PRODUCTION_CLERK_BRIDGE_EDGE` set to
-  `<active-40-char-sha>:<target-40-char-sha>`. Only an exact development-key
-  source manifest can use it; no incompatible automatic rollback is retained,
-  failed candidate health stops the services, and the variable must be removed
-  after the successful bridge. Live-to-live mismatches are never bypassed.
-- The local sync runner can authenticate with `X-Upload-Token`.
-
-## Main Endpoints
-
-### Public reads
-
-- `GET /health`
-- `GET /ready`
-- `GET /health/rss`
-- `GET /api/public/dashboard`
-
-### Signed-in workspace
-
-- `GET /api/me`
-- `GET /profiles/`
-- `GET /profiles/tracked`
-- `GET /profiles/catalog`
-- `POST /profiles/{profile_id}/tracking`
-- `POST /profiles/requests`
-- `GET /profiles/requests`
-- `DELETE /profiles/{username}/tracking`
-- `GET /profiles/{username}/analysis`
-- `GET /public/profile/{username}` (legacy path; authenticated and access-scoped)
-- `GET /api/dashboard/analytics`
-- `GET /api/spy-signals?event_source=ratings|events`
-- `GET /api/data-coverage`
-- `GET /api/pair-dossier`
-- `GET /api/taste-dna`
-- `GET /api/signal-calendar`
-- `GET /api/watch-together`
-- `GET /api/watch-provider-regions`
-
-### Admin / ingestion
-
-- `GET /admin/profile-requests`
-- `PUT /admin/profile-requests/{request_id}`
-- `POST /profiles/create`
-- `PUT /profiles/{username}`
-- `DELETE /profiles/{username}`
-- `DELETE /profiles/{username}/data`
-- `POST /upload/`
-
-## Docker Compose
-
-Local compose runs:
-
-- `postgres`
-- `api`
-- `rss-poller`
-- `frontend`
-
-Start it with:
-
-```bash
-docker compose up --build
-```
-
-## Repo Layout
-
-```text
-backend/
-  main.py
-  auth.py
-  rss_worker.py
-  database/
-  services/
-  scraper_html.py
-
-frontend/
-  src/app/
-  src/components/
-  src/services/
-  src/views/
-
-scripts/
-  local_full_sync.py
-  batch_full_sync.py
-  import_local_archive.py
-  enrich_tmdb.py
-  sync-profiles.example.json
-```
-
-See [`DATABASE.md`](DATABASE.md) for the normalized schema, compatibility tables, and data-integrity behavior.
-
-## Notes
-
-- `backend/scraper_html.py` remains because it powers the residential sync runner.
-- The normalized data foundation is additive. Legacy `ratings`, `reviews`, and old API contracts remain available while new insights read canonical movies, profile-film state, and active watch events.
-- Dashboard group metrics are precomputed into a cached snapshot for production reads.
-- Legacy server-side scraping, Celery workers, Redis, SSE progress streams, and comparative scrape tooling have been removed from the active app path.
+Spyboxd is an independent project and is not affiliated with Letterboxd. It works from imported public Letterboxd data. This product uses the TMDB API but is not endorsed or certified by TMDB. Watch-provider availability is supplied through TMDB's JustWatch-powered provider data.

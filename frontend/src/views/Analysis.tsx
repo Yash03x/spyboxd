@@ -54,6 +54,11 @@ const Analysis: React.FC = () => {
     refetchOnWindowFocus: false,
   });
 
+  const coverageLimitations = analysis?.data_coverage?.limitations?.filter(
+    (item) => item.trim().length > 0,
+  ) ?? [];
+  const hasCoverageLimitations = coverageLimitations.length > 0;
+
   if (loadingProfiles) {
     return <LoadingSpinner message="Loading profiles..." />;
   }
@@ -173,9 +178,9 @@ const Analysis: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-3">
+          <div className={`grid grid-cols-1 items-start gap-6 ${hasCoverageLimitations ? 'xl:grid-cols-3' : ''}`}>
             <motion.div
-              className="analysis-panel xl:col-span-2"
+              className={`analysis-panel ${hasCoverageLimitations ? 'xl:col-span-2' : ''}`}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
@@ -214,32 +219,30 @@ const Analysis: React.FC = () => {
               </div>
             </motion.div>
 
-            <motion.div
-              className="analysis-panel"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.25 }}
-            >
-              <h2 className="text-xl font-semibold text-white">Coverage Notes</h2>
-              <p className="mt-1 text-sm text-white/60">
-                This profile’s current import quality and missing surfaces.
-              </p>
-
-              <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-sm text-white/80">
-                  {analysis.data_coverage?.summary ?? 'No coverage metadata available for this profile.'}
+            {hasCoverageLimitations ? (
+              <motion.div
+                className="analysis-panel"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25 }}
+              >
+                <h2 className="text-xl font-semibold text-white">Coverage Notes</h2>
+                <p className="mt-1 text-sm text-white/60">
+                  This profile’s current import quality and missing surfaces.
                 </p>
-                {analysis.data_coverage?.limitations?.length ? (
+
+                <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <p className="text-sm text-white/80">
+                    {analysis.data_coverage?.summary ?? 'Coverage limitations apply to this profile.'}
+                  </p>
                   <ul className="mt-4 space-y-2 text-sm text-white/55">
-                    {analysis.data_coverage.limitations.map((item) => (
+                    {coverageLimitations.map((item) => (
                       <li key={item}>- {item}</li>
                     ))}
                   </ul>
-                ) : (
-                  <p className="mt-4 text-sm text-white/50">No explicit limitations recorded.</p>
-                )}
-              </div>
-            </motion.div>
+                </div>
+              </motion.div>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-2">

@@ -31,6 +31,7 @@ jobs:
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
       REMOTE_BUNDLE: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz
       REMOTE_CHECKSUM: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz.sha256
+      REPOSITORY_URL: https://github.com/${{ github.repository }}.git
       CLERK_BRIDGE_EDGE: ${{ vars.PRODUCTION_CLERK_BRIDGE_EDGE }}
 
     steps:
@@ -188,12 +189,13 @@ jobs:
           timeout --signal=TERM --kill-after=2m 30m \
             deploy/production-ssh.sh run sh -s -- \
               "${RELEASE_SHA}" "${REMOTE_BUNDLE}" "${REMOTE_CHECKSUM}" \
-              "${CLERK_BRIDGE_EDGE}" <<'REMOTE'
+              "${CLERK_BRIDGE_EDGE}" "${REPOSITORY_URL}" <<'REMOTE'
             set -eu
             RELEASE_SHA="$1"
             REMOTE_BUNDLE="$2"
             REMOTE_CHECKSUM="$3"
             CLERK_BRIDGE_EDGE="${4:-}"
+            REPOSITORY_URL="$5"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'')
@@ -210,6 +212,10 @@ jobs:
               echo "Remote artifact paths do not match the validated release SHA" >&2
               exit 64
             fi
+            case "${REPOSITORY_URL}" in
+              https://github.com/*/*.git) ;;
+              *) echo "Invalid canonical repository URL" >&2; exit 64 ;;
+            esac
 
             release_runner=""
             cleanup_activation() {
@@ -267,6 +273,7 @@ jobs:
               exit 1
             fi
 
+            repository_git remote set-url origin "${REPOSITORY_URL}"
             repository_fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main'
             resolved_sha="$(repository_git rev-parse --verify "${RELEASE_SHA}^{commit}")"
             if [ "${resolved_sha}" != "${RELEASE_SHA}" ]; then

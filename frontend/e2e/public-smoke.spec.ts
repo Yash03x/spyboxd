@@ -1,6 +1,6 @@
 import { expect, test, type ConsoleMessage, type Locator, type Page, type TestInfo } from '@playwright/test';
 
-import { installApiMocks, MISSING_POSTER_URL } from './fixtures/api';
+import { installApiMocks, MISSING_POSTER_URL, profileAnalysis } from './fixtures/api';
 
 const runtimeErrors = new WeakMap<Page, string[]>();
 
@@ -137,12 +137,12 @@ test('analysis list panels keep intrinsic heights without animated glass artifac
   await page.goto('/analysis');
 
   const watchesPanel = page.getByRole('heading', { name: 'Recent Watches', exact: true }).locator('..');
-  const coveragePanel = page.getByRole('heading', { name: 'Coverage Notes', exact: true }).locator('..');
   const ratingsPanel = page.getByRole('heading', { name: 'Recent Ratings', exact: true }).locator('..');
   const reviewsPanel = page.getByRole('heading', { name: 'Recent Reviews', exact: true }).locator('..');
 
   await expect(ratingsPanel).toBeVisible();
-  for (const panel of [watchesPanel, coveragePanel, ratingsPanel, reviewsPanel]) {
+  await expect(page.getByRole('heading', { name: 'Coverage Notes', exact: true })).toHaveCount(0);
+  for (const panel of [watchesPanel, ratingsPanel, reviewsPanel]) {
     const compositorStyles = await panel.evaluate((element) => {
       const styles = window.getComputedStyle(element);
       return {
@@ -159,13 +159,10 @@ test('analysis list panels keep intrinsic heights without animated glass artifac
   }
 
   if ((page.viewportSize()?.width ?? 0) >= 1280) {
-    const [watchesBox, coverageBox, ratingsBox, reviewsBox] = await Promise.all([
-      watchesPanel.boundingBox(),
-      coveragePanel.boundingBox(),
+    const [ratingsBox, reviewsBox] = await Promise.all([
       ratingsPanel.boundingBox(),
       reviewsPanel.boundingBox(),
     ]);
-    expect(coverageBox!.height).toBeLessThan(watchesBox!.height);
     expect(reviewsBox!.height).toBeLessThan(ratingsBox!.height);
   }
 
@@ -179,6 +176,39 @@ test('analysis list panels keep intrinsic heights without animated glass artifac
     elements.map((element) => window.getComputedStyle(element).transform)
   ));
   expect(shimmerTransformsAfter).toEqual(shimmerTransformsBefore);
+});
+
+test('analysis shows Coverage Notes only for actionable limitations', async ({ page }) => {
+  let limitations: string[] = [];
+  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/[^/]+\/analysis$/, (route) => (
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...profileAnalysis,
+        data_coverage: {
+          ...profileAnalysis.data_coverage,
+          summary: 'RSS-only partial coverage.',
+          limitations,
+        },
+      }),
+    })
+  ));
+
+  await page.goto('/analysis');
+
+  const coverageNotes = page.getByRole('heading', { name: 'Coverage Notes', exact: true });
+  await expect(coverageNotes).toHaveCount(0);
+
+  limitations = [
+    'RSS-only data can omit older diary entries.',
+    'This partial import does not include the watchlist.',
+  ];
+  await page.reload();
+
+  await expect(coverageNotes).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: 'RSS-only data can omit older diary entries.' })).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: 'This partial import does not include the watchlist.' })).toBeVisible();
 });
 
 test('profiles can be searched without hiding matching data', async ({ page }) => {
