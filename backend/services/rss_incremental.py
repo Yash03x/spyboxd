@@ -36,6 +36,7 @@ from services.import_contracts import (
     slug_from_url,
 )
 from services.movie_resolver import MovieResolver
+from services.profile_ingestion_lock import lock_profile_ingestion
 from services.profile_changes import capture_profile_state, record_profile_changes
 
 
@@ -970,6 +971,7 @@ def _record_poll_failure(
     db: Session,
     *,
     profile_id: int,
+    observed_baseline_id: Optional[int],
     now: datetime,
     message: str,
     http_status: Optional[int],
@@ -980,14 +982,36 @@ def _record_poll_failure(
     retry_after_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     db.rollback()
+    lock_profile_ingestion(db, profile_id)
     profile = db.query(Profile).filter(Profile.id == profile_id).one()
     state = _ensure_feed_state(db, profile)
+    latest_baseline = _authoritative_baseline(db, profile_id)
+    baseline_advanced = bool(
+        observed_baseline_id is not None
+        and latest_baseline is not None
+        and latest_baseline.id != observed_baseline_id
+    )
+    if requires_full_sync and baseline_advanced:
+        # The failed request began against an older snapshot. A full import won
+        # the lock after the rollback and established a newer reconciliation
+        # boundary, so this stale overflow must not overwrite its immediate RSS
+        # reseed schedule or surface a failure in operational health.
+        state.lease_until = None
+        db.commit()
+        return {
+            "status": "reconciled",
+            "profile_id": profile_id,
+            "username": profile.username,
+            "requires_full_sync": False,
+            "reconciled_by_profile_sync_id": latest_baseline.id,
+            "next_poll_at": state.next_poll_at.isoformat() if state.next_poll_at else None,
+        }
     failures = int(state.consecutive_failures or 0) + 1
     state.last_polled_at = now
     state.consecutive_failures = failures
     state.last_http_status = http_status
     state.last_error = clean_text(message, max_length=4000) or "RSS poll failed"
-    if requires_full_sync:
+    if requires_full_sync and not baseline_advanced:
         state.requires_full_sync = True
         state.reconciliation_reason = clean_text(reconciliation_reason, max_length=4000)
     state.next_poll_at = _next_after_failure(
@@ -1000,7 +1024,7 @@ def _record_poll_failure(
         state.next_poll_at = retry_after_at
     state.lease_until = None
     db.commit()
-    return {
+    result = {
         "status": "failed",
         "profile_id": profile_id,
         "username": profile.username,
@@ -1008,7 +1032,9 @@ def _record_poll_failure(
         "error": state.last_error,
         "consecutive_failures": failures,
         "next_poll_at": state.next_poll_at.isoformat(),
+        "requires_full_sync": bool(state.requires_full_sync),
     }
+    return result
 
 
 def _mark_success(
@@ -1056,6 +1082,7 @@ def poll_profile_feed(
     instant = _aware_utc(now)
     effective_max_bytes = min(max(int(max_bytes), 1), MAX_RSS_BYTES)
     profile_id = profile.id
+    lock_profile_ingestion(db, profile_id)
     state = _ensure_feed_state(db, profile)
     baseline = _authoritative_baseline(db, profile_id)
     if baseline is None:
@@ -1184,6 +1211,7 @@ def poll_profile_feed(
             result = _record_poll_failure(
                 db,
                 profile_id=profile_id,
+                observed_baseline_id=baseline.id,
                 now=instant,
                 message="RSS recent window has no overlap with stored GUIDs; full sync required",
                 http_status=http_status,
@@ -1192,8 +1220,7 @@ def poll_profile_feed(
                 requires_full_sync=True,
                 reconciliation_reason="rss_window_no_overlap",
             )
-            result["status"] = "overflow"
-            result["requires_full_sync"] = True
+            result["status"] = "overflow" if result["requires_full_sync"] else "reconciled"
             return result
 
         if state.content_sha256 == body_sha256 and (
@@ -1371,6 +1398,7 @@ def poll_profile_feed(
         return _record_poll_failure(
             db,
             profile_id=profile_id,
+            observed_baseline_id=baseline.id,
             now=instant,
             message=str(exc) or exc.__class__.__name__,
             http_status=http_status,

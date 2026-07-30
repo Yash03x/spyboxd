@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import math
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.models import (
@@ -46,6 +47,7 @@ from services.profile_changes import (
     record_profile_changes,
 )
 from services.profile_loader import validate_import_bundle
+from services.profile_ingestion_lock import lock_profile_ingestion
 
 
 def _utcnow() -> datetime:
@@ -292,7 +294,7 @@ def _get_or_create_sync(analyzer_profile, profile_id: int, db: Session) -> Tuple
     return sync, was_completed
 
 
-def _replace_legacy_rows(
+def _reconcile_legacy_rows(
     *,
     analyzer_profile,
     profile_id: int,
@@ -300,41 +302,103 @@ def _replace_legacy_rows(
     resolver: MovieResolver,
     legacy_movies: Mapping[Tuple[str, Optional[int]], Dict[str, Any]],
     identity_lookup: Mapping[Tuple[str, Optional[int]], MovieIdentity],
+    films_authoritative: bool,
+    reviews_authoritative: bool,
+    rating_authoritative: bool,
+    diary_authoritative: bool,
+    likes_authoritative: bool,
+    tags_authoritative: bool,
     db: Session,
 ) -> Tuple[Dict[int, Rating], int]:
-    db.query(ProfileFilm).filter(ProfileFilm.profile_id == profile_id).update(
-        {ProfileFilm.legacy_rating_id: None},
-        synchronize_session=False,
-    )
-    db.flush()
-    db.query(Review).filter(Review.profile_id == profile_id).delete(synchronize_session=False)
-    db.query(Rating).filter(Rating.profile_id == profile_id).delete(synchronize_session=False)
-    db.flush()
-
+    existing_ratings = db.query(Rating).filter(Rating.profile_id == profile_id).all()
+    ratings_by_movie = {
+        rating.movie_id: rating
+        for rating in existing_ratings
+        if rating.movie_id is not None
+    }
+    all_ratings_by_legacy_key = {
+        (normalize_title(rating.movie_title), rating.movie_year): rating
+        for rating in existing_ratings
+    }
+    ratings_by_legacy_key = {
+        (normalize_title(rating.movie_title), rating.movie_year): rating
+        for rating in existing_ratings
+        if rating.movie_id is None
+    }
+    seen_rating_ids = set()
     ratings_by_movie_id: Dict[int, Rating] = {}
     for payload in legacy_movies.values():
         identity = payload["identity"]
         movie = resolver.resolve(identity)
-        rating = Rating(
-            profile_id=profile_id,
-            movie_id=movie.id,
-            first_seen_profile_sync_id=sync.id,
-            last_seen_profile_sync_id=sync.id,
-            movie_title=payload["movie_title"],
-            movie_year=payload["movie_year"],
-            letterboxd_id=payload["letterboxd_id"],
-            rating=payload["rating"],
-            watched_date=payload["watched_date"],
-            is_rewatch=payload["is_rewatch"],
-            is_liked=payload["is_liked"],
-            tags=payload["tags"],
-            film_slug=payload["film_slug"],
-            poster_url=payload["poster_url"],
-        )
-        db.add(rating)
+        legacy_key = (normalize_title(payload["movie_title"]), payload["movie_year"])
+        rating = ratings_by_movie.get(movie.id) or ratings_by_legacy_key.get(legacy_key)
+        conflicting_rating = all_ratings_by_legacy_key.get(legacy_key)
+        if (
+            rating is None
+            and conflicting_rating is not None
+            and conflicting_rating.movie_id != movie.id
+        ):
+            # The legacy table cannot represent two canonical movies sharing a
+            # title/year because of its compatibility uniqueness constraint.
+            # Never steal the existing row from another ProfileFilm; the
+            # normalized ProfileFilm below remains the source of truth.
+            continue
+        created_rating = rating is None
+        if created_rating:
+            rating = Rating(
+                profile_id=profile_id,
+                movie_id=movie.id,
+                first_seen_profile_sync_id=sync.id,
+            )
+            db.add(rating)
+        rating.movie_id = movie.id
+        rating.last_seen_profile_sync_id = sync.id
+        rating.removed_at = None
+        rating.movie_title = payload["movie_title"]
+        rating.movie_year = payload["movie_year"]
+        rating.letterboxd_id = payload["letterboxd_id"] or rating.letterboxd_id
+        if created_rating or rating_authoritative:
+            rating.rating = payload["rating"]
+        if created_rating or diary_authoritative:
+            rating.watched_date = payload["watched_date"]
+            rating.is_rewatch = payload["is_rewatch"]
+        if created_rating or likes_authoritative:
+            rating.is_liked = payload["is_liked"]
+        if created_rating or tags_authoritative:
+            rating.tags = payload["tags"]
+        rating.film_slug = payload["film_slug"] or rating.film_slug
+        rating.poster_url = payload["poster_url"] or rating.poster_url
+        db.flush()
+        seen_rating_ids.add(rating.id)
         ratings_by_movie_id[movie.id] = rating
+
+    if films_authoritative:
+        stale_rating_ids = [
+            rating.id for rating in existing_ratings if rating.id not in seen_rating_ids
+        ]
+        if stale_rating_ids:
+            db.query(ProfileFilm).filter(
+                ProfileFilm.legacy_rating_id.in_(stale_rating_ids)
+            ).update(
+                {ProfileFilm.legacy_rating_id: None},
+                synchronize_session=False,
+            )
+            db.query(Rating).filter(Rating.id.in_(stale_rating_ids)).delete(
+                synchronize_session=False
+            )
     db.flush()
 
+    existing_reviews = db.query(Review).filter(Review.profile_id == profile_id).all()
+    reviews_by_key = {
+        review.source_review_key: review
+        for review in existing_reviews
+        if review.source_review_key
+    }
+    reviews_by_movie_date: Dict[Tuple[int, Optional[date]], List[Review]] = defaultdict(list)
+    for review in existing_reviews:
+        if review.movie_id is not None:
+            reviews_by_movie_date[(review.movie_id, review.published_date)].append(review)
+    claimed_review_ids = set()
     review_occurrences: Dict[Tuple[int, Optional[str]], int] = defaultdict(int)
     review_count = 0
     for row_number, row in enumerate(frame_records(getattr(analyzer_profile, "reviews", pd.DataFrame())), start=1):
@@ -356,41 +420,71 @@ def _replace_legacy_rows(
                 review_occurrences[occurrence_key],
             ),
         )
-        review = Review(
-            profile_id=profile_id,
-            movie_id=movie.id,
-            first_seen_profile_sync_id=sync.id,
-            last_seen_profile_sync_id=sync.id,
-            source_review_key=source_review_key,
-            source_url=identity.letterboxd_url,
-            published_at=_parse_timestamp(published_raw),
-            movie_title=identity.title,
-            movie_year=identity.release_year,
-            letterboxd_id=identity.letterboxd_id,
-            review_text=clean_text(first_value(row, ("Review", "Review Text"))) or "",
-            rating=parse_rating_value(first_value(row, ("Rating", "Stars"))),
-            published_date=published_date,
-            likes_count=parse_integer(
-                first_value(row, ("Review_Likes", "Review Likes", "Likes_Count", "Likes Count")),
-                minimum=0,
-            ) or 0,
-            comments_count=parse_integer(
-                first_value(
-                    row,
-                    ("Review_Comments", "Review Comments", "Comments_Count", "Comments Count"),
-                ),
-                minimum=0,
-            ) or 0,
-            contains_spoilers=parse_boolean(
-                first_value(
-                    row,
-                    ("Contains Spoilers", "Contains_Spoilers", "Spoiler", "Is Spoiler"),
-                )
-            ),
-            tags=parse_tags(first_value(row, ("Tags", "Tag"))),
+        review = reviews_by_key.get(source_review_key)
+        if review is None:
+            candidates = [
+                candidate
+                for candidate in reviews_by_movie_date.get((movie.id, published_date), [])
+                if candidate.id not in claimed_review_ids
+            ]
+            if len(candidates) == 1:
+                review = candidates[0]
+        if review is None:
+            review = Review(
+                profile_id=profile_id,
+                movie_id=movie.id,
+                source_review_key=source_review_key,
+                first_seen_profile_sync_id=sync.id,
+                tags=[],
+                likes_count=0,
+                comments_count=0,
+            )
+            db.add(review)
+        review.movie_id = movie.id
+        review.last_seen_profile_sync_id = sync.id
+        review.source_review_key = source_review_key
+        review.source_url = review.source_url or identity.letterboxd_url
+        parsed_published_at = _parse_timestamp(published_raw)
+        if review.published_at is None:
+            review.published_at = parsed_published_at
+        review.removed_at = None
+        review.movie_title = identity.title
+        review.movie_year = identity.release_year
+        review.letterboxd_id = identity.letterboxd_id or review.letterboxd_id
+        review.review_text = clean_text(first_value(row, ("Review", "Review Text"))) or ""
+        review.rating = parse_rating_value(first_value(row, ("Rating", "Stars")))
+        review.published_date = published_date
+        review.likes_count = parse_integer(
+            first_value(row, ("Review_Likes", "Review Likes", "Likes_Count", "Likes Count")),
+            minimum=0,
+        ) or 0
+        comments_value = first_value(
+            row,
+            ("Review_Comments", "Review Comments", "Comments_Count", "Comments Count"),
         )
-        db.add(review)
+        if comments_value is not None:
+            review.comments_count = parse_integer(comments_value, minimum=0) or 0
+        spoilers_value = first_value(
+            row,
+            ("Contains Spoilers", "Contains_Spoilers", "Spoiler", "Is Spoiler"),
+        )
+        if spoilers_value is not None:
+            review.contains_spoilers = parse_boolean(spoilers_value)
+        tags_value = first_value(row, ("Tags", "Tag"))
+        if tags_value is not None:
+            review.tags = parse_tags(tags_value)
+        db.flush()
+        claimed_review_ids.add(review.id)
         review_count += 1
+
+    if reviews_authoritative:
+        stale_review_ids = [
+            review.id for review in existing_reviews if review.id not in claimed_review_ids
+        ]
+        if stale_review_ids:
+            db.query(Review).filter(Review.id.in_(stale_review_ids)).delete(
+                synchronize_session=False
+            )
     db.flush()
     return ratings_by_movie_id, review_count
 
@@ -459,6 +553,10 @@ def _upsert_profile_films(
     resolver: MovieResolver,
     all_films_authoritative: bool,
     diary_authoritative: bool,
+    rating_authoritative: bool,
+    likes_authoritative: bool,
+    review_state_authoritative: bool,
+    tags_authoritative: bool,
     db: Session,
 ) -> Tuple[Dict[int, ProfileFilm], int]:
     aggregate: Dict[int, Dict[str, Any]] = defaultdict(
@@ -519,7 +617,8 @@ def _upsert_profile_films(
     result: Dict[int, ProfileFilm] = {}
     for movie_id, state in states.items():
         item = existing.get(movie_id)
-        if item is None:
+        created_item = item is None
+        if created_item:
             item = ProfileFilm(
                 profile_id=profile_id,
                 movie_id=movie_id,
@@ -528,10 +627,14 @@ def _upsert_profile_films(
             db.add(item)
         dates = state["dates"]
         item.legacy_rating = ratings_by_movie_id.get(movie_id)
-        item.rating = state["rating"]
-        item.is_liked = state["is_liked"]
-        item.has_review = state["has_review"]
-        item.tags = state["tags"]
+        if created_item or rating_authoritative:
+            item.rating = state["rating"]
+        if created_item or likes_authoritative:
+            item.is_liked = state["is_liked"]
+        if created_item or review_state_authoritative:
+            item.has_review = state["has_review"]
+        if created_item or tags_authoritative:
+            item.tags = state["tags"]
         if diary_authoritative:
             item.first_watched_date = min(dates) if dates else None
             item.latest_watched_date = max(dates) if dates else None
@@ -561,6 +664,11 @@ def _upsert_watch_events(
     prepared_events: Sequence[Dict[str, Any]],
     profile_films: Mapping[int, ProfileFilm],
     diary_authoritative: bool,
+    rating_authoritative: bool,
+    rewatch_authoritative: bool,
+    likes_authoritative: bool,
+    review_state_authoritative: bool,
+    tags_authoritative: bool,
     db: Session,
 ) -> int:
     existing = {
@@ -572,7 +680,8 @@ def _upsert_watch_events(
         event_key = payload["event_key"]
         seen_keys.add(event_key)
         event = existing.get(event_key)
-        if event is None:
+        created_event = event is None
+        if created_event:
             event = WatchEvent(
                 profile_id=profile_id,
                 movie_id=payload["movie"].id,
@@ -583,14 +692,19 @@ def _upsert_watch_events(
         event.movie_id = payload["movie"].id
         event.profile_film = profile_films.get(payload["movie"].id)
         event.watched_date = payload["watched_date"]
-        event.rating = payload["rating"]
-        event.is_rewatch = payload["is_rewatch"]
-        event.is_liked = payload["is_liked"]
-        event.has_review = payload["has_review"]
-        event.tags = payload["tags"]
+        if created_event or rating_authoritative:
+            event.rating = payload["rating"]
+        if created_event or rewatch_authoritative:
+            event.is_rewatch = payload["is_rewatch"]
+        if created_event or likes_authoritative:
+            event.is_liked = payload["is_liked"]
+        if created_event or review_state_authoritative:
+            event.has_review = payload["has_review"]
+        if created_event or tags_authoritative:
+            event.tags = payload["tags"]
         event.source_kind = source_kind
-        event.source_entry_id = payload["source_entry_id"]
-        event.source_url = payload["source_url"]
+        event.source_entry_id = payload["source_entry_id"] or event.source_entry_id
+        event.source_url = payload["source_url"] or event.source_url
         event.source_row_number = payload["source_row_number"]
         event.last_seen_profile_sync_id = sync.id
         event.superseded_at = None
@@ -638,12 +752,13 @@ def _upsert_watchlist(
                 first_seen_profile_sync_id=sync.id,
             )
             db.add(item)
-        item.added_date = parse_date(first_value(row, ("Date", "Added Date", "Added_Date")))
-        item.added_date_source_kind = (
-            f"{sync.source_kind}:watchlist"
-            if item.added_date is not None
-            else None
-        )
+        added_date = parse_date(first_value(row, ("Date", "Added Date", "Added_Date")))
+        # Public HTML exposes current watchlist membership but not the original
+        # add date. Keep a more precise date learned from an account export (or
+        # another dated source) instead of erasing it with an undated snapshot.
+        if added_date is not None:
+            item.added_date = added_date
+            item.added_date_source_kind = f"{sync.source_kind}:watchlist"
         item.position = parse_integer(first_value(row, ("Position", "Rank")), minimum=1) or source_position
         item.last_seen_profile_sync_id = sync.id
         item.removed_at = None
@@ -882,7 +997,7 @@ def _upsert_lists(
     return len(seen_list_ids), item_count
 
 
-def _replace_favorites(
+def _reconcile_favorites(
     *,
     analyzer_profile,
     profile_id: int,
@@ -894,10 +1009,8 @@ def _replace_favorites(
 ) -> int:
     if not authoritative:
         return 0
-    db.query(ProfileFavoriteMovie).filter(ProfileFavoriteMovie.profile_id == profile_id).delete(
-        synchronize_session=False
-    )
-    count = 0
+
+    desired: List[Tuple[int, int]] = []
     seen_movies = set()
     for source_position, row in enumerate(frame_records(getattr(analyzer_profile, "favorites", pd.DataFrame())), start=1):
         if source_position > 4:
@@ -910,18 +1023,71 @@ def _replace_favorites(
         if movie.id in seen_movies:
             continue
         seen_movies.add(movie.id)
+        desired.append((movie.id, len(desired) + 1))
+
+    existing = db.query(ProfileFavoriteMovie).filter(
+        ProfileFavoriteMovie.profile_id == profile_id
+    ).all()
+    existing_by_movie = {item.movie_id: item for item in existing}
+    desired_by_movie = dict(desired)
+
+    # Position uniqueness makes in-place swaps unsafe with immediate database
+    # constraints. Preserve stable rows directly; for moved favorites, replace
+    # only the constrained membership while retaining its identifier and
+    # first-seen lineage. Removed favorites are the only rows not reinserted.
+    stable_movie_ids = {
+        movie_id
+        for movie_id, position in desired
+        if (item := existing_by_movie.get(movie_id)) is not None
+        and item.position == position
+    }
+    changed_existing = [item for item in existing if item.movie_id not in stable_movie_ids]
+    changed_existing_ids = [item.id for item in changed_existing]
+    moved_rows = [
+        {
+            "id": item.id,
+            "profile_id": item.profile_id,
+            "movie_id": item.movie_id,
+            "position": desired_by_movie[item.movie_id],
+            "first_seen_profile_sync_id": item.first_seen_profile_sync_id,
+            "last_seen_profile_sync_id": sync.id,
+            "created_at": item.created_at,
+        }
+        for item in changed_existing
+        if item.movie_id in desired_by_movie
+    ]
+    if changed_existing_ids:
+        for item in changed_existing:
+            db.expunge(item)
+        db.execute(
+            ProfileFavoriteMovie.__table__.delete().where(
+                ProfileFavoriteMovie.id.in_(changed_existing_ids)
+            )
+        )
+        db.flush()
+
+    for values in moved_rows:
+        db.execute(ProfileFavoriteMovie.__table__.insert().values(**values))
+    if moved_rows:
+        db.flush()
+
+    for movie_id, position in desired:
+        if movie_id in stable_movie_ids:
+            existing_by_movie[movie_id].last_seen_profile_sync_id = sync.id
+            continue
+        if movie_id in existing_by_movie:
+            continue
         db.add(
             ProfileFavoriteMovie(
                 profile_id=profile_id,
-                movie_id=movie.id,
-                position=count + 1,
+                movie_id=movie_id,
+                position=position,
                 first_seen_profile_sync_id=sync.id,
                 last_seen_profile_sync_id=sync.id,
             )
         )
-        count += 1
     db.flush()
-    return count
+    return len(desired_by_movie)
 
 
 def _source_present(analyzer_profile, *names: str) -> bool:
@@ -929,21 +1095,38 @@ def _source_present(analyzer_profile, *names: str) -> bool:
     return any(name in source_files for name in names)
 
 
+def _frame_has_any_column(frame: pd.DataFrame, names: Sequence[str]) -> bool:
+    return frame is not None and any(name in frame.columns for name in names)
+
+
 def _update_profile_metadata(profile: Profile, analyzer_profile, sync: ProfileSync, now: datetime) -> None:
     if not _source_present(analyzer_profile, "profile.csv"):
         return
     info = getattr(analyzer_profile, "profile_info", {}) or {}
-    profile.display_name = clean_text(first_value(info, ("Display_Name", "Display Name")), max_length=200)
+    profile.display_name = clean_text(
+        first_value(info, ("Display_Name", "Display Name")), max_length=200
+    )
     profile.bio = clean_text(first_value(info, ("Bio",)))
     profile.location = clean_text(first_value(info, ("Location",)), max_length=100)
     profile.website = clean_text(first_value(info, ("Website",)), max_length=200)
-    profile.profile_image_url = clean_text(first_value(info, ("Avatar_URL", "Avatar URL")), max_length=500)
-    profile.join_date = analyzer_profile.join_date
-    profile.following_count = parse_integer(first_value(info, ("Following_Count", "Following Count")), minimum=0)
-    profile.followers_count = parse_integer(first_value(info, ("Followers_Count", "Followers Count")), minimum=0)
-    profile.reported_total_films = parse_integer(first_value(info, ("Total_Films", "Total Films")), minimum=0)
-    profile.reported_total_reviews = parse_integer(first_value(info, ("Total_Reviews", "Total Reviews")), minimum=0)
-    profile.reported_total_lists = parse_integer(first_value(info, ("Total_Lists", "Total Lists")), minimum=0)
+    profile.profile_image_url = clean_text(
+        first_value(info, ("Avatar_URL", "Avatar URL")), max_length=500
+    )
+    # The public HTML scraper currently cannot observe join date. An omitted
+    # value therefore means "unknown in this source", not "clear known data".
+    if analyzer_profile.join_date is not None:
+        profile.join_date = analyzer_profile.join_date
+
+    integer_fields = {
+        "following_count": parse_integer(first_value(info, ("Following_Count", "Following Count")), minimum=0),
+        "followers_count": parse_integer(first_value(info, ("Followers_Count", "Followers Count")), minimum=0),
+        "reported_total_films": parse_integer(first_value(info, ("Total_Films", "Total Films")), minimum=0),
+        "reported_total_reviews": parse_integer(first_value(info, ("Total_Reviews", "Total Reviews")), minimum=0),
+        "reported_total_lists": parse_integer(first_value(info, ("Total_Lists", "Total Lists")), minimum=0),
+    }
+    for attribute, value in integer_fields.items():
+        if value is not None:
+            setattr(profile, attribute, value)
     profile.metadata_synced_at = now
 
 
@@ -1153,13 +1336,15 @@ def _record_failed_sync(analyzer_profile, profile_id: int, error: Exception, db:
 
 def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
     """
-    Atomically replace the legacy profile snapshot while dual-writing normalized data.
+    Atomically reconcile one authoritative profile snapshot into stored data.
 
-    Existing ratings/reviews API behavior remains intact. Normalized watch events are
-    append-only and idempotent across repeated uploads of the same source bundle.
+    Existing rows are updated in place where identity is stable, new rows are added,
+    source-confirmed removals are reconciled, and normalized watch events retain
+    supersession history. Replaying the same source bundle is idempotent.
     """
     try:
         validate_import_bundle(analyzer_profile)
+        lock_profile_ingestion(db, profile_id)
         profile = db.query(Profile).filter(Profile.id == profile_id).one()
         sync, was_completed = _get_or_create_sync(analyzer_profile, profile_id, db)
         if was_completed:
@@ -1175,16 +1360,6 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
         identity_lookup = _identity_lookup(all_films)
         legacy_movies = _build_legacy_movies(analyzer_profile, profile_id, identity_lookup)
 
-        ratings_by_movie_id, review_count = _replace_legacy_rows(
-            analyzer_profile=analyzer_profile,
-            profile_id=profile_id,
-            sync=sync,
-            resolver=resolver,
-            legacy_movies=legacy_movies,
-            identity_lookup=identity_lookup,
-            db=db,
-        )
-
         diary_authoritative = _source_present(analyzer_profile, "diary.csv")
         films_authoritative = _source_present(
             analyzer_profile,
@@ -1192,6 +1367,73 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             "all_films.csv",
             "films_comprehensive.csv",
         )
+        reviews_authoritative = _source_present(analyzer_profile, "reviews.csv")
+        ratings_frame = getattr(analyzer_profile, "ratings", pd.DataFrame())
+        diary_frame = getattr(analyzer_profile, "diary", pd.DataFrame())
+        likes_frame = getattr(analyzer_profile, "likes", pd.DataFrame())
+        watched_frame = getattr(analyzer_profile, "watched", pd.DataFrame())
+        rating_authoritative = bool(
+            _source_present(analyzer_profile, "ratings.csv")
+            or _frame_has_any_column(all_films, ("Rating", "Stars"))
+        )
+        likes_authoritative = bool(
+            _source_present(analyzer_profile, "likes.csv", "likes/films.csv")
+            or _frame_has_any_column(
+                all_films,
+                ("Liked", "Is_Liked", "Is Liked"),
+            )
+            or _frame_has_any_column(
+                diary_frame,
+                ("Liked", "Is_Liked", "Is Liked"),
+            )
+        )
+        review_state_authoritative = bool(
+            reviews_authoritative
+            or _frame_has_any_column(
+                all_films,
+                ("Has_Review", "Has Review"),
+            )
+            or _frame_has_any_column(
+                diary_frame,
+                ("Has_Review", "Has Review"),
+            )
+        )
+        tags_authoritative = any(
+            _frame_has_any_column(frame, ("Tags", "Tag"))
+            for frame in (all_films, ratings_frame, watched_frame, diary_frame, likes_frame)
+        )
+        diary_rating_authoritative = _frame_has_any_column(
+            diary_frame, ("Rating", "Stars")
+        )
+        diary_rewatch_authoritative = _frame_has_any_column(
+            diary_frame, ("Rewatch", "Is_Rewatch", "Is Rewatch")
+        )
+        diary_likes_authoritative = _frame_has_any_column(
+            diary_frame, ("Liked", "Is_Liked", "Is Liked")
+        )
+        diary_review_state_authoritative = _frame_has_any_column(
+            diary_frame, ("Has_Review", "Has Review")
+        )
+        diary_tags_authoritative = _frame_has_any_column(
+            diary_frame, ("Tags", "Tag")
+        )
+
+        ratings_by_movie_id, review_count = _reconcile_legacy_rows(
+            analyzer_profile=analyzer_profile,
+            profile_id=profile_id,
+            sync=sync,
+            resolver=resolver,
+            legacy_movies=legacy_movies,
+            identity_lookup=identity_lookup,
+            films_authoritative=films_authoritative,
+            reviews_authoritative=reviews_authoritative,
+            rating_authoritative=rating_authoritative,
+            diary_authoritative=diary_authoritative,
+            likes_authoritative=likes_authoritative,
+            tags_authoritative=tags_authoritative,
+            db=db,
+        )
+
         prepared_events, skipped_diary_rows = _prepare_diary_events(
             analyzer_profile=analyzer_profile,
             resolver=resolver,
@@ -1206,6 +1448,10 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             resolver=resolver,
             all_films_authoritative=films_authoritative,
             diary_authoritative=diary_authoritative,
+            rating_authoritative=rating_authoritative,
+            likes_authoritative=likes_authoritative,
+            review_state_authoritative=review_state_authoritative,
+            tags_authoritative=tags_authoritative,
             db=db,
         )
         event_count = _upsert_watch_events(
@@ -1215,6 +1461,11 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             prepared_events=prepared_events,
             profile_films=profile_films,
             diary_authoritative=diary_authoritative,
+            rating_authoritative=diary_rating_authoritative,
+            rewatch_authoritative=diary_rewatch_authoritative,
+            likes_authoritative=diary_likes_authoritative,
+            review_state_authoritative=diary_review_state_authoritative,
+            tags_authoritative=diary_tags_authoritative,
             db=db,
         )
 
@@ -1250,7 +1501,7 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
         )
 
         favorites_authoritative = _source_present(analyzer_profile, "favorites.csv")
-        favorite_count = _replace_favorites(
+        favorite_count = _reconcile_favorites(
             analyzer_profile=analyzer_profile,
             profile_id=profile_id,
             sync=sync,
@@ -1321,8 +1572,20 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
         existing_metrics = profile.enhanced_metrics if isinstance(profile.enhanced_metrics, dict) else {}
         profile.enhanced_metrics = {**existing_metrics, "data_coverage": coverage}
         profile.last_profile_sync_id = sync.id
-        profile.avg_rating = analyzer_profile.avg_rating
-        profile.total_reviews = review_count
+        if films_authoritative or rating_authoritative:
+            average_rating = (
+                db.query(func.avg(ProfileFilm.rating))
+                .filter(
+                    ProfileFilm.profile_id == profile_id,
+                    ProfileFilm.removed_at.is_(None),
+                    ProfileFilm.rating >= 0.5,
+                    ProfileFilm.rating <= 5.0,
+                )
+                .scalar()
+            )
+            profile.avg_rating = float(average_rating) if average_rating is not None else 0.0
+        if reviews_authoritative:
+            profile.total_reviews = review_count
         profile.last_scraped_at = now
         profile.scraping_status = "completed"
 
@@ -1331,7 +1594,7 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
         # poll may safely seed its current GUID window without inferring that
         # older, rolled-off items were deleted.
         feed_state = db.get(ProfileFeedState, profile_id)
-        if feed_state is not None:
+        if feed_state is not None and films_authoritative and diary_authoritative:
             feed_state.content_sha256 = None
             feed_state.activity_guids = []
             feed_state.latest_item_guid = None
@@ -1341,7 +1604,6 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             feed_state.requires_full_sync = False
             feed_state.reconciliation_reason = None
             feed_state.next_poll_at = now
-            feed_state.lease_until = None
 
         sync.coverage = coverage
         sync.stats = imported_counts

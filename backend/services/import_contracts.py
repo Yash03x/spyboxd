@@ -13,7 +13,7 @@ from urllib.parse import urljoin, urlparse
 import pandas as pd
 
 
-IMPORTER_VERSION = "3"
+IMPORTER_VERSION = "4"
 
 
 def is_missing(value: Any) -> bool:
