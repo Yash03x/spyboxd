@@ -148,6 +148,57 @@ const publicDashboard = {
   timestamp: '2026-07-29T12:00:00Z',
 };
 
+const profileAnalysis = {
+  username: 'alpha',
+  total_films: 1_200,
+  rated_films: 900,
+  liked_films: 180,
+  avg_rating: 3.7,
+  total_reviews: 2,
+  join_date: '2020-01-01',
+  last_scraped_at: '2026-07-29T12:00:00Z',
+  scraping_status: 'completed',
+  enhanced_metrics: {},
+  data_coverage: profiles[0].data_coverage,
+  rating_distribution: { '3.5': 120, '4.0': 240, '4.5': 80 },
+  monthly_stats: [
+    { month: '2026-06', movies_watched: 20, average_rating: 3.8 },
+    { month: '2026-07', movies_watched: 24, average_rating: 3.9 },
+  ],
+  recent_watching_trend: Array.from({ length: 8 }, (_, index) => ({
+    movie_title: `Recent Watch ${index + 1}`,
+    movie_year: 2026,
+    watched_date: `2026-07-${String(29 - index).padStart(2, '0')}`,
+    rating: 4,
+    is_rewatch: false,
+  })),
+  recent_ratings: Array.from({ length: 12 }, (_, index) => ({
+    movie_title: `Recent Rating ${index + 1}`,
+    movie_year: 2026,
+    watched_date: null,
+    rating: 3.5 + (index % 3) * 0.5,
+    is_rewatch: false,
+  })),
+  recent_reviews: [
+    {
+      movie_title: 'Short Review',
+      movie_year: 2026,
+      rating: 4.5,
+      review_text: 'A concise fixture review.',
+      published_date: '2026-07-29',
+      likes_count: 0,
+    },
+    {
+      movie_title: 'Another Review',
+      movie_year: 2026,
+      rating: 4,
+      review_text: 'A second concise fixture review.',
+      published_date: '2026-07-28',
+      likes_count: 0,
+    },
+  ],
+};
+
 const dataCoverage = {
   generated_at: '2026-07-29T12:00:00Z',
   overall_score: 100,
@@ -278,6 +329,13 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   if (path === '/api/me') return json(route, { user_id: 'user_e2e', is_admin: isAdmin });
   if (path === '/profiles' && method === 'GET') return json(route, { profiles: state.profiles });
   if (path === '/profiles/tracked' && method === 'GET') return json(route, { profiles: state.profiles });
+  const analysisMatch = path.match(/^\/profiles\/([^/]+)\/analysis$/);
+  if (analysisMatch && method === 'GET') {
+    return json(route, {
+      ...profileAnalysis,
+      username: decodeURIComponent(analysisMatch[1]),
+    });
+  }
   if (path === '/profiles/catalog' && method === 'GET') {
     const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
     const limit = Number(url.searchParams.get('limit') ?? 100);
