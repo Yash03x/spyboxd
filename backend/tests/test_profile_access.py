@@ -38,6 +38,8 @@ from backend.services.profile_access import (
     fulfill_pending_requests,
     list_profile_catalog,
     list_profile_requests,
+    normalize_profile_username,
+    provision_app_user_identity,
     reopen_fulfilled_requests_for_profile,
     require_profile_access,
     track_profile_by_id,
@@ -89,8 +91,40 @@ def database():
         engine.dispose()
 
 
-def _user(user_id: str = "user_one", *, admin: bool = False) -> ClerkUser:
-    return ClerkUser(user_id=user_id, session_id="session", is_admin=admin)
+def _user(
+    user_id: str = "user_one",
+    *,
+    admin: bool = False,
+    letterboxd_username: str | None = None,
+) -> ClerkUser:
+    return ClerkUser(
+        user_id=user_id,
+        session_id="session",
+        is_admin=admin,
+        letterboxd_username=letterboxd_username,
+    )
+
+
+def _legacy_user(
+    database,
+    user_id: str = "user_one",
+    *,
+    admin: bool = False,
+) -> ClerkUser:
+    app_user = (
+        database.query(AppUser)
+        .filter(AppUser.clerk_user_id == user_id)
+        .first()
+    )
+    if app_user is None:
+        database.add(
+            AppUser(
+                clerk_user_id=user_id,
+                primary_profile_required=False,
+            )
+        )
+        database.commit()
+    return _user(user_id, admin=admin)
 
 
 def _profile(profile_id: int, username: str, *, completed: bool = True) -> Profile:
@@ -102,20 +136,277 @@ def _profile(profile_id: int, username: str, *, completed: bool = True) -> Profi
     )
 
 
+@pytest.mark.parametrize(
+    "raw_username,canonical",
+    [
+        ("ab", "ab"),
+        (" FilmFan_7 ", "FilmFan_7"),
+        ("@Viewer", "Viewer"),
+        ("123456789012345", "123456789012345"),
+    ],
+)
+def test_letterboxd_username_validation_accepts_the_source_contract(
+    raw_username,
+    canonical,
+):
+    assert normalize_profile_username(raw_username) == (
+        canonical,
+        canonical.casefold(),
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_username",
+    [
+        "a",
+        "1234567890123456",
+        "with-hyphen",
+        "has space",
+        "film.fan",
+        "fílmfan",
+    ],
+)
+def test_letterboxd_username_validation_rejects_non_letterboxd_handles(
+    raw_username,
+):
+    with pytest.raises(HTTPException) as raised:
+        normalize_profile_username(raw_username)
+    assert raised.value.status_code == 400
+
+
+def test_primary_identity_tracks_an_existing_profile_atomically_and_idempotently(
+    database,
+):
+    database.add(_profile(1, "Alpha"))
+    database.commit()
+    user = _user(letterboxd_username="aLpHa")
+
+    first = provision_app_user_identity(database, user)
+    second = provision_app_user_identity(database, user)
+
+    assert first == second == {
+        "letterboxd_username": "aLpHa",
+        "primary_profile_status": "tracked",
+    }
+    app_user = database.query(AppUser).one()
+    assert app_user.letterboxd_username == "aLpHa"
+    assert app_user.primary_profile_required is True
+    assert database.query(UserTrackedProfile).count() == 1
+    assert database.query(ProfileAccessRequest).count() == 0
+
+
+def test_primary_identity_creates_one_pending_request_and_preserves_rejection(
+    database,
+):
+    user = _user(letterboxd_username="New_User")
+
+    first = provision_app_user_identity(database, user)
+    repeated = provision_app_user_identity(database, user)
+    request = database.query(ProfileAccessRequest).one()
+    request.status = "rejected"
+    database.commit()
+    after_rejection = provision_app_user_identity(database, user)
+
+    assert first["primary_profile_status"] == "pending"
+    assert repeated["primary_profile_status"] == "pending"
+    assert after_rejection["primary_profile_status"] == "rejected"
+    assert database.query(ProfileAccessRequest).count() == 1
+    assert database.query(UserTrackedProfile).count() == 0
+
+
+def test_primary_identity_fulfillment_is_not_blocked_by_optional_tracking_limit(
+    database,
+    monkeypatch,
+):
+    monkeypatch.setenv("SPYBOXD_MAX_TRACKED_PROFILES_PER_USER", "1")
+    optional = _profile(1, "Optional")
+    database.add(optional)
+    database.commit()
+    user = _user(letterboxd_username="Primary")
+
+    assert provision_app_user_identity(database, user)["primary_profile_status"] == "pending"
+    track_profile_by_id(database, user, optional.id)
+
+    primary = _profile(2, "Primary")
+    database.add(primary)
+    database.commit()
+
+    assert fulfill_pending_requests(database, primary) == 1
+    assert {
+        profile.username for profile in tracked_profiles(database, user)
+    } == {"Optional", "Primary"}
+
+
+def test_primary_identity_failure_rolls_back_the_new_user_and_access_mapping(
+    database,
+    monkeypatch,
+):
+    database.add(_profile(1, "Alpha"))
+    database.commit()
+
+    def fail_tracking(*_args, **_kwargs):
+        raise RuntimeError("synthetic tracking failure")
+
+    monkeypatch.setattr(profile_access_service, "_add_tracking", fail_tracking)
+
+    with pytest.raises(RuntimeError, match="synthetic tracking failure"):
+        provision_app_user_identity(
+            database,
+            _user(letterboxd_username="Alpha"),
+        )
+
+    assert database.query(AppUser).count() == 0
+    assert database.query(UserTrackedProfile).count() == 0
+    assert database.query(ProfileAccessRequest).count() == 0
+
+
+def test_primary_identity_is_unique_case_insensitively(database):
+    provision_app_user_identity(
+        database,
+        _user("first_user", letterboxd_username="FilmFan"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        provision_app_user_identity(
+            database,
+            _user("second_user", letterboxd_username="filmfan"),
+        )
+
+    assert raised.value.status_code == 409
+    assert database.query(AppUser).count() == 1
+    assert database.query(ProfileAccessRequest).count() == 1
+
+
+def test_legacy_admin_and_ingestion_service_do_not_require_the_new_claim(database):
+    legacy = provision_app_user_identity(database, _user("admin", admin=True))
+    ingestion = provision_app_user_identity(
+        database,
+        ClerkUser(user_id="ingestion-token", session_id=None, is_admin=True),
+    )
+
+    assert legacy == {
+        "letterboxd_username": None,
+        "primary_profile_status": "unconfigured",
+    }
+    assert ingestion == legacy
+    assert [user.clerk_user_id for user in database.query(AppUser).all()] == [
+        "admin"
+    ]
+    assert database.query(AppUser).one().primary_profile_required is False
+
+
+def test_new_non_admin_fails_closed_without_the_signed_username_claim(database):
+    user = _user("missing_identity")
+
+    with pytest.raises(HTTPException) as direct:
+        provision_app_user_identity(database, user)
+    with pytest.raises(HTTPException) as first_route:
+        list_profile_catalog(database, user)
+
+    assert direct.value.status_code == 409
+    assert first_route.value.status_code == 409
+    assert database.query(AppUser).count() == 0
+    assert database.query(ProfileAccessRequest).count() == 0
+
+
+def test_grandfathered_admin_claim_does_not_create_a_profile_request(database):
+    database.add(
+        AppUser(
+            clerk_user_id="admin",
+            primary_profile_required=False,
+        )
+    )
+    database.commit()
+
+    identity = provision_app_user_identity(
+        database,
+        _user("admin", admin=True, letterboxd_username="admin"),
+    )
+
+    assert identity == {
+        "letterboxd_username": "admin",
+        "primary_profile_status": "unlinked",
+    }
+    assert database.query(AppUser).one().letterboxd_username == "admin"
+    assert database.query(ProfileAccessRequest).count() == 0
+    assert database.query(UserTrackedProfile).count() == 0
+
+
+def test_stored_primary_identity_is_not_silently_retargeted(database):
+    database.add(
+        AppUser(
+            clerk_user_id="user_one",
+            letterboxd_username="Alpha",
+        )
+    )
+    database.commit()
+
+    with pytest.raises(HTTPException) as raised:
+        provision_app_user_identity(
+            database,
+            _user(letterboxd_username="Beta"),
+        )
+
+    assert raised.value.status_code == 409
+    assert database.query(AppUser).one().letterboxd_username == "Alpha"
+    assert database.query(ProfileAccessRequest).count() == 0
+
+
+def test_primary_profile_cannot_be_untracked(database):
+    alpha = _profile(1, "Alpha")
+    beta = _profile(2, "Beta")
+    database.add_all([alpha, beta])
+    database.commit()
+    user = _user(letterboxd_username="Alpha")
+    provision_app_user_identity(database, user)
+    track_profile_by_id(database, user, beta.id)
+
+    with pytest.raises(HTTPException) as raised:
+        untrack_profile(database, user, "alpha")
+
+    assert raised.value.status_code == 409
+    assert untrack_profile(database, user, "Beta") is True
+    assert [profile.username for profile in tracked_profiles(database, user)] == [
+        "Alpha"
+    ]
+
+
+def test_me_returns_canonical_identity_and_primary_profile_status(database):
+    backend_main.app.dependency_overrides[backend_main.get_db] = lambda: database
+    backend_main.app.dependency_overrides[backend_main.get_current_user] = lambda: _user(
+        "new_user",
+        letterboxd_username="FilmFan",
+    )
+    client = TestClient(backend_main.app)
+    try:
+        response = client.get("/api/me")
+    finally:
+        backend_main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": "new_user",
+        "is_admin": False,
+        "letterboxd_username": "FilmFan",
+        "primary_profile_status": "pending",
+    }
+
+
 def test_existing_completed_profile_is_tracked_case_insensitively_and_idempotently(database):
     database.add_all([_profile(1, "Alpha"), _profile(2, "Beta")])
     database.commit()
+    user = _legacy_user(database)
 
-    first = track_or_request_profile(database, _user(), "aLpHa")
-    second = track_or_request_profile(database, _user(), "ALPHA")
+    first = track_or_request_profile(database, user, "aLpHa")
+    second = track_or_request_profile(database, user, "ALPHA")
 
     assert first["status"] == "tracked"
     assert first["profile"]["username"] == "Alpha"
     assert second["status"] == "tracked"
     assert database.query(UserTrackedProfile).count() == 1
-    assert authorize_profile_usernames(database, _user(), None) == ["Alpha"]
+    assert authorize_profile_usernames(database, user, None) == ["Alpha"]
     with pytest.raises(HTTPException) as raised:
-        authorize_profile_usernames(database, _user(), ["Beta"])
+        authorize_profile_usernames(database, user, ["Beta"])
     assert raised.value.status_code == 403
 
 
@@ -136,8 +427,9 @@ def test_signed_in_catalog_lists_only_selectable_profiles_and_tracks_by_id(datab
         )
     )
     database.commit()
+    user = _legacy_user(database)
 
-    initial = list_profile_catalog(database, _user())
+    initial = list_profile_catalog(database, user)
     assert initial["total"] == 1
     assert initial["profiles"] == [
         {
@@ -150,23 +442,25 @@ def test_signed_in_catalog_lists_only_selectable_profiles_and_tracks_by_id(datab
         }
     ]
 
-    tracked = track_profile_by_id(database, _user(), selectable.id)
+    tracked = track_profile_by_id(database, user, selectable.id)
     assert tracked["status"] == "tracked"
-    assert list_profile_catalog(database, _user())["profiles"][0]["is_tracked"] is True
+    assert list_profile_catalog(database, user)["profiles"][0]["is_tracked"] is True
 
     with pytest.raises(HTTPException) as unavailable:
-        track_profile_by_id(database, _user(), pending.id)
+        track_profile_by_id(database, user, pending.id)
     assert unavailable.value.status_code == 404
 
 
 def test_profile_catalog_tracking_is_isolated_per_user(database):
     database.add(_profile(1, "Alpha"))
     database.commit()
+    first_user = _legacy_user(database, "first")
+    second_user = _legacy_user(database, "second")
 
-    track_profile_by_id(database, _user("first"), 1)
+    track_profile_by_id(database, first_user, 1)
 
-    assert list_profile_catalog(database, _user("first"))["profiles"][0]["is_tracked"] is True
-    assert list_profile_catalog(database, _user("second"))["profiles"][0]["is_tracked"] is False
+    assert list_profile_catalog(database, first_user)["profiles"][0]["is_tracked"] is True
+    assert list_profile_catalog(database, second_user)["profiles"][0]["is_tracked"] is False
 
 
 def test_admin_personal_monitoring_is_separate_from_global_library_access(database):
@@ -183,12 +477,13 @@ def test_admin_personal_monitoring_is_separate_from_global_library_access(databa
 
 
 def test_non_admin_cannot_request_global_dashboard_scope(database):
+    user = _legacy_user(database)
     with pytest.raises(HTTPException) as forbidden:
         asyncio.run(
             backend_main.get_consolidated_dashboard_analytics(
                 scope="global",
                 db=database,
-                user=_user(),
+                user=user,
             )
         )
     assert forbidden.value.status_code == 403
@@ -224,13 +519,14 @@ def test_omitted_dashboard_scope_defaults_non_admin_to_tracked_profiles(database
         ]
     )
     database.commit()
-    track_profile_by_id(database, _user(), alpha.id)
+    user = _legacy_user(database)
+    track_profile_by_id(database, user, alpha.id)
 
     result = asyncio.run(
         backend_main.get_consolidated_dashboard_analytics(
             scope=None,
             db=database,
-            user=_user(),
+            user=user,
         )
     )
 
@@ -267,8 +563,9 @@ def test_explicit_tracked_dashboard_scope_limits_admin_to_personal_set(database)
 
 
 def test_unknown_request_is_casefolded_idempotent_and_fulfills_only_after_sync(database):
-    first = track_or_request_profile(database, _user(), "New_User")
-    second = track_or_request_profile(database, _user(), "new_user")
+    user = _legacy_user(database)
+    first = track_or_request_profile(database, user, "New_User")
+    second = track_or_request_profile(database, user, "new_user")
 
     assert first["status"] == second["status"] == "pending"
     assert database.query(ProfileAccessRequest).count() == 1
@@ -293,8 +590,9 @@ def test_pending_placeholder_stays_a_request_without_access(database):
     profile = _profile(1, "awaiting", completed=False)
     database.add(profile)
     database.commit()
+    user = _legacy_user(database)
 
-    result = track_or_request_profile(database, _user(), "AWAITING")
+    result = track_or_request_profile(database, user, "AWAITING")
 
     assert result["status"] == "pending"
     assert result["profile"]["scraping_status"] == "pending"
@@ -304,23 +602,28 @@ def test_pending_placeholder_stays_a_request_without_access(database):
 
 def test_per_user_request_and_tracking_limits_are_enforced(database, monkeypatch):
     monkeypatch.setenv("SPYBOXD_MAX_PENDING_PROFILE_REQUESTS_PER_USER", "1")
-    track_or_request_profile(database, _user(), "first_unknown")
+    user = _legacy_user(database)
+    track_or_request_profile(database, user, "first_unknown")
     with pytest.raises(HTTPException) as pending_limit:
-        track_or_request_profile(database, _user(), "second_unknown")
+        track_or_request_profile(database, user, "second_unknown")
     assert pending_limit.value.status_code == 429
 
     monkeypatch.setenv("SPYBOXD_MAX_TRACKED_PROFILES_PER_USER", "1")
     database.add_all([_profile(10, "First"), _profile(11, "Second")])
     database.commit()
-    track_or_request_profile(database, _user("another"), "First")
+    another = _legacy_user(database, "another")
+    track_or_request_profile(database, another, "First")
     with pytest.raises(HTTPException) as tracked_limit:
-        track_or_request_profile(database, _user("another"), "Second")
+        track_or_request_profile(database, another, "Second")
     assert tracked_limit.value.status_code == 429
 
 
 def test_untracking_removes_fulfilled_request_and_prevents_silent_regrant(database):
     profile = _profile(1, "Alpha")
-    app_user = AppUser(clerk_user_id="user_one")
+    app_user = AppUser(
+        clerk_user_id="user_one",
+        primary_profile_required=False,
+    )
     database.add_all([profile, app_user])
     database.flush()
     database.add_all(
@@ -340,6 +643,23 @@ def test_untracking_removes_fulfilled_request_and_prevents_silent_regrant(databa
     assert untrack_profile(database, _user(), "alpha") is True
     assert database.query(UserTrackedProfile).count() == 0
     assert database.query(ProfileAccessRequest).count() == 0
+
+
+def test_untracking_preserves_access_to_legacy_profile_usernames(database):
+    profile = _profile(1, "legacy-name")
+    app_user = AppUser(
+        clerk_user_id="user_one",
+        primary_profile_required=False,
+    )
+    database.add_all([profile, app_user])
+    database.flush()
+    database.add(
+        UserTrackedProfile(user_id=app_user.id, profile_id=profile.id)
+    )
+    database.commit()
+
+    assert untrack_profile(database, _user(), "@LEGACY-NAME") is True
+    assert database.query(UserTrackedProfile).count() == 0
 
 
 def test_deleted_profile_requests_reopen_as_approved(database):
@@ -537,15 +857,19 @@ def test_different_pending_usernames_share_the_per_user_lock(database, monkeypat
         lambda _db, app_user_id: locked_user_ids.append(app_user_id),
     )
 
-    track_or_request_profile(database, _user(), "first_unknown")
-    track_or_request_profile(database, _user(), "second_unknown")
+    user = _legacy_user(database)
+    track_or_request_profile(database, user, "first_unknown")
+    track_or_request_profile(database, user, "second_unknown")
 
     app_user = database.query(AppUser).filter_by(clerk_user_id="user_one").one()
     assert locked_user_ids == [app_user.id, app_user.id]
 
 
 def test_non_admin_request_payload_omits_internal_identity_and_notes(database):
-    requester = AppUser(clerk_user_id="requester")
+    requester = AppUser(
+        clerk_user_id="requester",
+        primary_profile_required=False,
+    )
     admin = AppUser(clerk_user_id="admin")
     database.add_all([requester, admin])
     database.flush()
@@ -588,7 +912,10 @@ def test_profile_id_scope_prevents_case_variant_tenant_confusion(database):
     database.execute(text('DROP INDEX "uq_profiles_username_lower"'))
     tracked = _profile(1, "Alpha")
     hidden = _profile(2, "alpha")
-    app_user = AppUser(clerk_user_id="user_one")
+    app_user = AppUser(
+        clerk_user_id="user_one",
+        primary_profile_required=False,
+    )
     database.add_all([tracked, hidden, app_user])
     database.flush()
     database.add(

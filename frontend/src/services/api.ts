@@ -72,6 +72,8 @@ export interface ProfileInfo {
 export interface CurrentUser {
   user_id: string;
   is_admin: boolean;
+  letterboxd_username: string | null;
+  primary_profile_status: 'tracked' | 'pending' | 'approved' | 'rejected' | 'available' | 'unlinked' | 'unconfigured';
 }
 
 export type ProfileRequestStatus = 'pending' | 'approved' | 'rejected' | 'fulfilled';

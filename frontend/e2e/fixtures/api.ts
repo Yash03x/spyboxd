@@ -297,6 +297,12 @@ function json(route: Route, body: unknown) {
 
 interface ApiFixtureState {
   profiles: typeof profiles;
+  currentUser: {
+    user_id: string;
+    is_admin: boolean;
+    letterboxd_username: string | null;
+    primary_profile_status: 'tracked' | 'pending' | 'approved' | 'rejected' | 'available' | 'unlinked' | 'unconfigured';
+  };
   requests: Array<{
     id: number;
     requester_user_id: string;
@@ -328,7 +334,7 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
     });
   }
 
-  if (path === '/api/me') return json(route, { user_id: 'user_e2e', is_admin: isAdmin });
+  if (path === '/api/me') return json(route, state.currentUser);
   if (path === '/profiles' && method === 'GET') return json(route, { profiles: state.profiles });
   if (path === '/profiles/tracked' && method === 'GET') return json(route, { profiles: state.profiles });
   const analysisMatch = path.match(/^\/profiles\/([^/]+)\/analysis$/);
@@ -491,10 +497,19 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
 
 export async function installApiMocks(
   page: Page,
-  options: { authenticated?: boolean; isAdmin?: boolean; profileCount?: number } = {},
+  options: {
+    authenticated?: boolean;
+    isAdmin?: boolean;
+    profileCount?: number;
+    letterboxdUsername?: string | null;
+    primaryProfileStatus?: ApiFixtureState['currentUser']['primary_profile_status'];
+  } = {},
 ) {
   const authenticated = options.authenticated ?? true;
   const isAdmin = options.isAdmin ?? false;
+  const letterboxdUsername = options.letterboxdUsername === undefined
+    ? 'letterboxd_user'
+    : options.letterboxdUsername;
 
   if (authenticated) {
     await page.context().addCookies([{
@@ -505,7 +520,7 @@ export async function installApiMocks(
     }]);
   }
 
-  await page.addInitScript(({ signedIn }) => {
+  await page.addInitScript(({ signedIn, username }) => {
     const effectiveSignedIn = signedIn && document.cookie.split(';').some((cookie) => (
       cookie.trim() === 'spyboxd-e2e-auth=1'
     ));
@@ -514,7 +529,7 @@ export async function installApiMocks(
       firstName: 'E2E',
       lastName: 'User',
       fullName: 'E2E User',
-      username: 'e2e-user',
+      username,
       imageUrl: '',
       hasImage: false,
       organizationMemberships: [],
@@ -525,7 +540,7 @@ export async function installApiMocks(
       user,
       factorVerificationAge: null,
       actor: null,
-      lastActiveToken: { jwt: { claims: { sub: 'user_e2e', sid: 'sess_e2e' } } },
+      lastActiveToken: { jwt: { claims: { sub: 'user_e2e', sid: 'sess_e2e', letterboxd_username: username } } },
       getToken: async () => 'e2e-token',
     } : null;
     const resources = {
@@ -592,12 +607,43 @@ export async function installApiMocks(
       unmountSignIn(node: HTMLElement) {
         node.replaceChildren();
       },
+      mountSignUp(node: HTMLElement, mountProps?: { forceRedirectUrl?: string }) {
+        if (mountProps?.forceRedirectUrl) {
+          node.dataset.forceRedirectUrl = mountProps.forceRedirectUrl;
+        }
+        const wrapper = document.createElement('div');
+        const heading = document.createElement('h2');
+        heading.textContent = 'Create your account';
+        const label = document.createElement('label');
+        label.textContent = 'Letterboxd username';
+        const input = document.createElement('input');
+        input.name = 'username';
+        input.required = true;
+        input.minLength = 2;
+        input.maxLength = 15;
+        input.pattern = '[A-Za-z0-9_]{2,15}';
+        label.append(input);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Continue';
+        wrapper.append(heading, label, button);
+        node.replaceChildren(wrapper);
+      },
+      unmountSignUp(node: HTMLElement) {
+        node.replaceChildren();
+      },
     };
     Object.assign(globalThis, { Clerk: clerk });
-  }, { signedIn: authenticated });
+  }, { signedIn: authenticated, username: letterboxdUsername ?? 'legacy_user' });
 
   const state: ApiFixtureState = {
     profiles: profiles.slice(0, options.profileCount ?? profiles.length).map((profile) => ({ ...profile })),
+    currentUser: {
+      user_id: 'user_e2e',
+      is_admin: isAdmin,
+      letterboxd_username: letterboxdUsername,
+      primary_profile_status: options.primaryProfileStatus ?? (letterboxdUsername ? 'pending' : 'unconfigured'),
+    },
     requests: [{
       id: 1,
       requester_user_id: 'user_e2e',

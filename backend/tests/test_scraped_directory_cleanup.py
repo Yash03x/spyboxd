@@ -85,6 +85,7 @@ def test_clear_endpoint_rejects_unsafe_profile_before_database_clear(tmp_path: P
     with (
         patch("backend.main.SCRAPED_DATA_DIR", str(scrape_root)),
         patch("backend.main.ProfileRepository", return_value=repository),
+        patch("backend.main.ensure_app_user"),
         pytest.raises(HTTPException) as raised,
     ):
         asyncio.run(

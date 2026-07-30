@@ -123,6 +123,7 @@ class ClerkUser:
     user_id: str
     session_id: Optional[str]
     is_admin: bool = False
+    letterboxd_username: Optional[str] = None
 
 
 def _configured_admin_user_ids() -> set[str]:
@@ -222,8 +223,20 @@ def get_current_user(
             )
 
     is_admin = _payload_grants_admin(payload, user_id)
+    raw_letterboxd_username = payload.get("letterboxd_username")
+    letterboxd_username = (
+        raw_letterboxd_username.strip()
+        if isinstance(raw_letterboxd_username, str)
+        and raw_letterboxd_username.strip()
+        else None
+    )
 
-    return ClerkUser(user_id=user_id, session_id=session_id, is_admin=is_admin)
+    return ClerkUser(
+        user_id=user_id,
+        session_id=session_id,
+        is_admin=is_admin,
+        letterboxd_username=letterboxd_username,
+    )
 
 
 def get_optional_user(

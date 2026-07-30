@@ -180,6 +180,14 @@ class AppUser(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     clerk_user_id = Column(String(255), unique=True, index=True, nullable=False)
+    # Nullable so the additive migration and application rollback remain safe.
+    # The marker distinguishes grandfathered users from new mandatory identities.
+    letterboxd_username = Column(String(15), nullable=True)
+    primary_profile_required = Column(
+        Boolean,
+        nullable=False,
+        server_default=sql_text("true"),
+    )
     is_active = Column(Boolean, nullable=False, server_default=sql_text("true"))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(
@@ -198,6 +206,14 @@ class AppUser(Base):
         "ProfileAccessRequest",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_app_users_letterboxd_username_lower",
+            func.lower(letterboxd_username),
+            unique=True,
+        ),
     )
 
 

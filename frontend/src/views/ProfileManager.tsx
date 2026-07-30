@@ -93,6 +93,7 @@ const ProfileManager: React.FC = () => {
   const { data: profiles, isLoading, error } = useQuery({
     queryKey: ['profiles'],
     queryFn: profileApi.getProfiles,
+    enabled: currentUserQuery.isSuccess,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -100,7 +101,7 @@ const ProfileManager: React.FC = () => {
   const adminTrackedProfilesQuery = useQuery({
     queryKey: ['profiles', 'tracked', 'profile-manager'],
     queryFn: profileApi.getTrackedProfiles,
-    enabled: isAdmin,
+    enabled: currentUserQuery.isSuccess && isAdmin,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -108,6 +109,7 @@ const ProfileManager: React.FC = () => {
   const profileRequestsQuery = useQuery({
     queryKey: ['profile-requests'],
     queryFn: profileApi.getRequests,
+    enabled: currentUserQuery.isSuccess,
     staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -118,6 +120,7 @@ const ProfileManager: React.FC = () => {
       debouncedCatalogSearchTerm,
       PROFILE_CATALOG_RESULT_LIMIT,
     ),
+    enabled: currentUserQuery.isSuccess,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -125,7 +128,7 @@ const ProfileManager: React.FC = () => {
   const adminRequestsQuery = useQuery({
     queryKey: ['admin-profile-requests'],
     queryFn: () => adminProfileRequestApi.getRequests(),
-    enabled: isAdmin,
+    enabled: currentUserQuery.isSuccess && isAdmin,
     staleTime: 30 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -269,6 +272,11 @@ const ProfileManager: React.FC = () => {
     ? adminTrackedProfilesQuery.data?.length
     : profilesArray.length;
   const normalizedRequestedUsername = requestedUsername.trim().replace(/^@/, '');
+  const primaryUsername = currentUserQuery.data?.letterboxd_username ?? null;
+  const primaryProfileStatus = currentUserQuery.data?.primary_profile_status ?? 'unconfigured';
+  const isPrimaryUsername = (username: string) => (
+    primaryUsername !== null && username.toLowerCase() === primaryUsername.toLowerCase()
+  );
   const filteredProfiles = profilesArray.filter((profile) => {
     const matchesSearch = profile.username.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter =
@@ -343,6 +351,38 @@ const ProfileManager: React.FC = () => {
         )}
       </motion.div>
 
+      {(primaryUsername || searchParams.get('onboarding') === '1') && (
+        <motion.section
+          className="rounded-2xl border border-cinema-400/25 bg-cinema-500/10 p-5"
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.22 }}
+          aria-labelledby="primary-profile-status-title"
+          data-testid="primary-profile-status"
+        >
+          <div className="flex items-start gap-4">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cinema-400/30 bg-black/15 text-cinema-200">
+              <ShieldCheck className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cinema-300">Your Spyboxd identity</p>
+              <h2 id="primary-profile-status-title" className="mt-1 text-xl font-bold text-white">
+                {primaryUsername ? `@${primaryUsername}` : 'Letterboxd username not linked'}
+              </h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-white/60">
+                {primaryProfileStatus === 'tracked' && 'Your Letterboxd profile is synced and included in your monitored profiles.'}
+                {primaryProfileStatus === 'pending' && 'We automatically requested this profile. It is awaiting review before a residential full sync.'}
+                {primaryProfileStatus === 'approved' && 'Your profile request is approved and queued for the next residential full sync.'}
+                {primaryProfileStatus === 'rejected' && 'This profile request was not approved. Contact the administrator if this is the correct Letterboxd username.'}
+                {primaryProfileStatus === 'available' && 'This profile is already synced and can be added from the profile list below.'}
+                {primaryProfileStatus === 'unlinked' && 'This username is linked to your account, but its Letterboxd profile has not been requested yet.'}
+                {primaryProfileStatus === 'unconfigured' && 'This pre-existing account has no Letterboxd username linked. Contact the administrator to repair the account identity.'}
+              </p>
+            </div>
+          </div>
+        </motion.section>
+      )}
+
       <motion.section
         className="card-cinema"
         initial={{ opacity: 0, y: 20 }}
@@ -404,16 +444,20 @@ const ProfileManager: React.FC = () => {
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {catalogProfiles.map((profile) => {
                 const isBusy = trackingProfileId === profile.id || untrackingProfile === profile.username;
+                const isPrimaryProfile = isPrimaryUsername(profile.username);
                 return (
                   <article key={profile.id} className="flex min-w-0 items-center gap-3 rounded-xl border border-white/10 bg-black/15 p-3">
                     <ProfileAvatar profile={profile} size="lg" />
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-semibold text-white">{profile.display_name || profile.username}</p>
-                      <p className="truncate text-xs text-white/45">@{profile.username} · {profile.total_films.toLocaleString()} films</p>
+                      <p className="truncate text-xs text-white/45">
+                        @{profile.username} · {profile.total_films.toLocaleString()} films
+                        {isPrimaryProfile ? ' · Your profile' : ''}
+                      </p>
                     </div>
                     <button
                       type="button"
-                      disabled={isBusy}
+                      disabled={isBusy || (isPrimaryProfile && profile.is_tracked)}
                       onClick={() => {
                         if (profile.is_tracked) {
                           untrackProfileMutation.mutate(profile.username);
@@ -421,12 +465,14 @@ const ProfileManager: React.FC = () => {
                           trackCatalogProfileMutation.mutate(profile.id);
                         }
                       }}
-                      aria-label={`${profile.is_tracked ? 'Stop monitoring' : 'Monitor'} ${profile.username}`}
+                      aria-label={isPrimaryProfile && profile.is_tracked
+                        ? `Your Letterboxd profile ${profile.username}`
+                        : `${profile.is_tracked ? 'Stop monitoring' : 'Monitor'} ${profile.username}`}
                       className={profile.is_tracked
                         ? 'rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:bg-emerald-400/20 disabled:opacity-50'
                         : 'rounded-lg border border-cinema-400/25 bg-cinema-500/10 px-3 py-2 text-xs font-semibold text-cinema-200 transition-colors hover:bg-cinema-500/20 disabled:opacity-50'}
                     >
-                      {isBusy ? 'Saving…' : profile.is_tracked ? 'Monitoring' : 'Monitor'}
+                      {isBusy ? 'Saving…' : isPrimaryProfile && profile.is_tracked ? 'Your profile' : profile.is_tracked ? 'Monitoring' : 'Monitor'}
                     </button>
                   </article>
                 );
@@ -449,7 +495,7 @@ const ProfileManager: React.FC = () => {
                 <UserPlus className="h-5 w-5" />
               </span>
               <div>
-                <h2 className="text-xl font-bold text-white">Request a profile that is not listed</h2>
+                <h2 className="text-xl font-bold text-white">Request another profile</h2>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">
                   Enter a Letterboxd username that Spyboxd does not have yet. It will be sent for review and, once accepted, queued for the next residential full sync.
                 </p>
@@ -472,6 +518,9 @@ const ProfileManager: React.FC = () => {
                 onChange={(event) => setRequestedUsername(event.target.value)}
                 className="input-field w-full"
                 autoComplete="off"
+                maxLength={16}
+                pattern="@?[A-Za-z0-9_]{2,15}"
+                title="Use 2–15 letters, numbers, or underscores."
               />
             </label>
             <button
@@ -803,6 +852,7 @@ const ProfileManager: React.FC = () => {
             <motion.div data-testid="tracked-profile-grid" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6" layout>
               {filteredProfiles.map((profile) => {
                 const badge = getStatusBadge(profile.scraping_status);
+                const isPrimaryProfile = isPrimaryUsername(profile.username);
                 const coverageSummary =
                   profile.data_coverage?.summary ||
                   'Run the local full sync workflow to populate this profile.';
@@ -839,6 +889,14 @@ const ProfileManager: React.FC = () => {
                         >
                           <TrashIcon className={`w-4 h-4 text-red-400 ${deletingProfile === profile.username ? 'animate-pulse' : ''}`} />
                         </button>
+                      ) : isPrimaryProfile ? (
+                        <span
+                          className="inline-flex items-center gap-2 rounded-lg border border-cinema-400/25 bg-cinema-500/10 px-3 py-2 text-xs font-semibold text-cinema-200"
+                          title="Your Letterboxd profile is your Spyboxd identity"
+                        >
+                          <ShieldCheck className="h-4 w-4" />
+                          Your profile
+                        </span>
                       ) : (
                         <button
                           onClick={() => {

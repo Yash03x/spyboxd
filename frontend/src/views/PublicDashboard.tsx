@@ -124,7 +124,10 @@ function PublicHeader({ isSignedIn }: { isSignedIn: boolean | undefined }) {
             <UserButton />
           </>
         ) : (
-          <Link href="/sign-in?redirect_url=%2Fprofiles" className="btn-primary whitespace-nowrap">Sign in to monitor profiles</Link>
+          <>
+            <Link href="/sign-up" className="btn-primary whitespace-nowrap">Create account</Link>
+            <Link href="/sign-in?redirect_url=%2Fprofiles" className="btn-secondary whitespace-nowrap">Sign in to monitor profiles</Link>
+          </>
         )}
       </div>
     </header>

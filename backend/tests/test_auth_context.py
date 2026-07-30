@@ -34,6 +34,7 @@ def test_current_user_validates_exact_issuer_and_authorized_party(monkeypatch):
             "sid": "session_one",
             "iss": "https://clerk.example",
             "azp": "https://spyboxd.com",
+            "letterboxd_username": "  FilmFan_7  ",
         }
 
     monkeypatch.setattr(auth.jwt, "decode", decode)
@@ -41,6 +42,7 @@ def test_current_user_validates_exact_issuer_and_authorized_party(monkeypatch):
     user = auth.get_current_user(_credentials())
 
     assert user.user_id == "user_one"
+    assert user.letterboxd_username == "FilmFan_7"
     assert captured["issuer"] == "https://clerk.example"
     assert captured["options"]["verify_iss"] is True
     assert captured["options"]["verify_nbf"] is True
@@ -104,4 +106,23 @@ def test_local_development_defaults_accept_localhost_azp(monkeypatch):
         },
     )
 
-    assert auth.get_current_user(_credentials()).user_id == "local_user"
+    user = auth.get_current_user(_credentials())
+    assert user.user_id == "local_user"
+    assert user.letterboxd_username is None
+
+
+def test_non_string_letterboxd_username_claim_is_ignored(monkeypatch):
+    monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.example/.well-known/jwks.json")
+    monkeypatch.setenv("CLERK_ISSUER", "https://clerk.example")
+    _stub_jwks(monkeypatch)
+    monkeypatch.setattr(
+        auth.jwt,
+        "decode",
+        lambda *_args, **_kwargs: {
+            "sub": "user_one",
+            "sid": "session_one",
+            "letterboxd_username": {"not": "a string"},
+        },
+    )
+
+    assert auth.get_current_user(_credentials()).letterboxd_username is None
