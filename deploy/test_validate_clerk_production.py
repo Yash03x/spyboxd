@@ -517,7 +517,8 @@ class ClerkProductionValidatorTests(unittest.TestCase):
         self.assertIn('old_release=""', release_script)
         self.assertIn("vars.PRODUCTION_CLERK_BRIDGE_EDGE", workflow)
         self.assertIn('"${previous_target}:${RELEASE_SHA}"', workflow)
-        self.assertIn('CLERK_BRIDGE_EDGE="${4:-}"', workflow)
+        self.assertIn('"${REPOSITORY_URL}" "${CLERK_BRIDGE_EDGE}"', workflow)
+        self.assertIn('CLERK_BRIDGE_EDGE="${5:-}"', workflow)
         self.assertIn('SPYBOXD_CLERK_BRIDGE_EDGE="${CLERK_BRIDGE_EDGE}"', workflow)
         self.assertIn(
             "Stopped the failed Clerk bridge without activating the incompatible development artifact.",
