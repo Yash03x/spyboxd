@@ -78,6 +78,16 @@ class InsightCalculationTests(unittest.TestCase):
             normalized_title="test film",
             release_year=2026,
             letterboxd_slug="test-film",
+            letterboxd_url="https://letterboxd.com/film/test-film/",
+        )
+
+    def test_movie_summary_includes_canonical_letterboxd_identity(self) -> None:
+        summary = self.service._movie_summary(self.movie)
+
+        self.assertEqual(summary["letterboxd_slug"], "test-film")
+        self.assertEqual(
+            summary["letterboxd_url"],
+            "https://letterboxd.com/film/test-film/",
         )
 
     def test_same_profile_rewatches_do_not_create_a_group_signal(self) -> None:

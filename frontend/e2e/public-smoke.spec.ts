@@ -179,6 +179,24 @@ test('analysis list panels keep intrinsic heights without animated glass artifac
 });
 
 test('analysis keeps spoiler review prose hidden until an accessible reveal action', async ({ page }) => {
+  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/[^/]+\/analysis$/, (route) => {
+    const username = new URL(route.request().url()).pathname.split('/')[2];
+    const reviewText = username === 'bravo'
+      ? 'A different spoiler review for bravo.'
+      : 'A concise fixture review.';
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...profileAnalysis,
+        username,
+        recent_reviews: [
+          { ...profileAnalysis.recent_reviews[0], review_text: reviewText },
+          profileAnalysis.recent_reviews[1],
+        ],
+      }),
+    });
+  });
   await page.goto('/analysis');
 
   const spoilerText = page.getByText('A concise fixture review.', { exact: true });
@@ -195,6 +213,13 @@ test('analysis keeps spoiler review prose hidden until an accessible reveal acti
   await expect(page.getByRole('button', {
     name: 'Hide spoiler review for Short Review (2026)',
   })).toHaveAttribute('aria-expanded', 'true');
+
+  await page.getByRole('combobox').selectOption('bravo');
+  const nextSpoilerText = page.getByText('A different spoiler review for bravo.', { exact: true });
+  await expect(nextSpoilerText).toBeHidden();
+  await expect(page.getByRole('button', {
+    name: 'Reveal spoiler review for Short Review (2026)',
+  })).toHaveAttribute('aria-expanded', 'false');
 });
 
 test('analysis shows Coverage Notes only for actionable limitations', async ({ page }) => {

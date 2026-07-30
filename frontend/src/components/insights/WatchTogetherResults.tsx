@@ -36,9 +36,29 @@ function providerSummary(candidate: WatchTogetherCandidate): string {
   return labels.length > 0 ? labels.slice(0, 2).join(' · ') : 'Availability unknown';
 }
 
-function letterboxdFilmUrl(slug: string | null): string | null {
-  const normalizedSlug = slug?.trim().replace(/^\/+|\/+$/g, '');
-  return normalizedSlug ? `https://letterboxd.com/film/${encodeURIComponent(normalizedSlug)}/` : null;
+function letterboxdFilmUrl(url: string | null, slug: string | null): string | null {
+  const normalizedUrl = url?.trim();
+  if (normalizedUrl) {
+    try {
+      const parsed = new URL(normalizedUrl, 'https://letterboxd.com');
+      const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '');
+      const pathMatch = parsed.pathname.match(/^\/films?\/([a-z0-9][a-z0-9-]*)\/?$/i);
+      if (
+        (parsed.protocol === 'https:' || parsed.protocol === 'http:')
+        && hostname === 'letterboxd.com'
+        && pathMatch
+      ) {
+        return `https://letterboxd.com/film/${pathMatch[1]}/`;
+      }
+    } catch {
+      // Fall back to a validated single-segment slug below.
+    }
+  }
+
+  const normalizedSlug = slug?.trim();
+  return normalizedSlug && /^[a-z0-9][a-z0-9-]*$/i.test(normalizedSlug)
+    ? `https://letterboxd.com/film/${normalizedSlug}/`
+    : null;
 }
 
 function CandidateRow({
@@ -128,7 +148,10 @@ function WhyPanel({ candidate, onClose }: {
   onClose: () => void;
 }) {
   const tmdbUrl = candidate.movie.tmdb_id ? `https://www.themoviedb.org/movie/${candidate.movie.tmdb_id}` : null;
-  const letterboxdUrl = letterboxdFilmUrl(candidate.movie.letterboxd_slug);
+  const letterboxdUrl = letterboxdFilmUrl(
+    candidate.movie.letterboxd_url,
+    candidate.movie.letterboxd_slug,
+  );
   return (
     <aside className="rounded-xl border border-cinema-400/25 bg-[#0a1626] p-5 shadow-2xl shadow-black/30 2xl:sticky 2xl:top-5">
       <div className="flex items-center justify-between gap-3">

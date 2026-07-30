@@ -247,7 +247,10 @@ const ProfileManager: React.FC = () => {
   });
 
   const residentialSyncUploadMutation = useMutation({
-    mutationFn: (files: FileList) => profileApi.uploadFiles(files, { publish_owner_data: false }),
+    mutationFn: (files: FileList) => profileApi.uploadFiles(files, {
+      publish_owner_data: false,
+      require_full_sync: true,
+    }),
     onSuccess: (result) => {
       void refreshProfileSurfaces();
       const loadedCount = result.loaded_profiles.length;

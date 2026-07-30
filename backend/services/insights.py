@@ -555,6 +555,7 @@ class InsightsService:
             "movie_id": movie.id,
             "tmdb_id": movie.tmdb_id,
             "letterboxd_slug": movie.letterboxd_slug,
+            "letterboxd_url": movie.letterboxd_url,
             "title": movie.title,
             "year": movie.release_year,
             "poster_url": poster_url,

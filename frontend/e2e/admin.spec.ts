@@ -38,6 +38,8 @@ test('admin can upload residential full-sync bundles without owner-export publis
   expect(uploadBody).toContain('filename="bravo.zip"');
   expect(uploadBody).toContain('name="publish_owner_data"');
   expect(uploadBody).toMatch(/name="publish_owner_data"\r\n\r\nfalse\r\n/);
+  expect(uploadBody).toContain('name="require_full_sync"');
+  expect(uploadBody).toMatch(/name="require_full_sync"\r\n\r\ntrue\r\n/);
   await expect(page.getByText('2 residential full-sync bundles imported. Provenance: full_html_upload.')).toBeVisible();
   await expect(uploadPanel.getByText('A successful upload fulfills matching approved profile requests.')).toBeVisible();
 });

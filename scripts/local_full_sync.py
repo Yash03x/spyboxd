@@ -44,6 +44,7 @@ def upload_archive(
         response = requests.post(
             f"{api_base_url.rstrip('/')}/upload/",
             files={"files": (zip_path.name, handle, "application/zip")},
+            data={"require_full_sync": "true"},
             headers=headers,
             timeout=timeout_seconds,
         )

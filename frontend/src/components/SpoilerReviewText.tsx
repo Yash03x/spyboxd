@@ -10,18 +10,13 @@ interface SpoilerReviewTextProps {
   className?: string;
 }
 
-export default function SpoilerReviewText({
+function SpoilerReveal({
   text,
-  containsSpoilers,
   reviewLabel,
   className = '',
-}: SpoilerReviewTextProps) {
+}: Omit<SpoilerReviewTextProps, 'containsSpoilers'>) {
   const [revealed, setRevealed] = useState(false);
   const reviewId = useId();
-
-  if (!containsSpoilers) {
-    return <p className={className}>{text}</p>;
-  }
 
   return (
     <div>
@@ -40,5 +35,21 @@ export default function SpoilerReviewText({
         {revealed ? <p className={`mt-3 ${className}`}>{text}</p> : null}
       </div>
     </div>
+  );
+}
+
+export default function SpoilerReviewText(props: SpoilerReviewTextProps) {
+  if (!props.containsSpoilers) {
+    return <p className={props.className ?? ''}>{props.text}</p>;
+  }
+
+  const reviewIdentity = `${props.reviewLabel}\u0000${props.text}`;
+  return (
+    <SpoilerReveal
+      key={reviewIdentity}
+      text={props.text}
+      reviewLabel={props.reviewLabel}
+      className={props.className}
+    />
   );
 }
