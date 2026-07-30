@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { UserButton, SignInButton, useAuth } from '@clerk/nextjs';
+import { UserButton, useAuth } from '@clerk/nextjs';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   HomeIcon,
@@ -56,10 +56,10 @@ const NAVIGATION_ITEMS = [
   },
   {
     path: '/profiles',
-    label: 'Profiles',
+    label: 'My Profiles',
     icon: UserGroupIcon,
     activeIcon: UserGroupIcon,
-    description: 'Browse & Manage',
+    description: 'Track & Manage',
   },
   {
     path: '/analysis',
@@ -226,13 +226,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             })}
             </div>
 
+            <div className="mt-5 hidden items-center gap-3 border-t border-white/10 pt-4 text-sm text-white/60 lg:flex">
+              {isSignedIn && <><UserButton /> Account</>}
+            </div>
+
             <div className="mt-5 border-t border-white/10 pt-4 lg:hidden">
-              {isSignedIn ? (
+              {isSignedIn && (
                 <div className="flex items-center gap-3 text-sm text-white/60"><UserButton /> Signed in</div>
-              ) : (
-                <SignInButton mode="modal">
-                  <button className="btn-primary w-full px-4 py-2 text-sm">Sign in</button>
-                </SignInButton>
               )}
             </div>
           </div>
@@ -267,29 +267,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 {activeItem?.description || 'Welcome to Spyboxd'}
               </motion.p>
             </div>
-            
-            <motion.div 
-              className="flex items-center space-x-3"
-              initial={{ x: 20, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              transition={{ delay: 0.7 }}
-            >
-              {isSignedIn ? (
-                <UserButton
-                  appearance={{
-                    elements: {
-                      avatarBox: 'w-9 h-9 ring-2 ring-cinema-500/40 hover:ring-cinema-400/70 transition-all',
-                    },
-                  }}
-                />
-              ) : (
-                <SignInButton mode="modal">
-                  <button className="px-4 py-1.5 rounded-lg text-sm font-medium bg-cinema-500 hover:bg-cinema-600 text-white transition-colors">
-                    Sign in
-                  </button>
-                </SignInButton>
-              )}
-            </motion.div>
           </div>
         </motion.header>
 

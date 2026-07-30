@@ -119,8 +119,19 @@ class Profile(Base):
         back_populates="profile",
         cascade="all, delete-orphan",
     )
+    tracked_by = relationship(
+        "UserTrackedProfile",
+        back_populates="profile",
+        cascade="all, delete-orphan",
+    )
+    access_requests = relationship(
+        "ProfileAccessRequest",
+        back_populates="fulfilled_profile",
+        foreign_keys="ProfileAccessRequest.fulfilled_profile_id",
+    )
 
     __table_args__ = (
+        Index("uq_profiles_username_lower", func.lower(username), unique=True),
         CheckConstraint("following_count IS NULL OR following_count >= 0", name="ck_profiles_following_nonnegative"),
         CheckConstraint("followers_count IS NULL OR followers_count >= 0", name="ck_profiles_followers_nonnegative"),
         CheckConstraint(
@@ -160,6 +171,114 @@ class Profile(Base):
             "metadata_synced_at": self.metadata_synced_at.isoformat() if self.metadata_synced_at else None,
             "enhanced_metrics": self.enhanced_metrics or {}
         }
+
+
+class AppUser(Base):
+    """Minimal local identity mapped to an externally authenticated Clerk user."""
+
+    __tablename__ = "app_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    clerk_user_id = Column(String(255), unique=True, index=True, nullable=False)
+    is_active = Column(Boolean, nullable=False, server_default=sql_text("true"))
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    tracked_profiles = relationship(
+        "UserTrackedProfile",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    profile_requests = relationship(
+        "ProfileAccessRequest",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserTrackedProfile(Base):
+    """Per-user access to one globally deduplicated profile dataset."""
+
+    __tablename__ = "user_tracked_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False)
+    profile_id = Column(Integer, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False)
+    source = Column(String(30), nullable=False, server_default="direct")
+    added_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    user = relationship("AppUser", back_populates="tracked_profiles")
+    profile = relationship("Profile", back_populates="tracked_by")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "profile_id", name="uq_user_tracked_profile"),
+        CheckConstraint(
+            "source IN ('direct', 'request_fulfillment', 'admin')",
+            name="ck_user_tracked_profiles_source",
+        ),
+        Index("ix_user_tracked_profiles_profile_user", "profile_id", "user_id"),
+    )
+
+
+class ProfileAccessRequest(Base):
+    """Request to track a username that does not yet have a canonical profile row."""
+
+    __tablename__ = "profile_access_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False)
+    requested_username = Column(String(50), nullable=False)
+    normalized_username = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False, server_default="pending")
+    admin_note = Column(Text, nullable=True)
+    resolved_by_clerk_user_id = Column(String(255), nullable=True)
+    fulfilled_profile_id = Column(
+        Integer,
+        ForeignKey("profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    requested_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("AppUser", back_populates="profile_requests")
+    fulfilled_profile = relationship(
+        "Profile",
+        back_populates="access_requests",
+        foreign_keys=[fulfilled_profile_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "normalized_username",
+            name="uq_profile_access_request_user_username",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'fulfilled')",
+            name="ck_profile_access_requests_status",
+        ),
+        Index(
+            "ix_profile_access_requests_status_requested",
+            "status",
+            "requested_at",
+        ),
+        Index(
+            "ix_profile_access_requests_username_status",
+            "normalized_username",
+            "status",
+        ),
+    )
 
 
 class ProfileSync(Base):

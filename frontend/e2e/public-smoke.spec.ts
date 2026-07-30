@@ -9,6 +9,16 @@ function isExpectedMissingPosterError(message: ConsoleMessage): boolean {
     && message.location().url === MISSING_POSTER_URL;
 }
 
+async function expectAccountControl(page: Page) {
+  if ((page.viewportSize()?.width ?? 0) < 1024) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+    await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
+    await page.getByRole('button', { name: 'Close navigation' }).click();
+    return;
+  }
+  await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
+}
+
 test.beforeEach(async ({ page }) => {
   const errors: string[] = [];
   runtimeErrors.set(page, errors);
@@ -32,35 +42,67 @@ test.afterEach(async ({ page }, testInfo: TestInfo) => {
   expect(errors, 'The page must not emit console errors or uncaught exceptions').toEqual([]);
 });
 
-test('homepage renders the public dashboard and navigates to profiles', async ({ page }) => {
+test('signed-in homepage renders the scoped dashboard and navigates to My Profiles', async ({ page }) => {
   await page.goto('/');
 
   await expect(page).toHaveTitle(/Spyboxd/);
   await expect(page.getByRole('heading', { level: 1, name: 'Dashboard', exact: true })).toBeVisible();
-  await expect(page.getByText('Community Profiles')).toBeVisible();
+  await expect(page.getByText('Your Profiles', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('10 profiles loaded')).toBeVisible();
+  await expectAccountControl(page);
 
-  const browseProfiles = page.getByRole('button', { name: 'Browse Profiles' });
-  await expect(browseProfiles).toBeVisible();
-  await browseProfiles.click();
+  const manageProfiles = page.getByRole('button', { name: 'Add or manage profiles' });
+  await expect(manageProfiles).toBeVisible();
+  await manageProfiles.click();
   await expect(page).toHaveURL(/\/profiles$/);
-  await expect(page.getByRole('heading', { level: 1, name: 'Profiles', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'My Profiles', exact: true })).toBeVisible();
 });
 
 test('profiles can be searched without hiding matching data', async ({ page }) => {
   await page.goto('/profiles');
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Profiles', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'My Profiles', exact: true })).toBeVisible();
   await page.getByPlaceholder('Search profiles...').fill('charlie');
   await expect(page.getByText('@charlie', { exact: true })).toBeVisible();
-  await expect(page.getByText('1 of 10 profiles')).toBeVisible();
+  await expect(page.getByText('1 of 10 tracked profiles')).toBeVisible();
   await expect(page.getByText('@alpha', { exact: true })).toHaveCount(0);
+});
+
+test('a new Letterboxd username becomes a visible pending request', async ({ page }) => {
+  await page.goto('/profiles');
+
+  await page.getByPlaceholder('Letterboxd username').fill('newprofile');
+  await page.getByRole('button', { name: 'Add or request' }).click();
+
+  await expect(page.getByText('@newprofile', { exact: true })).toBeVisible();
+  await expect(page.getByText('Awaiting review', { exact: true })).toBeVisible();
+  await expect(page.getByText('Request sent. You can follow its status below.')).toBeVisible();
+});
+
+test('ordinary request history does not expose internal admin fields', async ({ page }) => {
+  await page.goto('/profiles');
+
+  await expect(page.getByText('@queuedprofile', { exact: true })).toBeVisible();
+  await expect(page.getByText('Accepted for the next sync.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Requester user_e2e/)).toHaveCount(0);
+});
+
+test('stopping tracking removes only the profile from the user set', async ({ page }) => {
+  page.on('dialog', (dialog) => dialog.accept());
+  await page.goto('/profiles');
+
+  await page.getByRole('button', { name: 'Remove alpha from My Profiles' }).click();
+
+  await expect(page.getByText('@alpha', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('9 of 9 tracked profiles')).toBeVisible();
+  await expect(page.getByText(/shared data was not deleted/i)).toBeVisible();
 });
 
 test('compare changes a profile and applies the selected pair', async ({ page }) => {
   await page.goto('/compare');
 
   await expect(page.getByRole('heading', { name: 'Compare Profiles' })).toBeVisible();
+  await expectAccountControl(page);
   const profileA = page.locator('label').filter({ hasText: 'Profile A' }).locator('select');
   await profileA.selectOption('charlie');
   await page.getByRole('button', { name: 'Compare', exact: true }).click();
@@ -90,7 +132,7 @@ test('spy signal selector opens, remains visible, and updates the scan', async (
 test('watch together selector stays in the viewport and broken posters fall back', async ({ page }) => {
   await page.goto('/watch-together');
 
-  await expect(page.getByRole('heading', { name: 'Watch Together' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Watch Together' })).toBeVisible();
   const selector = page.getByRole('button', { name: 'Group profiles' });
   await selector.click();
   const panel = page.getByRole('group', { name: 'Group profiles' });

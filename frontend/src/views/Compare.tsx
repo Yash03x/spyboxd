@@ -191,7 +191,7 @@ export default function Compare() {
 
   if (profilesQuery.isLoading) return <FeatureState title="Loading profiles" message="Preparing the comparison workspace." loading />;
   if (profilesQuery.error) return <FeatureState title="Profiles unavailable" message="The profile directory could not be loaded." />;
-  if (completedProfiles.length < 2) return <FeatureState title="Two profiles are required" message="Sync at least two Letterboxd profiles before opening Compare." />;
+  if (completedProfiles.length < 2) return <FeatureState title="Track two profiles to compare" message="Add or request at least two Letterboxd profiles in My Profiles before opening Compare." actionHref="/profiles" actionLabel="Open My Profiles" />;
 
   return (
     <motion.div

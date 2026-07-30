@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { Calendar, MessageCircle, Star, Ticket } from 'lucide-react';
@@ -71,10 +72,20 @@ const Analysis: React.FC = () => {
       <div>
         <h1 className="text-4xl font-bold text-white text-glow mb-2">Analysis</h1>
         <p className="text-white/60">
-          Single-profile deep dives over the current shared dataset.
+          Single-profile deep dives over the profiles you track.
         </p>
       </div>
 
+      {profilesArray.length === 0 ? (
+        <section className="card-cinema flex min-h-72 flex-col items-center justify-center px-6 text-center">
+          <Ticket className="h-10 w-10 text-cinema-400" />
+          <h2 className="mt-5 text-xl font-semibold text-white">Track a profile to start</h2>
+          <p className="mt-2 max-w-md text-sm leading-6 text-white/55">
+            Add an existing Letterboxd profile or request a new one in My Profiles, then return for its ratings, diary activity, and reviews.
+          </p>
+          <Link href="/profiles" className="btn-primary mt-5">Open My Profiles</Link>
+        </section>
+      ) : (
       <motion.div
         className="card-cinema"
         initial={{ opacity: 0, y: 20 }}
@@ -104,6 +115,7 @@ const Analysis: React.FC = () => {
           </div>
         </div>
       </motion.div>
+      )}
 
       {selectedProfile && loadingAnalysis && (
         <LoadingSpinner message={`Loading analysis for @${selectedProfile}...`} />

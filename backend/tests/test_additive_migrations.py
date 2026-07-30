@@ -22,7 +22,8 @@ class AdditiveMigrationContractTests(unittest.TestCase):
         config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
         script = ScriptDirectory.from_config(config)
 
-        self.assertEqual(script.get_heads(), ["20260729_0007"])
+        self.assertEqual(script.get_heads(), ["20260730_0008"])
+        self.assertEqual(script.get_revision("20260730_0008").down_revision, "20260729_0007")
         self.assertEqual(script.get_revision("20260729_0007").down_revision, "20260729_0006")
         self.assertEqual(script.get_revision("20260729_0006").down_revision, "20260729_0005")
         self.assertEqual(script.get_revision("20260729_0005").down_revision, "20260729_0004")
@@ -49,6 +50,9 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "movie_watch_providers",
             "ratings",
             "reviews",
+            "app_users",
+            "user_tracked_profiles",
+            "profile_access_requests",
         }
         self.assertTrue(expected_tables.issubset(Base.metadata.tables))
 
@@ -85,6 +89,15 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "profile_source_activities": {"profile_id", "movie_id", "activity_type", "activity_date", "date_semantics"},
             "movie_lists": {"tags"},
             "watchlist_items": {"added_date_source_kind"},
+            "app_users": {"clerk_user_id", "is_active"},
+            "user_tracked_profiles": {"user_id", "profile_id", "source"},
+            "profile_access_requests": {
+                "user_id",
+                "requested_username",
+                "normalized_username",
+                "status",
+                "fulfilled_profile_id",
+            },
         }
         for table_name, columns in expected_columns.items():
             self.assertTrue(columns.issubset(Base.metadata.tables[table_name].c.keys()))
@@ -99,6 +112,8 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "movie_list_items": {"unique_movie_list_item"},
             "profile_data_changes": {"unique_profile_sync_change_key"},
             "profile_source_activities": {"unique_profile_source_activity"},
+            "user_tracked_profiles": {"uq_user_tracked_profile"},
+            "profile_access_requests": {"uq_profile_access_request_user_username"},
         }
         for table_name, constraint_names in expected_unique_constraints.items():
             actual_names = {
@@ -107,6 +122,18 @@ class AdditiveMigrationContractTests(unittest.TestCase):
                 if constraint.name
             }
             self.assertTrue(constraint_names.issubset(actual_names))
+
+        profile_indexes = {
+            index.name: index for index in Base.metadata.tables["profiles"].indexes
+        }
+        self.assertIn("uq_profiles_username_lower", profile_indexes)
+        self.assertTrue(profile_indexes["uq_profiles_username_lower"].unique)
+
+        migration_source = (
+            REPO_ROOT / "alembic/versions/20260730_0008_add_profile_access.py"
+        ).read_text()
+        self.assertIn("HAVING count(*) > 1", migration_source)
+        self.assertIn("uq_profiles_username_lower", migration_source)
 
 
 @unittest.skipUnless(
@@ -128,7 +155,7 @@ class AdditiveMigrationPostgresTests(unittest.TestCase):
             connection.execute(text("SET TRANSACTION READ ONLY"))
             try:
                 current_revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                self.assertEqual(current_revision, "20260729_0007")
+                self.assertEqual(current_revision, "20260730_0008")
 
                 counts = connection.execute(
                     text(

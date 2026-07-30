@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -162,8 +163,9 @@ const SpySignals: React.FC = () => {
           </span>
           <h2 className="mt-5 text-xl font-semibold text-white">Two profiles are needed</h2>
           <p className="mt-2 max-w-md text-sm leading-6 text-white/55">
-            Add or sync at least two Letterboxd profiles before scanning for co-watch behavior.
+            Add or request at least two Letterboxd profiles in My Profiles before scanning for co-watch behavior.
           </p>
+          <Link href="/profiles" className="btn-primary mt-5 px-5 py-2 text-sm">Open My Profiles</Link>
         </section>
       ) : (
         <>

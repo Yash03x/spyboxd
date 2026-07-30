@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from itertools import combinations
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import false, func
 from sqlalchemy.orm import Session, load_only
 
 from database.models import (
@@ -377,8 +377,40 @@ def _merge_provider_availability(
 class InsightsService:
     """Source-backed insight calculations over the additive, event-corrected schema."""
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        *,
+        allowed_usernames: Optional[Sequence[str]] = None,
+        allowed_profile_ids: Optional[Sequence[int]] = None,
+    ):
         self.db = db
+        self.allowed_profile_ids = (
+            {int(profile_id) for profile_id in allowed_profile_ids}
+            if allowed_profile_ids is not None
+            else None
+        )
+        self.allowed_usernames = (
+            {username.casefold() for username in allowed_usernames}
+            if allowed_usernames is not None
+            else None
+        )
+
+    @staticmethod
+    def _profiles_by_normalized_username(
+        profiles: Sequence[Profile],
+    ) -> Dict[str, Profile]:
+        mapping: Dict[str, Profile] = {}
+        for profile in profiles:
+            normalized = profile.username.casefold()
+            existing = mapping.get(normalized)
+            if existing is not None and existing.id != profile.id:
+                raise InsightRequestError(
+                    "Case-insensitive profile username collision requires admin resolution.",
+                    status_code=409,
+                )
+            mapping[normalized] = profile
+        return mapping
 
     def _resolve_profiles(
         self,
@@ -388,7 +420,6 @@ class InsightsService:
         maximum: Optional[int] = None,
     ) -> List[Profile]:
         all_profiles = self.db.query(Profile).all()
-        by_username = {profile.username.casefold(): profile for profile in all_profiles}
 
         normalized: List[str] = []
         seen = set()
@@ -398,6 +429,49 @@ class InsightsService:
             if username and key not in seen:
                 normalized.append(username)
                 seen.add(key)
+
+        if self.allowed_profile_ids is not None:
+            all_profiles = [
+                profile
+                for profile in all_profiles
+                if profile.id in self.allowed_profile_ids
+            ]
+            by_username = self._profiles_by_normalized_username(all_profiles)
+            forbidden = [
+                username
+                for username in normalized
+                if username.casefold() not in by_username
+            ]
+            if forbidden:
+                raise InsightRequestError(
+                    {
+                        "message": "Track every requested profile before using it in analytics.",
+                        "untracked_profiles": forbidden,
+                    },
+                    status_code=403,
+                )
+        elif self.allowed_usernames is not None:
+            forbidden = [
+                username
+                for username in normalized
+                if username.casefold() not in self.allowed_usernames
+            ]
+            if forbidden:
+                raise InsightRequestError(
+                    {
+                        "message": "Track every requested profile before using it in analytics.",
+                        "untracked_profiles": forbidden,
+                    },
+                    status_code=403,
+                )
+            all_profiles = [
+                profile
+                for profile in all_profiles
+                if profile.username.casefold() in self.allowed_usernames
+            ]
+            by_username = self._profiles_by_normalized_username(all_profiles)
+        else:
+            by_username = self._profiles_by_normalized_username(all_profiles)
 
         if not normalized:
             normalized = sorted(
@@ -2478,13 +2552,25 @@ class InsightsService:
         )
         outsider_rows: Dict[int, List[StateRow]] = defaultdict(list)
         if mode == "unseen_pick":
-            all_rows = (
+            all_rows_query = (
                 self.db.query(ProfileFilm, Profile, Movie)
                 .join(Profile, Profile.id == ProfileFilm.profile_id)
                 .join(Movie, Movie.id == ProfileFilm.movie_id)
                 .filter(ProfileFilm.removed_at.is_(None), Profile.is_active.is_(True))
-                .all()
             )
+            if self.allowed_profile_ids is not None:
+                all_rows_query = all_rows_query.filter(
+                    Profile.id.in_(self.allowed_profile_ids)
+                    if self.allowed_profile_ids
+                    else false()
+                )
+            elif self.allowed_usernames is not None:
+                all_rows_query = all_rows_query.filter(
+                    func.lower(Profile.username).in_(self.allowed_usernames)
+                    if self.allowed_usernames
+                    else false()
+                )
+            all_rows = all_rows_query.all()
             movie_details: Dict[int, Movie] = {}
             for profile_film, profile, movie in all_rows:
                 movie_details[movie.id] = movie

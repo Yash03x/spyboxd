@@ -22,7 +22,7 @@ Existing routes remain available:
 
 - Dashboard for group-level activity and aggregate statistics
 - Spy Signals for same-day and configurable day-gap co-watch detection
-- Profiles for browsing and managing tracked accounts
+- My Profiles for tracking an existing imported account or requesting a new residential sync
 - Analysis for a single profile's ratings and activity
 
 Additive insight routes:
@@ -52,8 +52,9 @@ API / PostgreSQL
   └─ dashboard snapshot cache in system_metrics.metrics
 
 Frontend
-  └─ public reads for browsing and analytics
-  └─ Clerk auth only for admin mutations and user personalization
+  ├─ Clerk-authenticated private analytics workspace
+  ├─ per-user tracked-profile visibility and exact-username requests
+  └─ explicit public share pages at /u/<username>
 ```
 
 ## Quick Start
@@ -179,10 +180,26 @@ The enrichment command caches details and provider results, retries transient fa
 ## Runtime Model
 
 - `POST /upload/` is the write path for profile data.
-- `GET /api/dashboard/analytics` serves a cached snapshot, not live recomputation on every request.
-- The snapshot is refreshed after uploads, profile deletes, and data clears.
-- Read endpoints are public.
-- Admin mutations require a Clerk user with `public_metadata.is_admin = true`.
+- Profiles and imported movie data are stored once globally; `user_tracked_profiles`
+  controls which profiles each signed-in user can select or analyze.
+- `GET /api/dashboard/analytics` uses the cached global snapshot for admins and
+  computes an access-scoped response for ordinary users. The global snapshot is
+  refreshed after uploads, profile deletes, and data clears.
+- Health checks and `GET /public/profile/{username}` are public. Profile lists,
+  analytics, activity, access requests, and management screens require sign-in.
+- A signed-in user can track a completed profile immediately by exact username.
+  Missing or incomplete profiles become requests for the next residential sync;
+  no global profile directory is exposed to ordinary users.
+- Admin mutations require a strict boolean admin session claim or a Clerk user ID
+  in the server-side `CLERK_ADMIN_USER_IDS` allowlist.
+- Production releases fail closed unless the frontend live keys and backend JWKS
+  configuration identify the same Clerk production instance.
+- The one-time development-to-live Clerk cutover additionally requires the
+  production GitHub environment variable `PRODUCTION_CLERK_BRIDGE_EDGE` set to
+  `<active-40-char-sha>:<target-40-char-sha>`. Only an exact development-key
+  source manifest can use it; no incompatible automatic rollback is retained,
+  failed candidate health stops the services, and the variable must be removed
+  after the successful bridge. Live-to-live mismatches are never bypassed.
 - The local sync runner can authenticate with `X-Upload-Token`.
 
 ## Main Endpoints
@@ -190,9 +207,18 @@ The enrichment command caches details and provider results, retries transient fa
 ### Public reads
 
 - `GET /health`
-- `GET /profiles/`
-- `GET /profiles/{username}/analysis`
+- `GET /ready`
+- `GET /health/rss`
 - `GET /public/profile/{username}`
+
+### Signed-in workspace
+
+- `GET /api/me`
+- `GET /profiles/`
+- `POST /profiles/requests`
+- `GET /profiles/requests`
+- `DELETE /profiles/{username}/tracking`
+- `GET /profiles/{username}/analysis`
 - `GET /api/dashboard/analytics`
 - `GET /api/spy-signals?event_source=ratings|events`
 - `GET /api/data-coverage`
@@ -204,6 +230,8 @@ The enrichment command caches details and provider results, retries transient fa
 
 ### Admin / ingestion
 
+- `GET /admin/profile-requests`
+- `PUT /admin/profile-requests/{request_id}`
 - `POST /profiles/create`
 - `PUT /profiles/{username}`
 - `DELETE /profiles/{username}`

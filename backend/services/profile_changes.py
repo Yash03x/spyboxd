@@ -5,7 +5,7 @@ import json
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
-from sqlalchemy import func
+from sqlalchemy import false, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database.models import (
@@ -513,6 +513,7 @@ def get_recent_profile_changes(
     db: Session,
     *,
     usernames: Optional[Sequence[str]] = None,
+    profile_ids: Optional[Sequence[int]] = None,
     limit: int = 20,
     since: Optional[datetime] = None,
     latest_sync_only: bool = False,
@@ -533,7 +534,14 @@ def get_recent_profile_changes(
             if str(username).strip()
         }
     )
-    if normalized_usernames:
+    if profile_ids is not None:
+        selected_profile_ids = {int(profile_id) for profile_id in profile_ids}
+        query = query.filter(
+            Profile.id.in_(selected_profile_ids) if selected_profile_ids else false()
+        )
+    elif usernames is not None and not normalized_usernames:
+        query = query.filter(false())
+    elif normalized_usernames:
         query = query.filter(func.lower(Profile.username).in_(normalized_usernames))
     if since is not None:
         query = query.filter(ProfileDataChange.detected_at >= since)

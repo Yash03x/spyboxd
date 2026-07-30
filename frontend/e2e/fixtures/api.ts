@@ -213,11 +213,77 @@ function json(route: Route, body: unknown) {
   });
 }
 
-async function handleApiRoute(route: Route) {
+interface ApiFixtureState {
+  profiles: typeof profiles;
+  requests: Array<{
+    id: number;
+    requester_user_id: string;
+    requested_username: string;
+    status: 'pending' | 'approved' | 'rejected' | 'fulfilled';
+    note: string | null;
+    requested_at: string;
+    updated_at: string;
+    resolved_at: string | null;
+    resolved_by_user_id: string | null;
+    profile: null;
+  }>;
+}
+
+async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boolean) {
   const url = new URL(route.request().url());
   const path = url.pathname.replace(/\/$/, '') || '/';
+  const method = route.request().method();
 
-  if (path === '/profiles') return json(route, { profiles });
+  if (route.request().headers().authorization !== 'Bearer e2e-token') {
+    return route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'Missing fixture bearer token' }),
+    });
+  }
+
+  if (path === '/api/me') return json(route, { user_id: 'user_e2e', is_admin: isAdmin });
+  if (path === '/profiles' && method === 'GET') return json(route, { profiles: state.profiles });
+  if (path === '/profiles/requests' && method === 'GET') return json(route, { requests: state.requests });
+  if (path === '/profiles/requests' && method === 'POST') {
+    const payload = route.request().postDataJSON() as { username: string };
+    const username = payload.username.toLowerCase();
+    const existing = state.profiles.find((profile) => profile.username === username);
+    if (existing) {
+      return json(route, {
+        message: 'Profile added to your tracked profiles.',
+        status: 'tracked',
+        profile: { ...existing, id: 1, is_active: true },
+        request: null,
+      });
+    }
+    const request = {
+      id: state.requests.length + 1,
+      requester_user_id: 'user_e2e',
+      requested_username: username,
+      status: 'pending' as const,
+      note: null,
+      requested_at: '2026-07-30T12:00:00Z',
+      updated_at: '2026-07-30T12:00:00Z',
+      resolved_at: null,
+      resolved_by_user_id: null,
+      profile: null,
+    };
+    state.requests.unshift(request);
+    return json(route, {
+      message: 'Profile request submitted.',
+      status: 'pending',
+      profile: null,
+      request,
+    });
+  }
+  const untrackMatch = path.match(/^\/profiles\/([^/]+)\/tracking$/);
+  if (untrackMatch && method === 'DELETE') {
+    const username = decodeURIComponent(untrackMatch[1]);
+    state.profiles = state.profiles.filter((profile) => profile.username !== username);
+    return json(route, { message: 'Profile removed from your tracked profiles.', status: 'untracked', username });
+  }
+  if (path === '/admin/profile-requests' && method === 'GET') return json(route, { requests: isAdmin ? state.requests : [] });
   if (path === '/api/dashboard/analytics') {
     return json(route, {
       system_stats: {
@@ -288,12 +354,46 @@ async function handleApiRoute(route: Route) {
   });
 }
 
-export async function installApiMocks(page: Page) {
-  await page.addInitScript(() => {
+export async function installApiMocks(
+  page: Page,
+  options: { authenticated?: boolean; isAdmin?: boolean; profileCount?: number } = {},
+) {
+  const authenticated = options.authenticated ?? true;
+  const isAdmin = options.isAdmin ?? false;
+
+  if (authenticated) {
+    await page.context().addCookies([{
+      name: 'spyboxd-e2e-auth',
+      value: '1',
+      domain: 'localhost',
+      path: '/',
+    }]);
+  }
+
+  await page.addInitScript(({ signedIn }) => {
+    const user = signedIn ? {
+      id: 'user_e2e',
+      firstName: 'E2E',
+      lastName: 'User',
+      fullName: 'E2E User',
+      username: 'e2e-user',
+      imageUrl: '',
+      hasImage: false,
+      organizationMemberships: [],
+    } : null;
+    const session = signedIn ? {
+      id: 'sess_e2e',
+      status: 'active',
+      user,
+      factorVerificationAge: null,
+      actor: null,
+      lastActiveToken: { jwt: { claims: { sub: 'user_e2e', sid: 'sess_e2e' } } },
+      getToken: async () => 'e2e-token',
+    } : null;
     const resources = {
-      client: {},
-      session: null,
-      user: null,
+      client: { sessions: session ? [session] : [] },
+      session,
+      user,
       organization: null,
     };
     const statusListeners = new Set<(status: string) => void>();
@@ -325,12 +425,52 @@ export async function installApiMocks(page: Page) {
       buildSignUpUrl: () => '/sign-up',
       buildAfterSignOutUrl: () => '/',
       openSignIn: () => undefined,
-      getToken: async () => null,
+      load: async () => undefined,
+      signOut: async () => undefined,
+      mountUserButton(node: HTMLElement) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('aria-label', 'Open user menu');
+        button.textContent = 'EU';
+        button.style.width = '36px';
+        button.style.height = '36px';
+        button.style.borderRadius = '9999px';
+        button.style.background = '#e55100';
+        button.style.color = 'white';
+        node.replaceChildren(button);
+      },
+      unmountUserButton(node: HTMLElement) {
+        node.replaceChildren();
+      },
+      mountSignIn(node: HTMLElement) {
+        const heading = document.createElement('h1');
+        heading.textContent = 'Sign in';
+        node.replaceChildren(heading);
+      },
+      unmountSignIn(node: HTMLElement) {
+        node.replaceChildren();
+      },
     };
     Object.assign(globalThis, { Clerk: clerk });
-  });
+  }, { signedIn: authenticated });
+
+  const state: ApiFixtureState = {
+    profiles: profiles.slice(0, options.profileCount ?? profiles.length).map((profile) => ({ ...profile })),
+    requests: [{
+      id: 1,
+      requester_user_id: 'user_e2e',
+      requested_username: 'queuedprofile',
+      status: 'approved',
+      note: 'Accepted for the next sync.',
+      requested_at: '2026-07-29T10:00:00Z',
+      updated_at: '2026-07-29T11:00:00Z',
+      resolved_at: '2026-07-29T11:00:00Z',
+      resolved_by_user_id: 'admin_e2e',
+      profile: null,
+    }],
+  };
   await page.route('https://clerk.example.test/**', (route) => route.fulfill({ status: 204 }));
-  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/.*/, handleApiRoute);
+  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/.*/, (route) => handleApiRoute(route, state, isAdmin));
   await page.route(MISSING_POSTER_URL, (route) => (
     route.fulfill({ status: 404, contentType: 'image/jpeg', body: '' })
   ));

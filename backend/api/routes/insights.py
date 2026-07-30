@@ -6,15 +6,23 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from auth import ClerkUser, get_current_user
 from database.connection import get_db
 from services.insights import InsightRequestError, InsightsService
+from services.profile_access import accessible_profiles
 
 
 router = APIRouter(prefix="/api", tags=["insights"])
 
 
-def _service(db: Session) -> InsightsService:
-    return InsightsService(db)
+def _service(db: Session, user: ClerkUser) -> InsightsService:
+    visible_profiles = accessible_profiles(db, user)
+    if user.is_admin:
+        return InsightsService(db)
+    return InsightsService(
+        db,
+        allowed_profile_ids=[profile.id for profile in visible_profiles],
+    )
 
 
 def _translate_request_error(exc: InsightRequestError) -> HTTPException:
@@ -25,10 +33,11 @@ def _translate_request_error(exc: InsightRequestError) -> HTTPException:
 def get_data_coverage(
     profiles: Optional[List[str]] = Query(default=None),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Report source-backed coverage before an insight is presented as complete."""
     try:
-        return _service(db).data_coverage(profiles or [])
+        return _service(db, user).data_coverage(profiles or [])
     except InsightRequestError as exc:
         raise _translate_request_error(exc) from exc
 
@@ -38,10 +47,11 @@ def get_pair_dossier(
     profiles: List[str] = Query(...),
     gap_days: int = Query(default=7, ge=0, le=30),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Deep comparison for exactly two profiles, including timing evidence."""
     try:
-        return _service(db).pair_dossier(profiles, gap_days=gap_days)
+        return _service(db, user).pair_dossier(profiles, gap_days=gap_days)
     except InsightRequestError as exc:
         raise _translate_request_error(exc) from exc
 
@@ -53,10 +63,11 @@ def get_signal_calendar(
     from_date: Optional[date] = Query(default=None, alias="from"),
     to_date: Optional[date] = Query(default=None, alias="to"),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Calendar-ready co-watch events for a selected group."""
     try:
-        return _service(db).signal_calendar(
+        return _service(db, user).signal_calendar(
             profiles,
             gap_days=gap_days,
             from_date=from_date,
@@ -72,10 +83,11 @@ def get_rewatch_echoes(
     gap_days: int = Query(default=1, ge=0, le=30),
     limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Find close-watch signals where at least one observed watch is a rewatch."""
     try:
-        return _service(db).rewatch_echoes(
+        return _service(db, user).rewatch_echoes(
             profiles,
             gap_days=gap_days,
             limit=limit,
@@ -92,6 +104,7 @@ def get_taste_dna(
     ),
     limit: int = Query(default=12, ge=1, le=50),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Explain shared and contrasting taste traits from observed ratings."""
     requested_dimensions = [
@@ -100,7 +113,7 @@ def get_taste_dna(
         if value.strip()
     ]
     try:
-        return _service(db).taste_dna(
+        return _service(db, user).taste_dna(
             profiles,
             dimensions=requested_dimensions,
             limit=limit,
@@ -118,6 +131,7 @@ def get_taste_timeline(
     trait_limit: int = Query(default=5, ge=1, le=20),
     year_limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Summarize dated, event-level taste by year and meteorological season."""
     requested_dimensions = [
@@ -126,7 +140,7 @@ def get_taste_timeline(
         if value.strip()
     ]
     try:
-        return _service(db).taste_timeline(
+        return _service(db, user).taste_timeline(
             profiles,
             dimensions=requested_dimensions,
             from_year=from_year,
@@ -143,10 +157,11 @@ def get_public_lists(
     profiles: Optional[List[str]] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """List bounded, public list missions available for the selected profiles."""
     try:
-        return _service(db).public_lists(profiles or [], limit=limit)
+        return _service(db, user).public_lists(profiles or [], limit=limit)
     except InsightRequestError as exc:
         raise _translate_request_error(exc) from exc
 
@@ -165,10 +180,11 @@ def get_watch_together(
     availability: Optional[str] = Query(default=None, max_length=100),
     limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
 ):
     """Recommend transparent group candidates without inventing missing watchlists."""
     try:
-        return _service(db).watch_together(
+        return _service(db, user).watch_together(
             profiles,
             mode=mode,
             region=region.upper(),
@@ -183,7 +199,10 @@ def get_watch_together(
 
 
 @router.get("/watch-provider-regions")
-def get_watch_provider_regions(db: Session = Depends(get_db)):
+def get_watch_provider_regions(
+    db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
+):
     """List countries represented in the cached TMDB watch-provider payloads."""
 
-    return _service(db).watch_provider_regions()
+    return _service(db, user).watch_provider_regions()
