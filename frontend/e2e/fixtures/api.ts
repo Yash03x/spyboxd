@@ -128,8 +128,9 @@ const publicDashboard = {
   },
   rating_distribution: { '3.5': 120, '4.0': 240, '4.5': 80 },
   activity_data: [
-    { month: '2026-06', movies_watched: 20, average_rating: 3.8 },
-    { month: '2026-07', movies_watched: 24, average_rating: 3.9 },
+    { month: '2026-05', movies_watched: 10, average_rating: 3.7, is_partial: false },
+    { month: '2026-06', movies_watched: 20, average_rating: 3.8, is_partial: false },
+    { month: '2026-07', movies_watched: 90, average_rating: 3.9, is_partial: true },
   ],
   signal_counts: {
     profiles_analyzed: profiles.length,
@@ -162,8 +163,9 @@ const profileAnalysis = {
   data_coverage: profiles[0].data_coverage,
   rating_distribution: { '3.5': 120, '4.0': 240, '4.5': 80 },
   monthly_stats: [
-    { month: '2026-06', movies_watched: 20, average_rating: 3.8 },
-    { month: '2026-07', movies_watched: 24, average_rating: 3.9 },
+    { month: '2026-05', movies_watched: 10, average_rating: 3.7, is_partial: false },
+    { month: '2026-06', movies_watched: 20, average_rating: 3.8, is_partial: false },
+    { month: '2026-07', movies_watched: 90, average_rating: 3.9, is_partial: true },
   ],
   recent_watching_trend: Array.from({ length: 8 }, (_, index) => ({
     movie_title: `Recent Watch ${index + 1}`,
@@ -428,8 +430,9 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
       top_rated_movies: [],
       rating_distribution: { '3.5': 120, '4.0': 240, '4.5': 80 },
       activity_data: [
-        { month: '2026-06', movies_watched: 20, average_rating: 3.8 },
-        { month: '2026-07', movies_watched: 24, average_rating: 3.9 },
+        { month: '2026-05', movies_watched: 10, average_rating: 3.7, is_partial: false },
+        { month: '2026-06', movies_watched: 20, average_rating: 3.8, is_partial: false },
+        { month: '2026-07', movies_watched: 90, average_rating: 3.9, is_partial: true },
       ],
       group_signals: groupSignals,
       timestamp: '2026-07-29T12:00:00Z',

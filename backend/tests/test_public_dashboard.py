@@ -18,7 +18,18 @@ def test_public_dashboard_payload_strictly_removes_identity_and_title_fields():
         "top_rated_movies": [{"title": "Private Film Sentinel"}],
         "rating_distribution": {"4.0": 250, sentinel: 1},
         "activity_data": [
-            {"month": "2026-07", "movies_watched": 80, "average_rating": 3.8},
+            {
+                "month": "2026-06",
+                "movies_watched": 0,
+                "average_rating": None,
+                "is_partial": False,
+            },
+            {
+                "month": "2026-07",
+                "movies_watched": 80,
+                "average_rating": 3.8,
+                "is_partial": True,
+            },
             {"month": sentinel, "movies_watched": 1, "average_rating": 5.0},
         ],
         "group_signals": {
@@ -67,6 +78,20 @@ def test_public_dashboard_payload_strictly_removes_identity_and_title_fields():
         "same_day_pair_hits",
         "one_day_gap_pair_hits",
     }
+    assert validated["activity_data"] == [
+        {
+            "month": "2026-06",
+            "movies_watched": 0,
+            "average_rating": None,
+            "is_partial": False,
+        },
+        {
+            "month": "2026-07",
+            "movies_watched": 80,
+            "average_rating": 3.8,
+            "is_partial": True,
+        },
+    ]
     serialized = json.dumps(validated).lower()
     assert sentinel not in serialized
     assert "private film sentinel" not in serialized

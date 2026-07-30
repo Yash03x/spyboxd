@@ -29,6 +29,7 @@ interface ActivityData {
   month: string;
   movies_watched: number;
   average_rating: number | null;
+  is_partial: boolean;
 }
 
 interface ActivityChartProps {
@@ -36,19 +37,36 @@ interface ActivityChartProps {
   title?: string;
 }
 
+function formatMonth(monthValue: string, month: 'short' | 'long', year: '2-digit' | 'numeric') {
+  const [yearValue, monthValuePart] = monthValue.split('-').map(Number);
+  const date = new Date(Date.UTC(yearValue, monthValuePart - 1, 1));
+  return date.toLocaleDateString('en-US', { month, year, timeZone: 'UTC' });
+}
+
 const ActivityChart: React.FC<ActivityChartProps> = ({ 
   data, 
   title = "Watching Activity" 
 }) => {
+  const partialPoint = data.find((item) => item.is_partial);
+  const completedPoints = data.filter((item) => !item.is_partial);
+  const completedTotal = completedPoints.reduce((sum, item) => sum + item.movies_watched, 0);
+  const completedAverage = completedPoints.length > 0
+    ? completedTotal / completedPoints.length
+    : null;
+  const partialMonth = partialPoint
+    ? formatMonth(partialPoint.month, 'long', 'numeric')
+    : null;
+  const chartAccessibilityLabel = partialMonth
+    ? `${title}. ${partialMonth} is month to date and is excluded from the completed-month average. ${completedAverage === null ? 'No completed-month average is available.' : `Average: ${completedAverage.toFixed(1)} watch events per completed month.`}`
+    : `${title}. ${completedAverage === null ? 'No completed-month average is available.' : `Average: ${completedAverage.toFixed(1)} watch events per completed month.`}`;
+
   const chartData = {
-    labels: data.map(item => {
-      const [year, month] = item.month.split('-');
-      const date = new Date(parseInt(year), parseInt(month) - 1);
-      return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-    }),
+    labels: data.map((item) => (
+      `${formatMonth(item.month, 'short', '2-digit')}${item.is_partial ? ' (MTD)' : ''}`
+    )),
     datasets: [
       {
-        label: 'Movies Watched',
+        label: 'Watch Events',
         data: data.map(item => item.movies_watched),
         borderColor: '#f57c00',
         backgroundColor: 'rgba(245, 124, 0, 0.1)',
@@ -66,7 +84,7 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
       },
       {
         label: 'Average Rating',
-        data: data.map(item => item.average_rating ? item.average_rating * 10 : null), // Scale to make visible
+        data: data.map(item => item.average_rating !== null ? item.average_rating * 10 : null), // Scale to make visible
         borderColor: '#64748b',
         backgroundColor: 'rgba(100, 116, 139, 0.1)',
         borderWidth: 2,
@@ -117,7 +135,7 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         },
         title: {
           display: true,
-          text: 'Movies Watched',
+          text: 'Watch Events',
           color: '#f57c00',
           font: {
             family: 'Inter',
@@ -180,11 +198,12 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         padding: 12,
         callbacks: {
           label: (context) => {
+            const periodSuffix = data[context.dataIndex]?.is_partial ? ' (MTD)' : '';
             if (context.dataset.label === 'Average Rating') {
               const rating = (context.raw as number) / 10;
-              return `${context.dataset.label}: ${rating.toFixed(1)} ⭐`;
+              return `${context.dataset.label}${periodSuffix}: ${rating.toFixed(1)} ⭐`;
             }
-            return `${context.dataset.label}: ${context.raw}`;
+            return `${context.dataset.label}${periodSuffix}: ${context.raw}`;
           },
         },
       },
@@ -195,11 +214,9 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
     },
   };
 
-  const totalMovies = data.reduce((sum, item) => sum + item.movies_watched, 0);
-  const avgMoviesPerMonth = data.length > 0 ? totalMovies / data.length : 0;
-
   return (
-    <motion.div 
+    <motion.section
+      aria-label={title}
       className="card-cinema h-96"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -208,7 +225,11 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
       <div className="flex items-center justify-between mb-6">
         <div>
           <h3 className="text-lg font-semibold text-white">{title}</h3>
-          <p className="text-white/60 text-sm">Monthly viewing patterns</p>
+          <p className="text-white/60 text-sm">
+            {partialMonth
+              ? `Monthly watch events · ${partialMonth} is month to date; average uses completed months`
+              : 'Monthly watch events'}
+          </p>
         </div>
         
         <motion.div 
@@ -217,8 +238,13 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.4 }}
         >
-          <div className="text-xl font-bold text-cinema-400">{avgMoviesPerMonth.toFixed(1)}</div>
-          <div className="text-xs text-white/60">Avg/Month</div>
+          <output
+            aria-label="Average watch events per completed month"
+            className="block text-xl font-bold text-cinema-400"
+          >
+            {completedAverage === null ? '—' : completedAverage.toFixed(1)}
+          </output>
+          <div className="text-xs text-white/60">Avg/Completed Month</div>
         </motion.div>
       </div>
       
@@ -230,7 +256,23 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 1, delay: 0.3 }}
           >
-            <Line data={chartData} options={options} />
+            <Line
+              aria-label={chartAccessibilityLabel}
+              data={chartData}
+              options={options}
+              role="img"
+            />
+            <ul className="sr-only" aria-label={`${title} data points`}>
+              {data.map((item) => (
+                <li key={item.month}>
+                  {formatMonth(item.month, 'long', 'numeric')}
+                  {item.is_partial ? ', month to date' : ''}: {item.movies_watched} watch events;{' '}
+                  {item.average_rating === null
+                    ? 'average rating unavailable'
+                    : `average rating ${item.average_rating.toFixed(1)}`}
+                </li>
+              ))}
+            </ul>
           </motion.div>
         ) : (
           <motion.div 
@@ -248,7 +290,7 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
           </motion.div>
         )}
       </div>
-    </motion.div>
+    </motion.section>
   );
 };
 

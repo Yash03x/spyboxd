@@ -315,6 +315,7 @@ export interface ActivityData {
   month: string;
   movies_watched: number;
   average_rating: number | null;
+  is_partial: boolean;
 }
 
 export interface GroupSignalMovie {
