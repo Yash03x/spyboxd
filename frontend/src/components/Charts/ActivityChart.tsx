@@ -72,6 +72,11 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
     ? `${title}. ${partialMonth} is month to date and is excluded from the completed-month average. ${averageSummary}`
     : `${title}. ${averageSummary}`;
 
+  // Only plot unique films when every month has the value; mixed legacy cache
+  // snapshots would otherwise draw a line with holes and a misleading band.
+  const hasUniqueSeries = data.length > 0
+    && data.every((item) => typeof item.unique_movies === 'number');
+
   const chartData = {
     labels: data.map((item) => (
       `${formatMonth(item.month, 'short', '2-digit')}${item.is_partial ? ' (MTD)' : ''}`
@@ -83,7 +88,9 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         borderColor: '#f57c00',
         backgroundColor: 'rgba(245, 124, 0, 0.1)',
         borderWidth: 3,
-        fill: true,
+        // With the unique-films line present, the orange band spans only the
+        // gap between the two counts, so it reads as rewatch volume.
+        fill: hasUniqueSeries ? '+1' : true,
         tension: 0.4,
         pointBackgroundColor: '#f57c00',
         pointBorderColor: '#ffffff',
@@ -94,6 +101,23 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         pointHoverBorderColor: '#ffffff',
         pointHoverBorderWidth: 3,
       },
+      ...(hasUniqueSeries ? [{
+        label: 'Unique Films',
+        data: data.map(item => item.unique_movies as number),
+        borderColor: '#cbd5e1',
+        backgroundColor: 'rgba(148, 163, 184, 0.08)',
+        borderWidth: 2.5,
+        fill: 'origin' as const,
+        tension: 0.4,
+        pointBackgroundColor: '#cbd5e1',
+        pointBorderColor: '#0f172a',
+        pointBorderWidth: 2,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        pointHoverBackgroundColor: '#e2e8f0',
+        pointHoverBorderColor: '#0f172a',
+        pointHoverBorderWidth: 2,
+      }] : []),
       {
         label: 'Average Rating',
         data: data.map(item => item.average_rating !== null ? item.average_rating * 10 : null), // Scale to make visible
@@ -147,7 +171,7 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         },
         title: {
           display: true,
-          text: 'Watch Events',
+          text: hasUniqueSeries ? 'Films / Events' : 'Watch Events',
           color: '#f57c00',
           font: {
             family: 'Inter',
@@ -218,6 +242,11 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
             return `${context.dataset.label}${periodSuffix}: ${context.raw}`;
           },
           afterBody: (items) => {
+            // The plotted dataset already labels unique films; this fallback
+            // only covers mixed legacy data where the series is not drawn.
+            if (hasUniqueSeries) {
+              return [];
+            }
             const point = items.length > 0 ? data[items[0].dataIndex] : undefined;
             if (typeof point?.unique_movies !== 'number') {
               return [];

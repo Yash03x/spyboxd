@@ -12,6 +12,8 @@ import ActivityChart from '../components/Charts/ActivityChart';
 import RatingDistributionChart from '../components/Charts/RatingDistributionChart';
 import StatsCard from '../components/Charts/StatsCard';
 import SpoilerReviewText from '../components/SpoilerReviewText';
+import AdminScopeToggle from '../components/AdminScopeToggle';
+import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { profileApi } from '../services/api';
 
 function formatMovieTitle(title: string, year: number | null): string {
@@ -28,17 +30,14 @@ function formatDate(value: string | null | undefined): string {
 const Analysis: React.FC = () => {
   const [selectedProfile, setSelectedProfile] = useState('');
 
-  const { data: profiles, isLoading: loadingProfiles, error: profilesError } = useQuery({
-    queryKey: ['profiles'],
-    queryFn: profileApi.getProfiles,
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
+  const { data: profiles, isLoading: loadingProfiles, error: profilesError } = useScopedProfiles();
 
   const profilesArray = useMemo(() => (Array.isArray(profiles) ? profiles : []), [profiles]);
 
   useEffect(() => {
-    if (!selectedProfile && profilesArray.length > 0) {
+    if (profilesArray.length === 0) return;
+    const selectionInScope = profilesArray.some((profile) => profile.username === selectedProfile);
+    if (!selectedProfile || !selectionInScope) {
       setSelectedProfile(profilesArray[0].username);
     }
   }, [profilesArray, selectedProfile]);
@@ -75,11 +74,14 @@ const Analysis: React.FC = () => {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6 }}
     >
-      <div>
-        <h1 className="text-4xl font-bold text-white text-glow mb-2">Analysis</h1>
-        <p className="text-white/60">
-          Single-profile deep dives over the profiles you track.
-        </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-4xl font-bold text-white text-glow mb-2">Analysis</h1>
+          <p className="text-white/60">
+            Single-profile deep dives over the profiles you track.
+          </p>
+        </div>
+        <AdminScopeToggle />
       </div>
 
       {profilesArray.length === 0 ? (
