@@ -11,6 +11,16 @@ on:
         description: Exact Production CI run containing the attested bundle
         required: true
         type: string
+    # Declaring these names makes them available to the called workflow's
+    # production job. The caller intentionally passes no values: GitHub loads
+    # the same-named secrets from the protected production environment below.
+    secrets:
+      VPS_HOST:
+        required: false
+      VPS_HOST_FINGERPRINT:
+        required: false
+      VPS_SSH_KEY:
+        required: false
 
 permissions:
   actions: read

@@ -129,6 +129,11 @@ class WorkflowControlsTests(unittest.TestCase):
         self.assertIn("workflow_call:", deployment)
         self.assertNotIn("workflow_run:", deployment)
         self.assertIn("environment:\n      name: production", deployment)
+        for secret_name in ("VPS_HOST", "VPS_HOST_FINGERPRINT", "VPS_SSH_KEY"):
+            self.assertRegex(
+                deployment,
+                rf"(?m)^      {secret_name}:\n        required: false$",
+            )
         self.assertIn('[[ "${CI_RUN_ID}" == "${GITHUB_RUN_ID}" ]]', deployment)
         self.assertIn('[[ "${RELEASE_SHA}" == "${GITHUB_SHA}" ]]', deployment)
         self.assertIn("ref: ${{ inputs.release_sha }}", deployment)
