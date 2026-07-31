@@ -11,16 +11,18 @@ const USER_ID = /^user_[A-Za-z0-9]+$/;
 const SESSION_ID = /^sess_[A-Za-z0-9]+$/;
 const PROFILE = /^[A-Za-z0-9_]{2,15}$/;
 const TESTING_TOKEN = /^[A-Za-z0-9._~-]{20,2048}$/;
-const BROWSER_PLAN_VERSION = 3;
-const EXPECTED_SESSION_MAX_DURATION_SECONDS = 120;
+const SIGN_IN_TOKEN = /^[A-Za-z0-9._~-]{20,4096}$/;
+const CLERK_CAPABILITY = /^[A-Za-z0-9._~-]{20,8192}$/;
+const BROWSER_PLAN_VERSION = 4;
+const EXPECTED_SESSION_TOKEN_MAX_LIFETIME_SECONDS = 90;
 const TESTING_TOKEN_MIN_REMAINING_SECONDS = 180;
-// Clerk issues these for one hour; permit only two minutes of host clock skew.
-const TESTING_TOKEN_MAX_REMAINING_SECONDS = 3720;
+const SIGN_IN_TOKEN_MIN_REMAINING_SECONDS = 120;
+const SIGN_IN_TOKEN_CONSUMPTION_MARGIN_SECONDS = 30;
+const SIGN_IN_OPERATION_TIMEOUT_MILLISECONDS = 45_000;
 const JWT_EXPIRY_GRACE_SECONDS = 5;
-const SESSION_EXPIRY_GRACE_SECONDS = 15;
 const MAX_EXPIRY_OVERHEAD_SECONDS = 30;
 const PRIVATE_PROOF_PATH = '/profiles';
-const CLOSURES = new Set(['sign_out', 'session_expiry']);
+const CLOSURES = new Set(['sign_out', 'jwt_expiry']);
 
 class CanaryError extends Error {}
 
@@ -29,10 +31,10 @@ function fail(message) {
 }
 
 function argumentsFromCommandLine() {
-  if (process.argv.length !== 4 || process.argv[2] !== '--tasks' || !process.argv[3]) {
-    fail('Usage: run-production-auth-canary.mjs --tasks <file>');
+  if (process.argv.length !== 4 || process.argv[2] !== '--plan' || !process.argv[3]) {
+    fail('Usage: run-production-auth-canary.mjs --plan <file>');
   }
-  return { tasksPath: process.argv[3] };
+  return { planPath: process.argv[3] };
 }
 
 async function readBoundedJson(path, label) {
@@ -102,92 +104,97 @@ export function validateTasks(payload, nowSeconds = Math.floor(Date.now() / 1000
   if (
     !payload
     || payload.version !== BROWSER_PLAN_VERSION
-    || payload.session_max_duration_seconds !== EXPECTED_SESSION_MAX_DURATION_SECONDS
+    || payload.session_token_max_lifetime_seconds
+      !== EXPECTED_SESSION_TOKEN_MAX_LIFETIME_SECONDS
     || !TESTING_TOKEN.test(payload.testing_token ?? '')
     || !Number.isSafeInteger(payload.testing_token_expires_at)
     || payload.testing_token_expires_at - nowSeconds < TESTING_TOKEN_MIN_REMAINING_SECONDS
-    || payload.testing_token_expires_at - nowSeconds > TESTING_TOKEN_MAX_REMAINING_SECONDS
     || !Array.isArray(payload.tasks)
   ) {
-    fail('authenticated canary task contract is invalid');
+    fail('authenticated canary browser plan is invalid');
   }
   const apiBase = bareHttpsOrigin(payload.api_base, 'API base');
   const appOrigin = bareHttpsOrigin(payload.app_origin, 'application origin');
-  const taskOrigin = bareHttpsOrigin(payload.task_origin, 'Clerk task origin');
+  const clerkFrontendOrigin = bareHttpsOrigin(
+    payload.clerk_frontend_origin,
+    'Clerk frontend origin',
+  );
   if (apiBase !== 'https://api.spyboxd.com' || appOrigin !== 'https://spyboxd.com') {
     fail('authenticated canary targets an unexpected production origin');
   }
   if (payload.tasks.length !== 2) {
-    fail('authenticated canary requires exactly two tasks');
+    fail('authenticated canary requires exactly two identities');
   }
   const labels = new Set();
   const userIds = new Set();
   const profiles = new Set();
   const closures = new Set();
+  const signInTokens = new Set();
   for (const task of payload.tasks) {
-    let taskUrl;
-    try {
-      taskUrl = new URL(task?.task_url);
-    } catch {
-      fail('Clerk returned an invalid Agent Task URL');
-    }
     if (
       !['A', 'B'].includes(task?.label)
       || !CLOSURES.has(task?.closure)
       || !USER_ID.test(task?.user_id ?? '')
       || !PROFILE.test(task?.profile ?? '')
-      || taskUrl.protocol !== 'https:'
-      || taskUrl.username
-      || taskUrl.password
-      || taskUrl.hash
-      || taskUrl.origin !== taskOrigin
+      || !SIGN_IN_TOKEN.test(task?.sign_in_token ?? '')
+      || !Number.isSafeInteger(task?.sign_in_token_expires_at)
+      || task.sign_in_token_expires_at - nowSeconds
+        < SIGN_IN_TOKEN_MIN_REMAINING_SECONDS
     ) {
-      fail('authenticated canary task identity is invalid');
+      fail('authenticated canary identity is invalid');
     }
     labels.add(task.label);
     userIds.add(task.user_id);
     profiles.add(task.profile.toLowerCase());
     closures.add(task.closure);
+    signInTokens.add(task.sign_in_token);
   }
   if (
     labels.size !== 2
     || userIds.size !== 2
     || profiles.size !== 2
     || closures.size !== 2
+    || signInTokens.size !== 2
   ) {
-    fail('authenticated canary tasks are not isolated identities');
+    fail('authenticated canary identities are not isolated');
   }
   return {
     apiBase,
     appOrigin,
-    taskOrigin,
+    clerkFrontendOrigin,
     testingToken: payload.testing_token,
     testingTokenExpiresAt: payload.testing_token_expires_at,
-    sessionMaxDurationSeconds: payload.session_max_duration_seconds,
+    sessionTokenMaxLifetimeSeconds: payload.session_token_max_lifetime_seconds,
     tasks: payload.tasks,
   };
 }
 
 export function registerGitHubSecretMask(secret) {
-  if (process.env.GITHUB_ACTIONS !== 'true' || !TESTING_TOKEN.test(secret ?? '')) {
-    fail('Clerk production Testing Token masking is unavailable');
+  if (
+    process.env.GITHUB_ACTIONS !== 'true'
+    || !CLERK_CAPABILITY.test(secret ?? '')
+  ) {
+    fail('Clerk temporary capability masking is unavailable');
   }
   process.stdout.write(`::add-mask::${secret}\n`);
 }
 
-function redactClerkDiagnostic(value, testingToken) {
+function redactClerkDiagnostic(value, secrets) {
+  const redact = (text) => secrets.reduce(
+    (result, secret) => result.replaceAll(secret, '[REDACTED_CLERK_CAPABILITY]'),
+    text,
+  );
   if (typeof value === 'string') {
-    return value.replaceAll(testingToken, '[REDACTED_TESTING_TOKEN]');
+    return redact(value);
   }
   if (value instanceof Error) {
-    const redacted = new Error(
-      value.message.replaceAll(testingToken, '[REDACTED_TESTING_TOKEN]'),
-    );
+    const redacted = new Error(redact(value.message));
     redacted.name = value.name;
     return redacted;
   }
   try {
-    if (JSON.stringify(value)?.includes(testingToken)) {
+    const serialized = JSON.stringify(value);
+    if (secrets.some((secret) => serialized?.includes(secret))) {
       return '[REDACTED_CLERK_DIAGNOSTIC]';
     }
   } catch {
@@ -196,71 +203,149 @@ function redactClerkDiagnostic(value, testingToken) {
   return value;
 }
 
-export async function installClerkTestingToken(
-  context,
-  taskUrl,
-  taskOrigin,
+export function openClerkCapabilityScope(
   testingToken,
-  setupClerkTestingToken,
+  additionalCapabilities = [],
   maskSecret = registerGitHubSecretMask,
 ) {
   if (
-    typeof setupClerkTestingToken !== 'function'
-    || typeof maskSecret !== 'function'
+    typeof maskSecret !== 'function'
     || !TESTING_TOKEN.test(testingToken ?? '')
+    || !Array.isArray(additionalCapabilities)
+    || additionalCapabilities.some((value) => !SIGN_IN_TOKEN.test(value ?? ''))
     || process.env.CLERK_TESTING_TOKEN !== undefined
     || process.env.CLERK_TESTING_DEBUG !== undefined
   ) {
     fail('Clerk production Testing Token setup is invalid');
   }
-  const parsedTask = new URL(taskUrl);
-  const parsedOrigin = new URL(taskOrigin);
-  if (parsedTask.origin !== parsedOrigin.origin || parsedOrigin.pathname !== '/') {
-    fail('Clerk production Testing Token targets an invalid origin');
-  }
 
-  maskSecret(testingToken);
+  const redactedCapabilities = [];
+  const knownCapabilities = new Set();
+  const add = (capability) => {
+    if (!CLERK_CAPABILITY.test(capability ?? '')) {
+      fail('Clerk temporary capability is invalid');
+    }
+    if (!knownCapabilities.has(capability)) {
+      maskSecret(capability);
+      knownCapabilities.add(capability);
+      redactedCapabilities.push(capability);
+    }
+  };
+  add(testingToken);
+  additionalCapabilities.forEach(add);
   const originalWarn = console.warn;
   const originalError = console.error;
   console.warn = (...values) => originalWarn(
-    ...values.map((value) => redactClerkDiagnostic(value, testingToken)),
+    ...values.map((value) => redactClerkDiagnostic(value, redactedCapabilities)),
   );
   console.error = (...values) => originalError(
-    ...values.map((value) => redactClerkDiagnostic(value, testingToken)),
+    ...values.map((value) => redactClerkDiagnostic(value, redactedCapabilities)),
   );
   process.env.CLERK_TESTING_TOKEN = testingToken;
-  let installed = false;
-  try {
-    await setupClerkTestingToken({
-      context,
-      options: { frontendApiUrl: parsedOrigin.host },
-    });
-    // The official helper parses JSON FAPI responses. Agent Task consumption
-    // is a one-use document navigation, so handle that exact URL separately
-    // while still using the helper for every subsequent ClerkJS request.
-    await context.route(taskUrl, async (route) => {
-      const requestUrl = new URL(route.request().url());
-      requestUrl.searchParams.set('__clerk_testing_token', testingToken);
-      await route.continue({ url: requestUrl.toString() });
-    }, { times: 1 });
-    installed = true;
-  } finally {
-    if (!installed) {
-      delete process.env.CLERK_TESTING_TOKEN;
-      console.warn = originalWarn;
-      console.error = originalError;
-    }
-  }
 
-  let cleared = false;
-  return () => {
-    if (!cleared) {
-      cleared = true;
+  let closed = false;
+  return {
+    add,
+    close() {
+      if (closed) return;
+      closed = true;
       delete process.env.CLERK_TESTING_TOKEN;
       console.warn = originalWarn;
       console.error = originalError;
-    }
+      redactedCapabilities.length = 0;
+      knownCapabilities.clear();
+    },
   };
+}
+
+export async function installClerkTestingToken(
+  context,
+  clerkFrontendOrigin,
+  testingToken,
+  setupClerkTestingToken,
+) {
+  if (
+    typeof setupClerkTestingToken !== 'function'
+    || !TESTING_TOKEN.test(testingToken ?? '')
+    || process.env.CLERK_TESTING_TOKEN !== testingToken
+    || process.env.CLERK_TESTING_DEBUG !== undefined
+  ) {
+    fail('Clerk production Testing Token context setup is invalid');
+  }
+  const parsedOrigin = new URL(
+    bareHttpsOrigin(clerkFrontendOrigin, 'Clerk frontend origin'),
+  );
+  await setupClerkTestingToken({
+    context,
+    options: { frontendApiUrl: parsedOrigin.host },
+  });
+}
+
+export async function consumeSignInTicket(
+  page,
+  signInToken,
+  maskSecret = registerGitHubSecretMask,
+) {
+  if (
+    !SIGN_IN_TOKEN.test(signInToken ?? '')
+    || typeof maskSecret !== 'function'
+  ) {
+    fail('Clerk Sign-in Token setup is invalid');
+  }
+  maskSecret(signInToken);
+  let oneUseTicket = signInToken;
+  try {
+    await page.waitForFunction(
+      () => Boolean(globalThis.Clerk?.loaded),
+      undefined,
+      { timeout: 30_000 },
+    );
+    const outcome = await page.evaluate(
+      async ({ ticket, timeoutMilliseconds }) => {
+        let timeoutId;
+        try {
+          return await Promise.race([
+            (async () => {
+              try {
+                const clerk = globalThis.Clerk;
+                if (!clerk?.loaded || typeof clerk.client?.signIn?.create !== 'function') {
+                  return 'sdk_unavailable';
+                }
+                const signIn = await clerk.client.signIn.create({
+                  strategy: 'ticket',
+                  ticket,
+                });
+                if (signIn?.status !== 'complete' || !signIn.createdSessionId) {
+                  return 'sign_in_incomplete';
+                }
+                await clerk.setActive({ session: signIn.createdSessionId });
+                return 'complete';
+              } catch {
+                return 'sign_in_failed';
+              }
+            })(),
+            new Promise((resolveTimeout) => {
+              timeoutId = globalThis.setTimeout(
+                () => resolveTimeout('sign_in_timeout'),
+                timeoutMilliseconds,
+              );
+            }),
+          ]);
+        } finally {
+          if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+        }
+      },
+      {
+        ticket: oneUseTicket,
+        timeoutMilliseconds: SIGN_IN_OPERATION_TIMEOUT_MILLISECONDS,
+      },
+    );
+    if (outcome !== 'complete') {
+      fail('Clerk did not consume the one-use Sign-in Token');
+    }
+  } finally {
+    oneUseTicket = undefined;
+  }
 }
 
 export function decodeSession(token, nowSeconds = Math.floor(Date.now() / 1000)) {
@@ -289,27 +374,25 @@ export function decodeSession(token, nowSeconds = Math.floor(Date.now() / 1000))
 }
 
 export function expiryProofDeadlineMilliseconds(
-  sessionStartedAtMilliseconds,
+  tokenCapturedAtMilliseconds,
   tokenExpiresAtSeconds,
-  sessionMaxDurationSeconds,
+  sessionTokenMaxLifetimeSeconds,
 ) {
   if (
-    !Number.isSafeInteger(sessionStartedAtMilliseconds)
-    || sessionStartedAtMilliseconds <= 0
+    !Number.isSafeInteger(tokenCapturedAtMilliseconds)
+    || tokenCapturedAtMilliseconds <= 0
     || !Number.isSafeInteger(tokenExpiresAtSeconds)
-    || !Number.isSafeInteger(sessionMaxDurationSeconds)
-    || sessionMaxDurationSeconds !== EXPECTED_SESSION_MAX_DURATION_SECONDS
+    || !Number.isSafeInteger(sessionTokenMaxLifetimeSeconds)
+    || sessionTokenMaxLifetimeSeconds
+      !== EXPECTED_SESSION_TOKEN_MAX_LIFETIME_SECONDS
   ) {
     fail('authenticated canary expiry inputs are invalid');
   }
-  const tokenDeadline = (tokenExpiresAtSeconds + JWT_EXPIRY_GRACE_SECONDS) * 1000;
-  const sessionDeadline = sessionStartedAtMilliseconds
-    + ((sessionMaxDurationSeconds + SESSION_EXPIRY_GRACE_SECONDS) * 1000);
-  const proofDeadline = Math.max(tokenDeadline, sessionDeadline);
-  const maximumDeadline = sessionStartedAtMilliseconds
-    + ((sessionMaxDurationSeconds + MAX_EXPIRY_OVERHEAD_SECONDS) * 1000);
-  if (proofDeadline > maximumDeadline) {
-    fail('Clerk JWT expiry exceeds the bounded Agent Task session');
+  const proofDeadline = (tokenExpiresAtSeconds + JWT_EXPIRY_GRACE_SECONDS) * 1000;
+  const maximumDeadline = tokenCapturedAtMilliseconds
+    + ((sessionTokenMaxLifetimeSeconds + MAX_EXPIRY_OVERHEAD_SECONDS) * 1000);
+  if (proofDeadline <= tokenCapturedAtMilliseconds || proofDeadline > maximumDeadline) {
+    fail('Clerk JWT expiry exceeds the canary wait bound');
   }
   return proofDeadline;
 }
@@ -565,28 +648,27 @@ export async function proveSignOutClosure(page, context, apiBase, appOrigin, lab
   await proveAnonymousPrivateBoundary(page, context, apiBase, appOrigin, label);
 }
 
-async function proveSessionExpiryClosure(
+export async function proveJwtExpiryClosure(
   page,
   context,
   apiBase,
-  appOrigin,
   label,
   token,
-  sessionStartedAtMilliseconds,
+  tokenCapturedAtMilliseconds,
   tokenExpiresAtSeconds,
-  sessionMaxDurationSeconds,
+  sessionTokenMaxLifetimeSeconds,
 ) {
-  // Clerk refreshes short-lived cookie JWTs while the browser session is live.
-  // Waiting past both the captured JWT exp and the Agent Task session ceiling
-  // proves the backend expiry check and the frontend's eventual signed-out state.
+  // This proves the API rejects the exact captured bearer after its exp. It does
+  // not claim the ordinary browser session expired: the VPS guardian separately
+  // revokes that session and requires two empty server-side samples.
   const proofDeadline = expiryProofDeadlineMilliseconds(
-    sessionStartedAtMilliseconds,
+    tokenCapturedAtMilliseconds,
     tokenExpiresAtSeconds,
-    sessionMaxDurationSeconds,
+    sessionTokenMaxLifetimeSeconds,
   );
   const remainingMilliseconds = proofDeadline - Date.now();
   const maximumWaitMilliseconds = (
-    sessionMaxDurationSeconds + MAX_EXPIRY_OVERHEAD_SECONDS
+    sessionTokenMaxLifetimeSeconds + MAX_EXPIRY_OVERHEAD_SECONDS
   ) * 1000;
   if (remainingMilliseconds > maximumWaitMilliseconds) {
     fail(`${label} expiry proof exceeded its bounded wait`);
@@ -604,20 +686,30 @@ async function proveSessionExpiryClosure(
     `${label} expired JWT boundary`,
   );
   requireDetail(expiredMe, 'Token has expired', `${label} expired JWT boundary`);
-  await proveAnonymousPrivateBoundary(page, context, apiBase, appOrigin, label);
 }
 
 async function main() {
-  const { tasksPath } = argumentsFromCommandLine();
-  const taskContract = validateTasks(await readBoundedJson(tasksPath, 'task file'));
+  const { planPath } = argumentsFromCommandLine();
+  const taskContract = validateTasks(await readBoundedJson(planPath, 'browser plan'));
 
   const [{ chromium }, { setupClerkTestingToken }] = await Promise.all([
     import('playwright'),
     import('@clerk/testing/playwright'),
   ]);
   let browser;
+  let capabilityScope;
+  let testingToken = taskContract.testingToken;
+  const runtimes = [];
   try {
     browser = await chromium.launch({ headless: true });
+    const signInTokens = taskContract.tasks.map((task) => task.sign_in_token);
+    capabilityScope = openClerkCapabilityScope(testingToken, signInTokens);
+    signInTokens.length = 0;
+    taskContract.testingToken = undefined;
+
+    // Consume both jointly-created tickets before any slower profile/API/UI
+    // assertions. This removes the possibility that identity B's one-use
+    // capability expires while identity A is being validated.
     for (let index = 0; index < taskContract.tasks.length; index += 1) {
       const task = taskContract.tasks[index];
       const other = taskContract.tasks[1 - index];
@@ -625,85 +717,133 @@ async function main() {
         acceptDownloads: false,
         serviceWorkers: 'block',
       });
-      let clearTestingToken;
-      let token;
+      const runtime = {
+        task,
+        other,
+        context,
+        page: undefined,
+        token: undefined,
+        tokenCapturedAtMilliseconds: undefined,
+        session: undefined,
+      };
+      runtimes.push(runtime);
+      await installClerkTestingToken(
+        context,
+        taskContract.clerkFrontendOrigin,
+        testingToken,
+        setupClerkTestingToken,
+      );
+      const page = await context.newPage();
+      runtime.page = page;
+      await page.goto(taskContract.appOrigin, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45_000,
+      });
+      if (
+        task.sign_in_token_expires_at - Math.floor(Date.now() / 1000)
+        < SIGN_IN_TOKEN_CONSUMPTION_MARGIN_SECONDS
+      ) {
+        fail(`canary ${task.label} Sign-in Token is too close to expiry`);
+      }
+      const signInToken = task.sign_in_token;
       try {
-        clearTestingToken = await installClerkTestingToken(
-          context,
-          task.task_url,
-          taskContract.taskOrigin,
-          taskContract.testingToken,
-          setupClerkTestingToken,
-        );
-        const page = await context.newPage();
-        await page.goto(task.task_url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-        await page.waitForURL(
-          (url) => url.origin === taskContract.appOrigin
-            && url.pathname === '/',
-          { timeout: 45_000 },
-        );
-        token = await applicationSessionToken(page, context, taskContract.appOrigin);
-        // The one-time Clerk handoff may take time. Starting the natural-expiry
-        // proof only after the application can retrieve a token is
-        // conservative: it cannot declare expiry while the bounded Agent Task
-        // session is still live.
-        const sessionEstablishedAtMilliseconds = Date.now();
-        const session = decodeSession(token);
-        if (session.userId !== task.user_id) {
-          fail(`Clerk Agent Task resolved the wrong canary ${task.label} identity`);
-        }
-        await page.goto(`${taskContract.appOrigin}/profiles`, {
-          waitUntil: 'domcontentloaded',
-          timeout: 45_000,
-        });
-        await page.waitForURL(
-          (url) => url.origin === taskContract.appOrigin
-            && url.pathname === '/profiles'
-            && !url.search
-            && !url.hash,
-          { timeout: 45_000 },
-        );
-        await validateIdentity(context, taskContract.apiBase, task, other, token);
-        if (task.closure === 'sign_out') {
-          await proveSignOutClosure(
-            page,
-            context,
-            taskContract.apiBase,
-            taskContract.appOrigin,
-            `canary ${task.label}`,
-          );
-        } else if (task.closure === 'session_expiry') {
-          await proveSessionExpiryClosure(
-            page,
-            context,
-            taskContract.apiBase,
-            taskContract.appOrigin,
-            `canary ${task.label}`,
-            token,
-            sessionEstablishedAtMilliseconds,
-            session.expiresAtSeconds,
-            taskContract.sessionMaxDurationSeconds,
-          );
-        } else {
-          fail(`canary ${task.label} has an unsupported closure proof`);
-        }
+        await consumeSignInTicket(page, signInToken, capabilityScope.add);
       } finally {
-        token = undefined;
+        task.sign_in_token = undefined;
+      }
+      const token = await applicationSessionToken(
+        page,
+        context,
+        taskContract.appOrigin,
+      );
+      capabilityScope.add(token);
+      runtime.token = token;
+      runtime.tokenCapturedAtMilliseconds = Date.now();
+      runtime.session = decodeSession(token);
+      if (runtime.session.userId !== task.user_id) {
+        fail(`Clerk resolved the wrong canary ${task.label} identity`);
+      }
+    }
+
+    await Promise.all(runtimes.map(async (runtime) => {
+      const {
+        task,
+        other,
+        context,
+        page,
+        token,
+        tokenCapturedAtMilliseconds,
+        session,
+      } = runtime;
+      if (!page || !token || !session || !tokenCapturedAtMilliseconds) {
+        fail(`canary ${task.label} browser session was not established`);
+      }
+      await page.goto(`${taskContract.appOrigin}/profiles`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45_000,
+      });
+      await page.waitForURL(
+        (url) => url.origin === taskContract.appOrigin
+          && url.pathname === '/profiles'
+          && !url.search
+          && !url.hash,
+        { timeout: 45_000 },
+      );
+      await validateIdentity(context, taskContract.apiBase, task, other, token);
+      if (task.closure === 'sign_out') {
+        await proveSignOutClosure(
+          page,
+          context,
+          taskContract.apiBase,
+          taskContract.appOrigin,
+          `canary ${task.label}`,
+        );
+      } else if (task.closure === 'jwt_expiry') {
+        await proveJwtExpiryClosure(
+          page,
+          context,
+          taskContract.apiBase,
+          `canary ${task.label}`,
+          token,
+          tokenCapturedAtMilliseconds,
+          session.expiresAtSeconds,
+          taskContract.sessionTokenMaxLifetimeSeconds,
+        );
+      } else {
+        fail(`canary ${task.label} has an unsupported closure proof`);
+      }
+    }));
+  } finally {
+    testingToken = undefined;
+    for (const task of taskContract.tasks) {
+      task.sign_in_token = undefined;
+    }
+    let cleanupFailed = false;
+    for (const runtime of runtimes.reverse()) {
+      runtime.token = undefined;
+      if (runtime.context) {
         try {
-          await context.clearCookies();
-          await context.close();
-        } finally {
-          clearTestingToken?.();
+          await runtime.context.clearCookies();
+          await runtime.context.close();
+        } catch {
+          cleanupFailed = true;
         }
       }
     }
-  } finally {
+    capabilityScope?.close();
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    if (cleanupFailed) {
+      fail('browser canary context cleanup failed');
     }
   }
   process.stdout.write(
-    'authenticated production canary passed: two-user isolation, sign-out, and natural expiry proven\n',
+    'authenticated browser canary passed: two-user isolation, sign-out, and captured JWT expiry proven\n',
   );
 }
 

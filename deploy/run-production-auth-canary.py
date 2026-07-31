@@ -30,6 +30,8 @@ PROFILE_PATTERN = re.compile(r"[A-Za-z0-9_]{2,15}")
 SESSION_ID_PATTERN = re.compile(r"sess_[A-Za-z0-9]+")
 OPAQUE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,200}")
 TESTING_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~-]{20,2048}")
+SIGN_IN_TOKEN_ID_PATTERN = re.compile(r"sit_[A-Za-z0-9]+")
+SIGN_IN_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~-]{20,4096}")
 LEASE_ID_PATTERN = re.compile(r"gha-[1-9][0-9]{0,19}-[1-9][0-9]{0,9}")
 APP_ORIGIN = "https://spyboxd.com"
 DEFAULT_API_BASE = "https://api.spyboxd.com"
@@ -41,15 +43,20 @@ DONE_NAME = "done"
 STATUS_NAME = "status.json"
 LOCK_NAME = ".auth-canary.lock"
 LIVE_SESSION_STATUSES = ("active",)
-SESSION_MAX_DURATION_SECONDS = 120
-SESSION_EXPIRY_GRACE_SECONDS = 5
-BROWSER_PLAN_VERSION = 3
+LEGACY_AGENT_SESSION_MAX_DURATION_SECONDS = 120
+CAPABILITY_EXPIRY_GRACE_SECONDS = 5
+SIGN_IN_TOKEN_DURATION_SECONDS = 300
+SIGN_IN_TOKEN_MIN_PLAN_REMAINING_SECONDS = 120
+SESSION_TOKEN_MAX_LIFETIME_SECONDS = 90
+BROWSER_PLAN_VERSION = 4
 TESTING_TOKEN_MIN_REMAINING_SECONDS = 300
-# Clerk issues these for one hour; permit only two minutes of host clock skew.
-TESTING_TOKEN_MAX_REMAINING_SECONDS = 3720
+GUARDIAN_MAX_WAIT_SECONDS = 900
+DATABASE_CONNECT_TIMEOUT_SECONDS = 5
+DATABASE_STATEMENT_TIMEOUT_MILLISECONDS = 10_000
+DATABASE_LOCK_TIMEOUT_MILLISECONDS = 5_000
 BROWSER_CLOSURE_BY_LABEL = {
     "A": "sign_out",
-    "B": "session_expiry",
+    "B": "jwt_expiry",
 }
 DATABASE_STATE_BOOTSTRAP = "bootstrap"
 DATABASE_STATE_PROVISIONED = "provisioned"
@@ -279,7 +286,7 @@ def _database_preflight(
 
     engine = None
     try:
-        engine = create_engine(database_url, pool_pre_ping=True)
+        engine = create_engine(database_url, **_database_engine_options(database_url))
         with engine.connect() as connection:
             identity_rows = (
                 connection.execute(
@@ -358,6 +365,28 @@ def _database_preflight(
         profile_rows,
         claimed_rows,
     )
+
+
+def _database_engine_options(database_url: str) -> dict[str, Any]:
+    """Bound every PostgreSQL wait before the guardian creates an engine."""
+
+    scheme, separator, _ = database_url.partition(":")
+    backend = scheme.split("+", 1)[0].lower() if separator else ""
+    options: dict[str, Any] = {"pool_pre_ping": True}
+    if backend in {"postgres", "postgresql"}:
+        options["connect_args"] = {
+            "connect_timeout": DATABASE_CONNECT_TIMEOUT_SECONDS,
+            "options": (
+                "-c statement_timeout="
+                f"{DATABASE_STATEMENT_TIMEOUT_MILLISECONDS} "
+                "-c lock_timeout="
+                f"{DATABASE_LOCK_TIMEOUT_MILLISECONDS}"
+            ),
+        }
+        return options
+    if backend == "sqlite":
+        return options
+    raise AuthCanaryError("the canary database backend is unsupported")
 
 
 def _bounded_body(opened: Any) -> bytes:
@@ -500,6 +529,8 @@ def _error_codes(response: HttpResponse) -> set[str]:
 
 
 def _retire_agent_task(secret_key: str, agent_task_id: str) -> bool:
+    """Clean a legacy Agent Task left by an interrupted older canary release."""
+
     response = _request(
         f"https://api.clerk.com/v1/agents/tasks/{urllib.parse.quote(agent_task_id, safe='')}/revoke",
         method="POST",
@@ -549,85 +580,100 @@ def _create_testing_token(secret_key: str) -> tuple[str, int]:
     # seconds before the private browser-plan handoff.
     expires_at_seconds = expires_at // 1000 if expires_at > 10_000_000_000 else expires_at
     remaining_seconds = expires_at_seconds - int(time.time())
-    if not (
-        TESTING_TOKEN_MIN_REMAINING_SECONDS
-        <= remaining_seconds
-        <= TESTING_TOKEN_MAX_REMAINING_SECONDS
-    ):
-        raise AuthCanaryError("Clerk returned an unexpectedly bounded Testing Token")
+    if remaining_seconds < TESTING_TOKEN_MIN_REMAINING_SECONDS:
+        raise AuthCanaryError("Clerk returned an unexpectedly short Testing Token")
     return token, expires_at_seconds
 
 
-def _create_agent_task(
+def _retire_sign_in_token(secret_key: str, sign_in_token_id: str) -> bool:
+    response = _request(
+        "https://api.clerk.com/v1/sign_in_tokens/"
+        f"{urllib.parse.quote(sign_in_token_id, safe='')}/revoke",
+        method="POST",
+        bearer=secret_key,
+        clerk_backend=True,
+    )
+    if response.status == 200:
+        payload = _json(response, "Clerk canary Sign-in Token revocation", 200)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("object") != "sign_in_token"
+            or payload.get("id") != sign_in_token_id
+            or payload.get("status") != "revoked"
+        ):
+            raise AuthCanaryError(
+                "Clerk returned an invalid Sign-in Token revocation"
+            )
+        return False
+    if response.status == 404:
+        # The capability no longer exists. It may already have created a session,
+        # so the authoritative session sweep still runs below.
+        return True
+    if response.status == 400 and "sign_in_token_cannot_be_revoked_code" in (
+        _error_codes(response)
+    ):
+        # Clerk only revokes pending tickets, but this response alone does not
+        # prove whether consumption created a session. The success marker or the
+        # persisted expiry guard plus the session sweep must close that ambiguity.
+        return True
+    raise AuthCanaryError("a Clerk canary Sign-in Token could not be proven inactive")
+
+
+def _create_sign_in_token(
     secret_key: str,
     identity: CanaryIdentity,
     *,
-    allowed_frontend_origins: set[str],
-    app_origin: str,
-    record_task_id: Callable[[str], None],
-) -> dict[str, str]:
+    record_token: Callable[[str, int], None],
+) -> dict[str, Any]:
+    requested_at = int(time.time())
     created = _json(
         _request(
-            "https://api.clerk.com/v1/agents/tasks",
+            "https://api.clerk.com/v1/sign_in_tokens",
             method="POST",
             bearer=secret_key,
             payload={
-                "on_behalf_of": {"user_id": identity.user_id},
-                "permissions": "*",
-                "agent_name": "spyboxd-production-canary",
-                "task_description": "Read-only non-admin privacy and isolation check",
-                # Land on the only public application route first. Clerk's
-                # frontend SDK must finish the Agent Task handoff and write the
-                # app-scoped session token before middleware can admit the
-                # browser to a protected route.
-                "redirect_url": f"{app_origin}/",
-                "session_max_duration_in_seconds": SESSION_MAX_DURATION_SECONDS,
+                "user_id": identity.user_id,
+                "expires_in_seconds": SIGN_IN_TOKEN_DURATION_SECONDS,
             },
             clerk_backend=True,
         ),
-        f"Clerk agent task creation for canary {identity.label}",
+        f"Clerk Sign-in Token creation for canary {identity.label}",
         200,
     )
-    task_id = created.get("agent_task_id") if isinstance(created, dict) else None
-    if not isinstance(task_id, str) or not OPAQUE_ID_PATTERN.fullmatch(task_id):
-        raise AuthCanaryError(
-            f"Clerk returned an invalid agent task for canary {identity.label}"
-        )
-
-    # Persist the cleanup handle before validating or exporting the one-time URL.
-    record_task_id(task_id)
-    task_url = created.get("url") if isinstance(created, dict) else None
-    if not isinstance(task_url, str):
-        raise AuthCanaryError(
-            f"Clerk omitted the agent task URL for canary {identity.label}"
-        )
-    try:
-        parsed_task = urllib.parse.urlsplit(task_url)
-        _ = parsed_task.port
-    except ValueError as exc:
-        raise AuthCanaryError(
-            f"Clerk returned an invalid task URL for canary {identity.label}"
-        ) from exc
-    task_origin = urllib.parse.urlunsplit(
-        (parsed_task.scheme, parsed_task.netloc, "", "", "")
-    )
-    if (
-        parsed_task.scheme != "https"
-        or not parsed_task.hostname
-        or parsed_task.username is not None
-        or parsed_task.password is not None
-        or parsed_task.fragment
-        or task_origin not in allowed_frontend_origins
+    response_received_at = int(time.time())
+    token_id = created.get("id") if isinstance(created, dict) else None
+    if not isinstance(token_id, str) or not SIGN_IN_TOKEN_ID_PATTERN.fullmatch(
+        token_id
     ):
         raise AuthCanaryError(
-            f"Clerk returned an unsafe task URL for canary {identity.label}"
+            f"Clerk returned an invalid Sign-in Token for canary {identity.label}"
+        )
+
+    # Browser use gets a conservative lower deadline from request start. Cleanup
+    # gets a safe upper deadline from response receipt because Clerk necessarily
+    # created the ticket before returning it. Persist that cleanup handle before
+    # validating or exporting the bearer capability.
+    browser_expires_at = requested_at + SIGN_IN_TOKEN_DURATION_SECONDS
+    cleanup_deadline = response_received_at + SIGN_IN_TOKEN_DURATION_SECONDS
+    record_token(token_id, cleanup_deadline)
+    token = created.get("token") if isinstance(created, dict) else None
+    if (
+        not isinstance(created, dict)
+        or created.get("object") != "sign_in_token"
+        or created.get("status") != "pending"
+        or created.get("user_id") != identity.user_id
+        or not isinstance(token, str)
+        or not SIGN_IN_TOKEN_PATTERN.fullmatch(token)
+    ):
+        raise AuthCanaryError(
+            f"Clerk returned an invalid Sign-in Token for canary {identity.label}"
         )
     return {
         "label": identity.label,
         "user_id": identity.user_id,
         "profile": identity.profile,
-        "task_url": task_url,
-        "task_origin": task_origin,
+        "sign_in_token": token,
+        "sign_in_token_expires_at": browser_expires_at,
     }
 
 
@@ -635,16 +681,27 @@ def _build_browser_plan(
     *,
     api_base: str,
     app_origin: str,
-    task_origin: str,
+    clerk_frontend_origin: str,
     testing_token: str,
     testing_token_expires_at: int,
     tasks: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    api_base = _origin(api_base, "authenticated browser plan API")
+    app_origin = _origin(app_origin, "authenticated browser plan application")
+    clerk_frontend_origin = _origin(
+        clerk_frontend_origin, "authenticated browser plan Clerk frontend"
+    )
+    if api_base != DEFAULT_API_BASE or app_origin != APP_ORIGIN:
+        raise AuthCanaryError("authenticated browser plan targets are unexpected")
     if len(tasks) != len(BROWSER_CLOSURE_BY_LABEL):
         raise AuthCanaryError("authenticated browser plan requires exactly two tasks")
 
     planned_tasks: list[dict[str, Any]] = []
     seen_labels: set[str] = set()
+    seen_tokens: set[str] = set()
+    seen_user_ids: set[str] = set()
+    seen_profiles: set[str] = set()
+    now = int(time.time())
     for task in tasks:
         label = task.get("label")
         if not isinstance(label, str):
@@ -652,14 +709,49 @@ def _build_browser_plan(
         closure = BROWSER_CLOSURE_BY_LABEL.get(label)
         if closure is None or label in seen_labels:
             raise AuthCanaryError("authenticated browser plan has invalid task labels")
-        if task.get("task_origin") != task_origin:
+        sign_in_token = task.get("sign_in_token")
+        if not isinstance(sign_in_token, str) or not SIGN_IN_TOKEN_PATTERN.fullmatch(
+            sign_in_token
+        ):
             raise AuthCanaryError(
-                "authenticated browser plan has inconsistent task origins"
+                "authenticated browser plan has an invalid Sign-in Token"
+            )
+        if sign_in_token in seen_tokens:
+            raise AuthCanaryError(
+                "authenticated browser plan has duplicate Sign-in Tokens"
+            )
+        user_id = task.get("user_id")
+        profile = task.get("profile")
+        expires_at = task.get("sign_in_token_expires_at")
+        if (
+            not isinstance(user_id, str)
+            or not USER_ID_PATTERN.fullmatch(user_id)
+            or not isinstance(profile, str)
+            or not PROFILE_PATTERN.fullmatch(profile)
+            or isinstance(expires_at, bool)
+            or not isinstance(expires_at, int)
+            or expires_at - now < SIGN_IN_TOKEN_MIN_PLAN_REMAINING_SECONDS
+            or expires_at - now > SIGN_IN_TOKEN_DURATION_SECONDS
+        ):
+            raise AuthCanaryError(
+                "authenticated browser plan has an invalid Sign-in Token identity"
+            )
+        normalized_profile = profile.casefold()
+        if user_id in seen_user_ids or normalized_profile in seen_profiles:
+            raise AuthCanaryError(
+                "authenticated browser plan has duplicate Sign-in Token identities"
             )
         seen_labels.add(label)
+        seen_tokens.add(sign_in_token)
+        seen_user_ids.add(user_id)
+        seen_profiles.add(normalized_profile)
         planned_tasks.append(
             {
-                **{key: value for key, value in task.items() if key != "task_origin"},
+                "label": label,
+                "user_id": user_id,
+                "profile": profile,
+                "sign_in_token": sign_in_token,
+                "sign_in_token_expires_at": expires_at,
                 "closure": closure,
             }
         )
@@ -671,18 +763,17 @@ def _build_browser_plan(
     if (
         isinstance(testing_token_expires_at, bool)
         or not isinstance(testing_token_expires_at, int)
-        or testing_token_expires_at - int(time.time())
-        < TESTING_TOKEN_MIN_REMAINING_SECONDS
+        or testing_token_expires_at - now < TESTING_TOKEN_MIN_REMAINING_SECONDS
     ):
         raise AuthCanaryError("authenticated browser plan has an expired Testing Token")
     return {
         "version": BROWSER_PLAN_VERSION,
         "api_base": api_base,
         "app_origin": app_origin,
-        "task_origin": task_origin,
+        "clerk_frontend_origin": clerk_frontend_origin,
         "testing_token": testing_token,
         "testing_token_expires_at": testing_token_expires_at,
-        "session_max_duration_seconds": SESSION_MAX_DURATION_SECONDS,
+        "session_token_max_lifetime_seconds": SESSION_TOKEN_MAX_LIFETIME_SECONDS,
         "tasks": planned_tasks,
     }
 
@@ -800,6 +891,8 @@ def _state_identities(
 
 
 def _state_task_ids(state: Mapping[str, Any]) -> list[str]:
+    """Load legacy Agent Task handles from state version 1."""
+
     task_ids = state.get("task_ids")
     if (
         not isinstance(task_ids, list)
@@ -814,45 +907,129 @@ def _state_task_ids(state: Mapping[str, Any]) -> list[str]:
     return task_ids
 
 
-def _cleanup_state(secret_key: str, state: Mapping[str, Any]) -> None:
+def _state_sign_in_tokens(state: Mapping[str, Any]) -> list[tuple[str, int]]:
+    raw_tokens = state.get("sign_in_tokens")
+    if not isinstance(raw_tokens, list) or len(raw_tokens) > 2:
+        raise AuthCanaryError("stored authenticated canary Sign-in Tokens are invalid")
+    tokens: list[tuple[str, int]] = []
+    now = int(time.time())
+    for raw in raw_tokens:
+        if not isinstance(raw, dict):
+            raise AuthCanaryError(
+                "stored authenticated canary Sign-in Tokens are invalid"
+            )
+        token_id = raw.get("id")
+        expires_at = raw.get("expires_at")
+        if (
+            not isinstance(token_id, str)
+            or not SIGN_IN_TOKEN_ID_PATTERN.fullmatch(token_id)
+            or isinstance(expires_at, bool)
+            or not isinstance(expires_at, int)
+            or expires_at <= 0
+            or expires_at
+            > now + SIGN_IN_TOKEN_DURATION_SECONDS + CAPABILITY_EXPIRY_GRACE_SECONDS
+        ):
+            raise AuthCanaryError(
+                "stored authenticated canary Sign-in Tokens are invalid"
+            )
+        tokens.append((token_id, expires_at))
+    if len({token_id for token_id, _ in tokens}) != len(tokens):
+        raise AuthCanaryError(
+            "stored authenticated canary Sign-in Tokens are duplicated"
+        )
+    return tokens
+
+
+def _cleanup_state(secret_key: str, state: Mapping[str, Any]) -> bool:
     identities = _state_identities(state)
-    task_ids = _state_task_ids(state)
+    version = state.get("version")
+    if version == 1:
+        task_ids = _state_task_ids(state)
+        sign_in_tokens: list[tuple[str, int]] = []
+        browser_completed = False
+    elif version == 2:
+        task_ids = []
+        sign_in_tokens = _state_sign_in_tokens(state)
+        if not isinstance(state.get("browser_completed"), bool):
+            raise AuthCanaryError(
+                "stored authenticated canary browser completion is invalid"
+            )
+        browser_completed = state["browser_completed"]
+    else:
+        raise AuthCanaryError("stored authenticated canary state version is invalid")
     baseline_zero = state.get("session_baseline_proven_zero") is True
-    if task_ids and not baseline_zero:
-        raise AuthCanaryError("stored task state lacks a proven clean session baseline")
+    if (task_ids or sign_in_tokens) and not baseline_zero:
+        raise AuthCanaryError(
+            "stored capability state lacks a proven clean session baseline"
+        )
 
     cleanup_errors: list[Exception] = []
-    expiry_guard_required = False
+    browser_closure_proven = True
+    legacy_expiry_guard_required = False
+    sign_in_expiry_deadline = 0
     # Retire one-use capabilities first, preventing a pending ticket from racing
     # the authoritative server-side session sweep.
     for task_id in task_ids:
         try:
-            expiry_guard_required = (
-                _retire_agent_task(secret_key, task_id) or expiry_guard_required
+            legacy_expiry_guard_required = (
+                _retire_agent_task(secret_key, task_id)
+                or legacy_expiry_guard_required
             )
+        except Exception as exc:  # noqa: BLE001 - cleanup must attempt every resource
+            cleanup_errors.append(exc)
+    for token_id, expires_at in sign_in_tokens:
+        try:
+            if _retire_sign_in_token(secret_key, token_id) and not browser_completed:
+                sign_in_expiry_deadline = max(sign_in_expiry_deadline, expires_at)
         except Exception as exc:  # noqa: BLE001 - cleanup must attempt every resource
             cleanup_errors.append(exc)
 
     if baseline_zero:
         live_sessions: set[str] = set()
+        live_sessions_by_label: dict[str, set[str]] = {}
         session_listing_failed = False
         for identity in identities:
             try:
-                live_sessions.update(_list_live_sessions(secret_key, identity.user_id))
+                identity_sessions = _list_live_sessions(
+                    secret_key, identity.user_id
+                )
+                live_sessions_by_label[identity.label] = identity_sessions
+                live_sessions.update(identity_sessions)
             except Exception as exc:  # noqa: BLE001 - cleanup continues after one API failure
                 cleanup_errors.append(exc)
                 session_listing_failed = True
+        if browser_completed and not session_listing_failed:
+            if live_sessions_by_label.get("A") or len(
+                live_sessions_by_label.get("B", set())
+            ) != 1:
+                browser_closure_proven = False
         for session_id in sorted(live_sessions):
             try:
                 _revoke_session(secret_key, session_id)
             except Exception as exc:  # noqa: BLE001 - cleanup continues after one API failure
                 cleanup_errors.append(exc)
 
-        if expiry_guard_required:
+        if legacy_expiry_guard_required:
             # Clerk guarantees these Agent Task sessions cannot outlive this
             # ceiling. Waiting after every ticket is no longer pending closes
             # the list-sessions visibility race even if the first samples lag.
-            time.sleep(SESSION_MAX_DURATION_SECONDS + SESSION_EXPIRY_GRACE_SECONDS)
+            time.sleep(
+                LEGACY_AGENT_SESSION_MAX_DURATION_SECONDS
+                + CAPABILITY_EXPIRY_GRACE_SECONDS
+            )
+        if sign_in_expiry_deadline:
+            # On an interrupted browser run, a 400/404 retirement result alone
+            # cannot prove the ticket inactive. Wait only to its persisted,
+            # conservative local deadline. The success-only browser marker
+            # proves both one-use tickets were consumed, so the normal path does
+            # not pay this wait and proceeds directly to the session sweep.
+            remaining = (
+                sign_in_expiry_deadline
+                + CAPABILITY_EXPIRY_GRACE_SECONDS
+                - time.time()
+            )
+            if remaining > 0:
+                time.sleep(remaining)
 
         # Require two consecutive empty server-side samples. If consumption won
         # a race with task retirement, a newly visible session is revoked here.
@@ -890,6 +1067,7 @@ def _cleanup_state(secret_key: str, state: Mapping[str, Any]) -> None:
         raise AuthCanaryError(
             "temporary Clerk canary state could not be proven inactive"
         )
+    return browser_closure_proven
 
 
 def _guardian_result_status(
@@ -1080,7 +1258,8 @@ def _load_secret(frontend_env: Path) -> str:
 
 
 def _cleanup_stored_lease(lease_dir: Path, secret_key: str) -> None:
-    # Never retain the one-use URL, including when Clerk cleanup is unavailable.
+    # Never retain one-use browser capabilities, including when Clerk cleanup is
+    # unavailable.
     _safe_unlink(lease_dir / PLAN_NAME)
     _safe_unlink(lease_dir / DONE_NAME)
     state_path = lease_dir / STATE_NAME
@@ -1113,24 +1292,24 @@ def _sweep_stale_leases(root: Path, secret_key: str) -> None:
         _remove_completed_lease(lease_dir)
 
 
-def _done_requested(lease_dir: Path) -> bool:
+def _browser_completion_status(lease_dir: Path) -> bool | None:
     path = lease_dir / DONE_NAME
     try:
-        metadata = path.lstat()
+        path.lstat()
     except FileNotFoundError:
-        return False
+        return None
     except OSError as exc:
         raise AuthCanaryError(
             "authenticated canary completion marker is unavailable"
         ) from exc
+    payload = _read_private_json(path)
     if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or metadata.st_mode & 0o077
+        set(payload) != {"version", "browser_passed"}
+        or payload.get("version") != 1
+        or not isinstance(payload.get("browser_passed"), bool)
     ):
-        raise AuthCanaryError("authenticated canary completion marker is unsafe")
-    return True
+        raise AuthCanaryError("authenticated canary completion marker is invalid")
+    return payload["browser_passed"]
 
 
 def _signal_handler(signum: int, _frame: Any) -> None:
@@ -1147,7 +1326,7 @@ def run_guardian(
     canary_env: Path,
     shared_dir: Path,
 ) -> bool:
-    if not 30 <= max_wait_seconds <= 600:
+    if not 30 <= max_wait_seconds <= GUARDIAN_MAX_WAIT_SECONDS:
         raise AuthCanaryError("authenticated canary guardian timeout is invalid")
     lease_id = _validate_lease_id(lease_id)
     api_base = _origin(api_base, "authenticated canary API")
@@ -1173,8 +1352,11 @@ def run_guardian(
         for value in configured_frontend_urls
         if value
     }
-    if not allowed_frontend_origins:
-        raise AuthCanaryError("a configured Clerk frontend origin is required")
+    if len(allowed_frontend_origins) != 1:
+        raise AuthCanaryError(
+            "exactly one configured Clerk frontend origin is required"
+        )
+    clerk_frontend_origin = next(iter(allowed_frontend_origins))
     configured_admin_ids = {
         value.strip()
         for value in api_values.get("CLERK_ADMIN_USER_IDS", "").split(",")
@@ -1194,10 +1376,11 @@ def run_guardian(
         _secure_directory(lease_dir, mode=0o700)
 
         state: dict[str, Any] = {
-            "version": 1,
+            "version": 2,
             "lease_id": lease_id,
             "phase": "preflight",
             "session_baseline_proven_zero": False,
+            "browser_completed": False,
             "identities": [
                 {
                     "label": identity.label,
@@ -1206,7 +1389,7 @@ def run_guardian(
                 }
                 for identity in identities
             ],
-            "task_ids": [],
+            "sign_in_tokens": [],
         }
         state_path = lease_dir / STATE_NAME
         _write_private_json(state_path, state)
@@ -1228,30 +1411,27 @@ def run_guardian(
             state["phase"] = "creating_testing_token"
             _write_private_json(state_path, state)
             testing_token, testing_token_expires_at = _create_testing_token(secret_key)
-            state["phase"] = "creating_tasks"
+            state["phase"] = "creating_sign_in_tokens"
             _write_private_json(state_path, state)
 
-            def record_task_id(task_id: str) -> None:
-                state["task_ids"].append(task_id)
+            def record_sign_in_token(token_id: str, expires_at: int) -> None:
+                state["sign_in_tokens"].append(
+                    {"id": token_id, "expires_at": expires_at}
+                )
                 _write_private_json(state_path, state)
 
             tasks = [
-                _create_agent_task(
+                _create_sign_in_token(
                     secret_key,
                     identity,
-                    allowed_frontend_origins=allowed_frontend_origins,
-                    app_origin=APP_ORIGIN,
-                    record_task_id=record_task_id,
+                    record_token=record_sign_in_token,
                 )
                 for identity in identities
             ]
-            task_origins = {task.get("task_origin") for task in tasks}
-            if len(task_origins) != 1:
-                raise AuthCanaryError("Clerk returned inconsistent task origins")
             plan = _build_browser_plan(
                 api_base=api_base,
                 app_origin=APP_ORIGIN,
-                task_origin=next(iter(task_origins)),
+                clerk_frontend_origin=clerk_frontend_origin,
                 testing_token=testing_token,
                 testing_token_expires_at=testing_token_expires_at,
                 tasks=tasks,
@@ -1261,12 +1441,17 @@ def run_guardian(
             _write_private_json(lease_dir / PLAN_NAME, plan)
 
             deadline = time.monotonic() + max_wait_seconds
-            while not _done_requested(lease_dir):
+            browser_passed = _browser_completion_status(lease_dir)
+            while browser_passed is None:
                 if time.monotonic() >= deadline:
                     raise AuthCanaryError(
                         "authenticated browser canary did not finish before its deadline"
                     )
                 time.sleep(0.5)
+                browser_passed = _browser_completion_status(lease_dir)
+            if not browser_passed:
+                raise AuthCanaryError("authenticated browser canary reported failure")
+            state["browser_completed"] = True
             state["phase"] = "verifying_database_provisioning"
             _write_private_json(state_path, state)
             _require_post_browser_provisioning(
@@ -1287,7 +1472,11 @@ def run_guardian(
                     except BaseException as exc:  # noqa: BLE001 - keep cleaning
                         cleanup_failures.append(exc)
                 try:
-                    _cleanup_state(secret_key, state)
+                    browser_closure_proven = _cleanup_state(secret_key, state)
+                    if not browser_closure_proven and primary_error is None:
+                        primary_error = AuthCanaryError(
+                            "browser closure state was not confirmed by Clerk"
+                        )
                 except BaseException as exc:  # noqa: BLE001 - retain failure state
                     cleanup_failures.append(exc)
 
@@ -1322,18 +1511,48 @@ def run_guardian(
         return True
 
 
-def signal_completion(*, lease_id: str, shared_dir: Path) -> None:
+def signal_completion(
+    *, lease_id: str, shared_dir: Path, browser_passed: bool = False
+) -> None:
+    if not isinstance(browser_passed, bool):
+        raise AuthCanaryError("authenticated canary completion result is invalid")
     lease_dir = _lease_directory(shared_dir, lease_id)
     _secure_directory(lease_dir, mode=0o700)
     marker = lease_dir / DONE_NAME
+    encoded = (
+        json.dumps(
+            {"version": 1, "browser_passed": browser_passed}, separators=(",", ":")
+        )
+        + "\n"
+    ).encode("utf-8")
+    if len(encoded) > MAX_STATE_BYTES:
+        raise AuthCanaryError("authenticated canary completion marker is too large")
+    descriptor = None
+    created = False
     try:
         descriptor = os.open(
             marker,
-            os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
-        os.close(descriptor)
+        created = True
+        with os.fdopen(descriptor, "wb") as opened:
+            descriptor = None
+            opened.write(encoded)
+            opened.flush()
+            os.fsync(opened.fileno())
+        _fsync_directory(lease_dir)
     except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        if created:
+            try:
+                _safe_unlink(marker)
+            except AuthCanaryError:
+                pass
         raise AuthCanaryError(
             "authenticated canary completion could not be signalled"
         ) from exc
@@ -1400,6 +1619,7 @@ def main() -> int:
     complete = commands.add_parser("complete")
     complete.add_argument("--lease-id", required=True)
     complete.add_argument("--shared-dir", type=Path, default=DEFAULT_SHARED_DIR)
+    complete.add_argument("--browser-passed", action="store_true")
 
     status_command = commands.add_parser("status")
     status_command.add_argument("--lease-id", required=True)
@@ -1426,7 +1646,11 @@ def main() -> int:
             )
             print("authenticated production canary guardian passed")
         elif args.command == "complete":
-            signal_completion(lease_id=args.lease_id, shared_dir=args.shared_dir)
+            signal_completion(
+                lease_id=args.lease_id,
+                shared_dir=args.shared_dir,
+                browser_passed=args.browser_passed,
+            )
         elif args.command == "status":
             print(lease_status(lease_id=args.lease_id, shared_dir=args.shared_dir))
         else:
