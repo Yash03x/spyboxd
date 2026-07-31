@@ -232,6 +232,68 @@ class ProfileLoaderContractTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _upgrade_bundle_to_v3(self, root: Path, *, account_social: bool = True) -> None:
+        """Rewrite the v2 bundle's manifest as v3, optionally with social surfaces."""
+        manifest = json.loads((root / "manifest.json").read_text())
+        manifest["schema_version"] = 3
+        if account_social:
+            manifest["completed_datasets"] = manifest["completed_datasets"] + [
+                "following",
+                "followers",
+            ]
+            manifest["counts"]["following"] = 1
+            manifest["counts"]["followers"] = 0
+            pd.DataFrame(
+                [{
+                    "Position": 1,
+                    "Username": "vaultedapathy",
+                    "Display_Name": "🫀",
+                    "Avatar_URL": "https://a.ltrbxd.com/x.jpg",
+                    "Profile_URL": "https://letterboxd.com/vaultedapathy/",
+                }]
+            ).to_csv(root / "following.csv", index=False)
+            pd.DataFrame(
+                columns=["Position", "Username", "Display_Name", "Avatar_URL", "Profile_URL"]
+            ).to_csv(root / "followers.csv", index=False)
+        (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_v3_bundle_requires_social_surfaces_accounted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_full_bundle(root)
+            self._upgrade_bundle_to_v3(root, account_social=False)
+
+            loaded = load_profile_data(str(root), "viewer")
+            with self.assertRaisesRegex(ValueError, "followers, following"):
+                validate_import_bundle(loaded, require_full_manifest=True)
+
+    def test_v3_bundle_with_social_surfaces_validates_and_loads_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_full_bundle(root)
+            self._upgrade_bundle_to_v3(root)
+
+            loaded = load_profile_data(str(root), "viewer")
+            validate_import_bundle(loaded, require_full_manifest=True)
+
+            self.assertEqual(len(loaded.following), 1)
+            self.assertEqual(loaded.following.iloc[0]["Username"], "vaultedapathy")
+            self.assertEqual(len(loaded.followers), 0)
+            self.assertIn("following.csv", loaded.source_files)
+
+    def test_v3_bundle_count_mismatch_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_full_bundle(root)
+            self._upgrade_bundle_to_v3(root)
+            manifest = json.loads((root / "manifest.json").read_text())
+            manifest["counts"]["following"] = 5
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            loaded = load_profile_data(str(root), "viewer")
+            with self.assertRaisesRegex(ValueError, "following: manifest=5, observed=1"):
+                validate_import_bundle(loaded, require_full_manifest=True)
+
     def test_complete_v2_bundle_and_join_date_alias_validate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -594,6 +656,8 @@ class CurrentLetterboxdMarkupTests(unittest.TestCase):
             (output / "lists.csv").write_text("Title\\nOld list\\n", encoding="utf-8")
             (output / "notes.txt").write_text("keep me", encoding="utf-8")
             (output / "favorites.csv").write_text("Name\\nHeat\\n", encoding="utf-8")
+            (output / "following.csv").write_text("Username\\nsomeone\\n", encoding="utf-8")
+            (output / "followers.csv").write_text("Username\\nsomeone\\n", encoding="utf-8")
             legacy_lists = output / "lists"
             legacy_lists.mkdir()
             (legacy_lists / "old-list.csv").write_text("Name\\nHeat\\n", encoding="utf-8")
@@ -604,12 +668,16 @@ class CurrentLetterboxdMarkupTests(unittest.TestCase):
                 "watchlist": "forbidden/private",
                 "lists": "forbidden/private",
                 "list_items": "forbidden/private",
+                "following": "crawl exceeded configured cap 5000",
+                "followers": "forbidden/private",
             }
 
             scraper._remove_stale_unavailable_files()
 
             self.assertFalse((output / "watchlist.csv").exists())
             self.assertFalse((output / "lists.csv").exists())
+            self.assertFalse((output / "following.csv").exists())
+            self.assertFalse((output / "followers.csv").exists())
             self.assertEqual((output / "notes.txt").read_text(encoding="utf-8"), "keep me")
             self.assertTrue((output / "favorites.csv").exists())
             self.assertFalse((legacy_lists / "old-list.csv").exists())
@@ -697,6 +765,269 @@ class CoverageUnavailableTests(unittest.TestCase):
         self.assertTrue(coverage["is_partial"])
         self.assertEqual(coverage["unavailable_datasets"]["watchlist"], "forbidden/private")
         self.assertTrue(any("prior imported state was preserved" in item for item in coverage["limitations"]))
+
+
+class SocialSurfaceScrapingTests(unittest.TestCase):
+    """Following/followers capture: markup, pagination, caps, empty states."""
+
+    PERSON_PAGE = """
+        <main><table class="member-table"><tbody>
+          <tr><td class="col-member table-person"><div class="person-summary">
+            <a class="avatar -a40" href="/vaultedapathy/">
+              <img alt="🫀" src="https://a.ltrbxd.com/resized/avatar/x.jpg" width="40"/></a>
+            <h3 class="title-3"><a class="name" href="/vaultedapathy/"> 🫀 </a></h3>
+            <small class="metadata"><a class="_nobr" href="/vaultedapathy/followers/">71 followers</a>,
+              <a class="_nobr" href="/vaultedapathy/following/">following 65</a></small>
+          </div></td></tr>
+          <tr><td class="col-member table-person"><div class="person-summary">
+            <a class="avatar -a40" href="/adireviews11/"><img alt="a" src="https://a.ltrbxd.com/a.jpg"/></a>
+            <h3 class="title-3"><a class="name" href="/adireviews11/">adireviews11</a></h3>
+          </div></td></tr>
+        </tbody></table>
+        {pagination}
+        </main>
+    """
+    NEXT_LINK = '<div class="pagination"><div class="paginate-nextprev"><a class="next" href="{href}">Next</a></div></div>'
+
+    @staticmethod
+    def _people_scraper(following_count=None, followers_count=None) -> EnhancedLetterboxdScraper:
+        scraper = EnhancedLetterboxdScraper.__new__(EnhancedLetterboxdScraper)
+        scraper.username = "viewer"
+        scraper.urls = {
+            "following": "https://letterboxd.com/viewer/following/",
+            "followers": "https://letterboxd.com/viewer/followers/",
+        }
+        scraper.profile_info = SimpleNamespace(
+            following_count=following_count, followers_count=followers_count
+        )
+        scraper.social_data = {"following": [], "followers": [], "activity": []}
+        scraper.completed_datasets = set()
+        scraper.unavailable_datasets = {}
+        return scraper
+
+    def test_person_rows_extract_username_display_name_and_avatar(self) -> None:
+        soup = BeautifulSoup(self.PERSON_PAGE.format(pagination=""), "html.parser")
+
+        rows = EnhancedLetterboxdScraper._extract_person_rows(soup)
+
+        self.assertEqual(
+            rows[0],
+            {
+                "username": "vaultedapathy",
+                "display_name": "🫀",
+                "avatar_url": "https://a.ltrbxd.com/resized/avatar/x.jpg",
+                "profile_url": "https://letterboxd.com/vaultedapathy/",
+            },
+        )
+        self.assertEqual(rows[1]["username"], "adireviews11")
+
+    def test_scrape_people_paginates_dedupes_and_saves_csv(self) -> None:
+        scraper = self._people_scraper(following_count=3)
+        page_1 = self.PERSON_PAGE.format(
+            pagination=self.NEXT_LINK.format(href="/viewer/following/page/2/")
+        )
+        # Page 2 repeats one member (drift) and adds one more.
+        page_2 = """
+            <main><table><tbody>
+              <tr><td class="table-person"><div class="person-summary">
+                <a class="avatar" href="/adireviews11/"><img src="https://a.ltrbxd.com/a.jpg"/></a>
+                <h3><a class="name" href="/adireviews11/">adireviews11</a></h3>
+              </div></td></tr>
+              <tr><td class="table-person"><div class="person-summary">
+                <a class="avatar" href="/Maaxmc/"><img src="https://a.ltrbxd.com/m.jpg"/></a>
+                <h3><a class="name" href="/Maaxmc/">Maaxmc</a></h3>
+              </div></td></tr>
+            </tbody></table></main>
+        """
+        pages = {
+            "https://letterboxd.com/viewer/following/": page_1,
+            "https://letterboxd.com/viewer/following/page/2/": page_2,
+        }
+        scraper.fetch_with_retry = Mock(
+            side_effect=lambda url, **kwargs: SimpleNamespace(content=pages[url].encode("utf-8"))
+        )
+
+        with patch("scraper_html.time.sleep"):
+            people = scraper.scrape_following()
+
+        self.assertEqual(
+            [person["username"] for person in people],
+            ["vaultedapathy", "adireviews11", "Maaxmc"],
+        )
+        self.assertEqual([person["position"] for person in people], [1, 2, 3])
+        self.assertIn("following", scraper.completed_datasets)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper.output_dir = temp_dir
+            scraper._save_people("following")
+            persisted = pd.read_csv(Path(temp_dir) / "following.csv", keep_default_na=False)
+        self.assertEqual(list(persisted["Username"]), ["vaultedapathy", "adireviews11", "Maaxmc"])
+        self.assertEqual(
+            persisted.loc[0, "Profile_URL"], "https://letterboxd.com/vaultedapathy/"
+        )
+
+    def test_empty_surfaces_require_declared_empty_state(self) -> None:
+        scraper = self._people_scraper()
+        empty_following = "<main><p>viewer is not following anyone.</p></main>"
+        empty_followers = "<main><p>viewer has no followers.</p></main>"
+        pages = {
+            "https://letterboxd.com/viewer/following/": empty_following,
+            "https://letterboxd.com/viewer/followers/": empty_followers,
+        }
+        scraper.fetch_with_retry = Mock(
+            side_effect=lambda url, **kwargs: SimpleNamespace(content=pages[url].encode("utf-8"))
+        )
+
+        self.assertEqual(scraper.scrape_following(), [])
+        self.assertEqual(scraper.scrape_followers(), [])
+        self.assertEqual(scraper.completed_datasets, {"following", "followers"})
+
+        unrecognized = self._people_scraper()
+        unrecognized.fetch_with_retry = Mock(
+            return_value=SimpleNamespace(content=b"<main><p>something else</p></main>")
+        )
+        with self.assertRaisesRegex(ScrapeValidationError, "no recognized person rows"):
+            unrecognized.scrape_following()
+
+    def test_private_surface_is_preserved_not_failed(self) -> None:
+        scraper = self._people_scraper()
+        forbidden = SimpleNamespace(
+            status_code=403,
+            text="Letterboxd - Forbidden: the page you are attempting to access is classified. "
+                 "You do not have the correct clearance.",
+        )
+        scraper.fetch_with_retry = Mock(return_value=forbidden)
+
+        self.assertEqual(scraper.scrape_followers(), [])
+        self.assertEqual(scraper.unavailable_datasets["followers"], "forbidden/private")
+
+    def test_header_cap_marks_surface_unavailable(self) -> None:
+        scraper = self._people_scraper(followers_count=9000)
+        scraper.fetch_with_retry = Mock(side_effect=AssertionError("must not fetch"))
+
+        self.assertEqual(scraper.scrape_followers(), [])
+        self.assertIn("exceeds configured cap", scraper.unavailable_datasets["followers"])
+
+    def test_count_drift_beyond_tolerance_fails_closed(self) -> None:
+        scraper = self._people_scraper(following_count=25)
+        scraper.fetch_with_retry = Mock(
+            return_value=SimpleNamespace(
+                content=self.PERSON_PAGE.format(pagination="").encode("utf-8")
+            )
+        )
+
+        with self.assertRaisesRegex(ScrapeValidationError, "header reported 25"):
+            scraper.scrape_following()
+
+    def test_unparsed_header_count_skips_cross_check_but_keeps_data(self) -> None:
+        # A header parse miss must not abort the scrape on a guessed zero, and
+        # the live last-page pagination shape (disabled next span) must
+        # terminate the crawl.
+        scraper = self._people_scraper(following_count=None)
+        last_page = self.PERSON_PAGE.format(
+            pagination='<div class="pagination"><div class="paginate-nextprev paginate-disabled">'
+                       '<span class="next">Next</span></div></div>'
+        )
+        scraper.fetch_with_retry = Mock(
+            return_value=SimpleNamespace(content=last_page.encode("utf-8"))
+        )
+
+        people = scraper.scrape_following()
+
+        self.assertEqual(len(people), 2)
+        self.assertIn("following", scraper.completed_datasets)
+
+    def test_in_loop_cap_stops_runaway_crawl_without_header_count(self) -> None:
+        scraper = self._people_scraper(followers_count=None)
+        page = self.PERSON_PAGE.format(
+            pagination=self.NEXT_LINK.format(href="/viewer/followers/")  # endless loop page
+        )
+        scraper.fetch_with_retry = Mock(
+            return_value=SimpleNamespace(content=page.encode("utf-8"))
+        )
+
+        with patch("scraper_html.time.sleep"), patch.dict(
+            "scraper_html.os.environ", {"SPYBOXD_MAX_FOLLOW_EDGES_PER_SURFACE": "1"}
+        ):
+            result = scraper.scrape_followers()
+
+        self.assertEqual(result, [])
+        self.assertIn("exceeded configured cap", scraper.unavailable_datasets["followers"])
+
+    def test_social_cap_env_parse_is_guarded(self) -> None:
+        with patch.dict("scraper_html.os.environ", {"SPYBOXD_MAX_FOLLOW_EDGES_PER_SURFACE": "banana"}):
+            self.assertEqual(EnhancedLetterboxdScraper._configured_social_cap(), 5000)
+        with patch.dict("scraper_html.os.environ", {"SPYBOXD_MAX_FOLLOW_EDGES_PER_SURFACE": "-3"}):
+            self.assertEqual(EnhancedLetterboxdScraper._configured_social_cap(), 5000)
+        with patch.dict("scraper_html.os.environ", {"SPYBOXD_MAX_FOLLOW_EDGES_PER_SURFACE": "250"}):
+            self.assertEqual(EnhancedLetterboxdScraper._configured_social_cap(), 250)
+
+    def test_scraper_output_round_trips_through_loader_and_validation(self) -> None:
+        # Producer-to-consumer: save_all_data's real CSVs + v3 manifest must
+        # load and validate under the strict full-manifest contract.
+        scraper = EnhancedLetterboxdScraper.__new__(EnhancedLetterboxdScraper)
+        scraper.username = "viewer"
+        scraper.profile_info = SimpleNamespace(
+            username="viewer", display_name="Viewer", bio="", location="", website="",
+            join_date=None, avatar_url="", total_films=1, total_reviews=0,
+            total_lists=0, following_count=1, followers_count=None, favorite_films=[],
+        )
+        scraper.films_data = [{
+            "title": "Challengers", "year": 2024, "rating": 4.0, "film_id": "842301",
+            "slug": "challengers", "poster_url": "", "film_url": "https://letterboxd.com/film/challengers/",
+            "has_review": False, "is_liked": False, "movie_id": "842301", "tags": [],
+        }]
+        scraper.diary_entries = []
+        scraper.reviews_data = []
+        scraper.watchlist_data = []
+        scraper.lists_data = []
+        scraper.list_items_data = []
+        scraper.social_data = {
+            "following": [{
+                "position": 1, "username": "vaultedapathy", "display_name": "🫀",
+                "avatar_url": "https://a.ltrbxd.com/x.jpg",
+                "profile_url": "https://letterboxd.com/vaultedapathy/",
+            }],
+            "followers": [],
+            "activity": [],
+        }
+        scraper.requested_datasets = {
+            "profile", "favorites", "films", "diary", "likes", "reviews",
+            "watchlist", "lists", "list_items", "following", "followers",
+        }
+        scraper.completed_datasets = set(scraper.requested_datasets) - {"followers"}
+        scraper.unavailable_datasets = {"followers": "forbidden/private"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper.output_dir = temp_dir
+            scraper.save_all_data()
+
+            loaded = load_profile_data(temp_dir, "viewer")
+            validate_import_bundle(loaded, require_full_manifest=True)
+
+            self.assertEqual(loaded.manifest["schema_version"], 3)
+            self.assertEqual(len(loaded.following), 1)
+            self.assertEqual(loaded.following.iloc[0]["Username"], "vaultedapathy")
+            # Unavailable surface: no CSV, no counts entry, empty frame.
+            self.assertEqual(len(loaded.followers), 0)
+            self.assertNotIn("followers.csv", loaded.source_files)
+            self.assertNotIn("followers", loaded.manifest["counts"])
+
+    def test_v2_bundle_with_corrupt_social_csv_still_loads(self) -> None:
+        # Deployed-parity: schema-v2 bundles predate the social contract, so a
+        # stray unreadable following.csv must not fail the strict load.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ProfileLoaderContractTests._write_full_bundle(
+                ProfileLoaderContractTests(), root
+            )
+            (root / "following.csv").write_bytes(b'"unterminated,quote\nrow')
+
+            loaded = load_profile_data(str(root), "viewer")
+            validate_import_bundle(loaded, require_full_manifest=True)
+
+            self.assertEqual(len(loaded.following), 0)
+            self.assertNotIn("following.csv", loaded.source_files)
 
 
 class TagScrapingTests(unittest.TestCase):

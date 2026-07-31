@@ -15,6 +15,7 @@ from database.models import (
     ProfileDataChange,
     ProfileFavoriteMovie,
     ProfileFilm,
+    ProfileFollowEdge,
     ProfileSync,
     Review,
     WatchEvent,
@@ -188,6 +189,25 @@ def capture_profile_state(db: Session, profile_id: int) -> Dict[str, Dict[str, D
                 "note_digest": note_digest,
             }
 
+    following: Dict[str, Dict[str, Any]] = {}
+    followers: Dict[str, Dict[str, Any]] = {}
+    for edge in (
+        db.query(ProfileFollowEdge)
+        .filter(
+            ProfileFollowEdge.profile_id == profile_id,
+            ProfileFollowEdge.removed_at.is_(None),
+        )
+        .all()
+    ):
+        payload = {
+            "username": edge.counterpart_username,
+            "display_name": edge.counterpart_display_name,
+            "profile_url": edge.counterpart_profile_url,
+            "counterpart_profile_id": edge.counterpart_profile_id,
+        }
+        target = following if edge.direction == "following" else followers
+        target[f"user:{edge.counterpart_username_normalized}"] = payload
+
     return {
         "films": films,
         "watchlist": watchlist,
@@ -196,6 +216,8 @@ def capture_profile_state(db: Session, profile_id: int) -> Dict[str, Dict[str, D
         "reviews": reviews,
         "lists": lists,
         "list_items": list_items,
+        "following": following,
+        "followers": followers,
     }
 
 
@@ -359,6 +381,24 @@ def record_profile_changes(
             added_type="watchlist_added",
             removed_type="watchlist_removed",
             date_field="added_date",
+        )
+
+    if authoritative.get("following"):
+        membership_changes(
+            "following",
+            entity_type="follow",
+            dataset="following",
+            added_type="follow_added",
+            removed_type="follow_removed",
+        )
+
+    if authoritative.get("followers"):
+        membership_changes(
+            "followers",
+            entity_type="follow",
+            dataset="followers",
+            added_type="follower_gained",
+            removed_type="follower_lost",
         )
 
     if authoritative.get("favorites"):

@@ -3,7 +3,7 @@
 import React, { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ArrowLeftRight, BarChart3, CalendarDays, Dna, Scale, TrendingUp } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, ArrowRight, BarChart3, CalendarDays, Dna, Scale, TrendingUp } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 
 import {
@@ -17,6 +17,7 @@ import AdminScopeToggle from '../components/AdminScopeToggle';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { useUrlProfileSelection } from '../hooks/useUrlProfileSelection';
 import {
+  followGraphApi,
   insightsApi,
   profileApi,
   type DataCoverageResponse,
@@ -145,6 +146,37 @@ export default function Compare() {
     enabled: canCompare && activeTab === 'calendar',
     staleTime: 5 * 60 * 1000,
   });
+  // Quiet by design: a 404 (endpoint not deployed) or missing pair simply
+  // renders no follow-relationship badge.
+  const mutualsQuery = useQuery({
+    queryKey: ['follow-mutuals', [...activeProfiles].sort()],
+    queryFn: () => followGraphApi.getMutuals(activeProfiles),
+    enabled: canCompare,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+  const followRelationship = useMemo(() => {
+    if (activeProfiles.length !== 2 || mutualsQuery.error) return null;
+    const [profileA, profileB] = activeProfiles;
+    const lowerA = profileA.toLowerCase();
+    const lowerB = profileB.toLowerCase();
+    const pair = (mutualsQuery.data?.pairs ?? []).find((candidate) => {
+      const candidateA = candidate.a.toLowerCase();
+      const candidateB = candidate.b.toLowerCase();
+      return (candidateA === lowerA && candidateB === lowerB) || (candidateA === lowerB && candidateB === lowerA);
+    });
+    if (!pair) return null;
+    const aligned = pair.a.toLowerCase() === lowerA;
+    return {
+      profileA,
+      profileB,
+      aFollowsB: aligned ? pair.a_follows_b : pair.b_follows_a,
+      bFollowsA: aligned ? pair.b_follows_a : pair.a_follows_b,
+      mutual: pair.mutual,
+    };
+  }, [activeProfiles, mutualsQuery.data, mutualsQuery.error]);
 
   const updateDraftProfile = (index: 0 | 1, username: string) => {
     selection.setDraftProfiles((current) => {
@@ -255,6 +287,28 @@ export default function Compare() {
           <BarChart3 className="h-4 w-4" /> Compare
         </button>
       </section>
+
+      {followRelationship && (
+        <div className="flex flex-wrap items-center justify-center gap-2 text-xs" data-testid="follow-relationship">
+          {followRelationship.mutual ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/25 bg-emerald-500/10 px-3 py-1.5 font-semibold text-emerald-300">
+              <ArrowLeftRight className="h-3.5 w-3.5" /> Mutual follows
+            </span>
+          ) : followRelationship.aFollowsB ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-cinema-400/25 bg-cinema-500/10 px-3 py-1.5 font-semibold text-cinema-200">
+              <ArrowRight className="h-3.5 w-3.5" /> @{followRelationship.profileA} follows @{followRelationship.profileB}
+            </span>
+          ) : followRelationship.bFollowsA ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-cinema-400/25 bg-cinema-500/10 px-3 py-1.5 font-semibold text-cinema-200">
+              <ArrowLeft className="h-3.5 w-3.5" /> @{followRelationship.profileB} follows @{followRelationship.profileA}
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-white/40">
+              Not following each other
+            </span>
+          )}
+        </div>
+      )}
 
       <WorkspaceTabs activeTab={activeTab} items={TAB_ITEMS} onChange={changeTab} />
 

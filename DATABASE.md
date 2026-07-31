@@ -114,6 +114,23 @@ Ordered canonical movie membership for each imported list. The `(movie_list_id, 
 
 The ordered favorite-film strip from a public profile page, linked to canonical movies and the authoritative profile sync.
 
+### `profile_follow_edges`
+
+One row per observed social edge on a tracked profile's following/followers
+pages. `direction` distinguishes the two surfaces; each row is an observation
+owned by the sync of the profile whose page produced it, so a mutual follow
+between two tracked profiles legitimately appears as multiple rows and is
+deduplicated at query time.
+
+Counterparts are username-keyed (`counterpart_username_normalized` is the
+casefolded identity inside the `(profile_id, direction, counterpart)` unique
+constraint) because most followed accounts are never imported;
+`counterpart_profile_id` is a nullable reference attached opportunistically
+when a canonical profile exists. An unfollow observed by an authoritative
+sync sets `removed_at`; a re-follow resurrects the row. The first social sync
+for a profile is a baseline and emits no change events; later authoritative
+diffs emit `follow` entity-type rows in `profile_data_changes`.
+
 ### `movie_enrichments` and `movie_watch_providers`
 
 Optional TMDB cache. `movie_enrichments` stores details such as overview, runtime, release date, language, genres, keywords, credits, countries, and expiry. `movie_watch_providers` stores region/provider/type rows separately so regional availability can expire independently.
@@ -163,6 +180,7 @@ profiles
   ├─ watchlist_items ── movies
   ├─ movie_lists ── movie_list_items ── movies
   ├─ profile_favorite_movies ── movies
+  ├─ profile_follow_edges (username-keyed counterpart, optional profile reference)
   ├─ ratings (compatibility)
   ├─ reviews (compatibility)
   └─ scraping_jobs (legacy)

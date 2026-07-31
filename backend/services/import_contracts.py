@@ -13,7 +13,11 @@ from urllib.parse import urljoin, urlparse
 import pandas as pd
 
 
-IMPORTER_VERSION = "4"
+# v5: bundles carry the social surfaces (following.csv/followers.csv), which
+# join the bundle fingerprint. Bumping makes the resulting one-time re-import
+# of previously seen bundles uniform and recorded instead of a silent
+# fingerprint drift breaking the replay no-op selectively.
+IMPORTER_VERSION = "5"
 
 
 def is_missing(value: Any) -> bool:

@@ -28,6 +28,7 @@ TABLE_COPY_ORDER = [
     "movie_lists",
     "movie_list_items",
     "profile_favorite_movies",
+    "profile_follow_edges",
     "profile_source_activities",
     "profile_data_changes",
     "movie_enrichments",

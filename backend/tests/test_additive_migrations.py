@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_REVISION = "20260313_0001"
 FOUNDATION_REVISION = "20260728_0002"
 BACKFILL_REVISION = "20260728_0003"
-HEAD_REVISION = "20260730_0009"
+HEAD_REVISION = "20260731_0010"
 TEST_DATABASE_NAME_PATTERN = re.compile(r"(?:^|[_-])(?:ci|test|testing)(?:$|[_-])")
 TEST_SCHEMA_NAME_PATTERN = re.compile(r"^spyboxd_migration_test_[0-9a-f]{24}$")
 
@@ -104,7 +104,10 @@ class AdditiveMigrationContractTests(unittest.TestCase):
 
         self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
-            script.get_revision(HEAD_REVISION).down_revision, "20260730_0008"
+            script.get_revision(HEAD_REVISION).down_revision, "20260730_0009"
+        )
+        self.assertEqual(
+            script.get_revision("20260730_0009").down_revision, "20260730_0008"
         )
         self.assertEqual(
             script.get_revision("20260730_0008").down_revision, "20260729_0007"
@@ -141,6 +144,7 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "movie_lists",
             "movie_list_items",
             "profile_favorite_movies",
+            "profile_follow_edges",
             "profile_data_changes",
             "profile_source_activities",
             "movie_enrichments",
@@ -159,6 +163,17 @@ class AdditiveMigrationContractTests(unittest.TestCase):
                 "followers_count",
                 "following_count",
                 "last_profile_sync_id",
+            },
+            "profile_follow_edges": {
+                "profile_id",
+                "direction",
+                "counterpart_username",
+                "counterpart_username_normalized",
+                "counterpart_profile_id",
+                "position",
+                "first_seen_profile_sync_id",
+                "last_seen_profile_sync_id",
+                "removed_at",
             },
             "ratings": {
                 "movie_id",
@@ -255,6 +270,7 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "watch_events": {"unique_profile_watch_event"},
             "watchlist_items": {"unique_profile_watchlist_movie"},
             "movie_list_items": {"unique_movie_list_item"},
+            "profile_follow_edges": {"unique_profile_follow_edge"},
             "profile_data_changes": {"unique_profile_sync_change_key"},
             "profile_source_activities": {"unique_profile_source_activity"},
             "user_tracked_profiles": {"uq_user_tracked_profile"},
@@ -302,6 +318,29 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "UPDATE app_users SET primary_profile_required = false",
             identity_migration_source,
         )
+
+        # The follow-edge revision must recreate the change-feed entity-type
+        # constraint as a strict superset that admits 'follow' events, and the
+        # model metadata must agree with the migrated database.
+        follow_migration_source = (
+            REPO_ROOT / "alembic/versions/20260731_0010_add_profile_follow_edges.py"
+        ).read_text()
+        self.assertIn("unique_profile_follow_edge", follow_migration_source)
+        self.assertIn("ck_profile_data_changes_entity_type", follow_migration_source)
+        self.assertIn("'follow'", follow_migration_source)
+        entity_type_checks = [
+            str(constraint.sqltext)
+            for constraint in Base.metadata.tables["profile_data_changes"].constraints
+            if getattr(constraint, "name", None) == "ck_profile_data_changes_entity_type"
+        ]
+        self.assertEqual(len(entity_type_checks), 1)
+        self.assertIn("'follow'", entity_type_checks[0])
+
+        follow_indexes = {
+            index.name: index
+            for index in Base.metadata.tables["profile_follow_edges"].indexes
+        }
+        self.assertIn("ix_profile_follow_edges_counterpart_active", follow_indexes)
         self.assertIn('server_default=sa.text("true")', identity_migration_source)
 
 

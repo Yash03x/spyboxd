@@ -32,6 +32,10 @@ FULL_SCRAPE_REQUIRED_DATASETS = {
     "favorites",
 }
 
+# Schema v3 adds the social surfaces. Gating them on the manifest version keeps
+# every existing v2 bundle valid while new bundles must account for them.
+V3_SCRAPE_REQUIRED_DATASETS = FULL_SCRAPE_REQUIRED_DATASETS | {"following", "followers"}
+
 
 @dataclass
 class LoadedProfileData:
@@ -48,6 +52,8 @@ class LoadedProfileData:
     favorites: pd.DataFrame
     likes: pd.DataFrame
     all_films: pd.DataFrame
+    following: pd.DataFrame
+    followers: pd.DataFrame
     avg_rating: float
     total_reviews: int
     join_date: Optional[date]
@@ -116,6 +122,7 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
         source_files[relative_name] = info
         return frame
 
+    manifest_schema_version: Optional[int] = None
     manifest_path = resolved_profile_path / "manifest.json"
     if manifest_path.exists():
         try:
@@ -123,8 +130,8 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
                 decoded_manifest = json.load(handle)
             if isinstance(decoded_manifest, dict):
                 scrape_manifest = decoded_manifest
-                schema_version = parse_manifest_integer(scrape_manifest.get("schema_version"))
-                strict_sources = schema_version is not None and schema_version >= 2
+                manifest_schema_version = parse_manifest_integer(scrape_manifest.get("schema_version"))
+                strict_sources = manifest_schema_version is not None and manifest_schema_version >= 2
             source_files["manifest.json"] = _file_info(manifest_path, 0)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError(f"Invalid scrape manifest: {exc}") from exc
@@ -136,9 +143,21 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
     else:
         profile_info = {}
 
-    files_to_load = ["ratings", "reviews", "watched", "diary", "watchlist", "comments", "likes"]
+    files_to_load = [
+        "ratings", "reviews", "watched", "diary", "watchlist", "comments", "likes",
+        "following", "followers",
+    ]
+    # Social CSVs are part of the contract from schema v3. A v2 bundle that
+    # happens to contain one (stray or corrupt) is read the way the deployed
+    # v2 loader behaved: not at all. Manifest-less bundles (official exports
+    # ship top-level following.csv/followers.csv) load leniently like every
+    # other surface in that mode.
+    skip_social = manifest_schema_version is not None and manifest_schema_version < 3
     loaded: Dict[str, pd.DataFrame] = {}
     for name in files_to_load:
+        if name in ("following", "followers") and skip_social:
+            loaded[name] = pd.DataFrame()
+            continue
         file_path = resolved_profile_path / f"{name}.csv"
         loaded[name] = read_source(file_path, f"{name}.csv") if file_path.exists() else pd.DataFrame()
 
@@ -258,6 +277,8 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
         favorites=favorites,
         likes=loaded.get("likes", pd.DataFrame()),
         all_films=all_films,
+        following=loaded.get("following", pd.DataFrame()),
+        followers=loaded.get("followers", pd.DataFrame()),
         avg_rating=avg_rating,
         total_reviews=len(reviews),
         join_date=_parse_join_date(profile_info),
@@ -280,6 +301,14 @@ def validate_import_bundle(
         raise ValueError("A successful schema-v2 scraper manifest is required for local import")
     if not has_v2_manifest:
         return
+
+    # v3 bundles must also account for the social surfaces; v2 bundles from
+    # pre-upgrade scrapers remain valid without them.
+    required_datasets = (
+        V3_SCRAPE_REQUIRED_DATASETS
+        if schema_version is not None and schema_version >= 3
+        else FULL_SCRAPE_REQUIRED_DATASETS
+    )
 
     manifest_username = str(loaded.manifest.get("username") or "").strip()
     if not manifest_username:
@@ -318,16 +347,16 @@ def validate_import_bundle(
     requested = (
         {str(value) for value in requested_values if str(value).strip()}
         if isinstance(requested_values, list)
-        else set(FULL_SCRAPE_REQUIRED_DATASETS)
+        else set(required_datasets)
     )
-    missing_requests = FULL_SCRAPE_REQUIRED_DATASETS - requested
+    missing_requests = required_datasets - requested
     if missing_requests:
         raise ValueError(
             "Full scrape manifest did not request datasets: "
             + ", ".join(sorted(missing_requests))
         )
 
-    missing = FULL_SCRAPE_REQUIRED_DATASETS - completed - set(unavailable)
+    missing = required_datasets - completed - set(unavailable)
     if missing:
         raise ValueError(
             "Full scrape manifest has unaccounted datasets: "
@@ -352,6 +381,8 @@ def validate_import_bundle(
         "lists": "lists.csv",
         "list_items": "list_items.csv",
         "favorites": "favorites.csv",
+        "following": "following.csv",
+        "followers": "followers.csv",
     }
     required_files = {dataset_files[name] for name in completed if name in dataset_files}
     missing_files = required_files - set(loaded.source_files)
@@ -386,6 +417,8 @@ def validate_import_bundle(
         "lists": len(loaded.list_metadata),
         "list_items": sum(len(frame) for frame in loaded.lists),
         "favorites": len(loaded.favorites),
+        "following": len(loaded.following),
+        "followers": len(loaded.followers),
     }
     mismatches = []
     for dataset_name, observed in observed_counts.items():
