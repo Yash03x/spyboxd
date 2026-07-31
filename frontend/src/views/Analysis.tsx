@@ -81,7 +81,7 @@ const Analysis: React.FC = () => {
             Single-profile deep dives over the profiles you track.
           </p>
         </div>
-        <AdminScopeToggle />
+        <div className="lg:hidden"><AdminScopeToggle /></div>
       </div>
 
       {profilesArray.length === 0 ? (

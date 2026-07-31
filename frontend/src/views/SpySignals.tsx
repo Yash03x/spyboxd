@@ -158,7 +158,7 @@ const SpySignals: React.FC = () => {
             Find people who watched the same film on the same day or within a chosen time gap.
           </p>
         </div>
-        <AdminScopeToggle />
+        <div className="lg:hidden"><AdminScopeToggle /></div>
       </header>
 
       {profilesLoading ? (

@@ -21,6 +21,7 @@ import {
 } from '@heroicons/react/24/solid';
 import { LogOut, Menu, UsersRound, X } from 'lucide-react';
 import { useCurrentUser } from '../hooks/useCurrentUser';
+import AdminScopeToggle from './AdminScopeToggle';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -85,7 +86,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, []);
 
   const isActive = (path: string) => pathname === path || pathname.startsWith(`${path}/`);
-  const activeItem = NAVIGATION_ITEMS.find((item) => isActive(item.path));
   const signInHref = `/sign-in?redirect_url=${encodeURIComponent(pathname)}`;
   const accountLabel = currentUserQuery.data?.letterboxd_username
     ? `@${currentUserQuery.data.letterboxd_username}`
@@ -276,30 +276,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       <main className="flex min-w-0 flex-1 flex-col min-h-screen lg:min-h-auto">
         {/* Top Header */}
         <motion.header 
-          className="hidden border-b border-white/10 bg-black/10 px-6 py-4 backdrop-blur-md lg:block"
+          className="hidden border-b border-white/10 bg-black/10 px-6 py-3 backdrop-blur-md lg:block"
           initial={{ y: -50, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           transition={{ duration: 0.6, delay: 0.3 }}
         >
-          <div className="flex items-center justify-between">
-            <div>
-              <motion.h2 
-                className="text-2xl font-bold text-white text-glow"
-                initial={{ x: -20, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                transition={{ delay: 0.5 }}
-              >
-                {activeItem?.label || 'My Dashboard'}
-              </motion.h2>
-              <motion.p 
-                className="text-white/60 text-sm mt-1"
-                initial={{ x: -20, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                transition={{ delay: 0.6 }}
-              >
-                {activeItem?.description || 'Welcome to Spyboxd'}
-              </motion.p>
-            </div>
+          <div className="flex min-h-11 items-center justify-between gap-4">
+            {/* Pages render their own heading, so the bar carries utilities
+                only: the admin data-scope lens and the account controls. */}
+            <AdminScopeToggle />
+            <div aria-hidden="true" />
             {isSignedIn ? (
               <div className="flex items-center gap-3">
                 <UserButton />

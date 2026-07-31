@@ -201,7 +201,7 @@ export default function WatchTogether() {
   if (completedProfiles.length < 2) {
     return (
       <div className="space-y-6">
-        <div className="flex justify-end"><AdminScopeToggle /></div>
+        <div className="flex justify-end"><div className="lg:hidden"><AdminScopeToggle /></div></div>
         <FeatureState title="Track two profiles for a group pick" message="Add or request at least two Letterboxd profiles in My Profiles before asking for a group movie pick." actionHref="/profiles" actionLabel="Open My Profiles" />
       </div>
     );
@@ -220,7 +220,7 @@ export default function WatchTogether() {
           <p className="mt-2 text-white/60">Find the best film for this group tonight.</p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center lg:w-auto">
-          <AdminScopeToggle />
+          <div className="lg:hidden"><AdminScopeToggle /></div>
           <ProfileMultiSelect
             profiles={completedProfiles}
             selectedUsernames={selection.draftProfiles}
