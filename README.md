@@ -1,7 +1,6 @@
 # Spyboxd
 
 [![Production CI](https://github.com/Yash03x/spyboxd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Yash03x/spyboxd/actions/workflows/ci.yml)
-[![Deploy Production](https://github.com/Yash03x/spyboxd/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/Yash03x/spyboxd/actions/workflows/deploy.yml)
 
 **Live product: [spyboxd.com](https://spyboxd.com)**
 

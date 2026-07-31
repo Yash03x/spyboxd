@@ -13,7 +13,7 @@ import unittest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RECONCILE_SCRIPT = REPOSITORY_ROOT / "deploy/reconcile-interrupted-deployment.sh"
 HEALTH_VALIDATOR = REPOSITORY_ROOT / "deploy/check-runtime-health.py"
-DEPLOY_WORKFLOW = REPOSITORY_ROOT / ".github/workflows/deploy.yml"
+DEPLOY_WORKFLOW = REPOSITORY_ROOT / ".github/workflows/ci.yml"
 
 
 class InterruptedDeploymentReconciliationTests(unittest.TestCase):
