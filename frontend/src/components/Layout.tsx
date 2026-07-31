@@ -86,7 +86,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const isActive = (path: string) => pathname === path || pathname.startsWith(`${path}/`);
   const activeItem = NAVIGATION_ITEMS.find((item) => isActive(item.path));
-  const isInsightWorkspace = isActive('/compare') || isActive('/watch-together');
   const signInHref = `/sign-in?redirect_url=${encodeURIComponent(pathname)}`;
   const accountLabel = currentUserQuery.data?.letterboxd_username
     ? `@${currentUserQuery.data.letterboxd_username}`
@@ -259,30 +258,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             })}
             </div>
 
-            {isInsightWorkspace && (
-              <div className="mt-5 hidden items-center justify-between gap-3 border-t border-white/10 pt-4 text-sm text-white/60 lg:flex">
-                {isSignedIn ? (
-                  <>
-                    <div className="flex min-w-0 items-center gap-3">
-                      <UserButton />
-                      <span className="truncate" title={accountLabel}>{accountLabel}</span>
-                    </div>
-                    <SignOutButton redirectUrl="/">
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-white/65 hover:border-cinema-400/30 hover:bg-cinema-500/10 hover:text-white"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        Sign out
-                      </button>
-                    </SignOutButton>
-                  </>
-                ) : (
-                  <Link href={signInHref} className="font-semibold text-cinema-300 hover:text-cinema-200">Sign in</Link>
-                )}
-              </div>
-            )}
-
             <div className="mt-5 border-t border-white/10 pt-4 lg:hidden">
               {isSignedIn ? (
                 <div className="flex min-w-0 items-center gap-3 text-sm text-white/60">
@@ -301,7 +276,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       <main className="flex min-w-0 flex-1 flex-col min-h-screen lg:min-h-auto">
         {/* Top Header */}
         <motion.header 
-          className={`${isInsightWorkspace ? 'hidden' : 'hidden lg:block'} border-b border-white/10 bg-black/10 px-6 py-4 backdrop-blur-md`}
+          className="hidden border-b border-white/10 bg-black/10 px-6 py-4 backdrop-blur-md lg:block"
           initial={{ y: -50, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           transition={{ duration: 0.6, delay: 0.3 }}
@@ -325,26 +300,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 {activeItem?.description || 'Welcome to Spyboxd'}
               </motion.p>
             </div>
-            {!isInsightWorkspace && (
-              isSignedIn ? (
-                <div className="flex items-center gap-3">
-                  <UserButton />
-                  <span className="max-w-44 truncate text-sm font-semibold text-white/65" title={accountLabel}>
-                    {accountLabel}
-                  </span>
-                  <SignOutButton redirectUrl="/">
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-white/70 hover:border-cinema-400/30 hover:bg-cinema-500/10 hover:text-white"
-                    >
-                      <LogOut className="h-4 w-4" />
-                      Sign out
-                    </button>
-                  </SignOutButton>
-                </div>
-              ) : (
-                <Link href={signInHref} className="btn-secondary">Sign in</Link>
-              )
+            {isSignedIn ? (
+              <div className="flex items-center gap-3">
+                <UserButton />
+                <span className="max-w-44 truncate text-sm font-semibold text-white/65" title={accountLabel}>
+                  {accountLabel}
+                </span>
+                <SignOutButton redirectUrl="/">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-white/70 hover:border-cinema-400/30 hover:bg-cinema-500/10 hover:text-white"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    Sign out
+                  </button>
+                </SignOutButton>
+              </div>
+            ) : (
+              <Link href={signInHref} className="btn-secondary">Sign in</Link>
             )}
           </div>
         </motion.header>

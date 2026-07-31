@@ -45,7 +45,7 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
-  - package-ecosystem: docker
+  - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly
@@ -56,8 +56,9 @@ updates:
       default-days: 7
     open-pull-requests-limit: 3
     groups:
-      docker-images:
+      compose-images-minor-and-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: docker
     directory: /backend
@@ -69,6 +70,10 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 2
+    groups:
+      backend-base-images-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: docker
     directory: /frontend
@@ -80,3 +85,7 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 2
+    groups:
+      frontend-base-images-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

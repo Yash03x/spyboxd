@@ -1,0 +1,10 @@
+*
+!package.json
+!package-lock.json
+!.next
+!.next/**
+!public
+!public/**
+!next.config.ts
+!scripts
+!scripts/**

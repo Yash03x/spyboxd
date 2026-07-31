@@ -989,9 +989,12 @@ require_bundled_frontend_process() {
 
 check_rollback_liveness() {
     if [[ -f "${old_release}/.revision-health-v1" ]]; then
-        wait_for_http "rolled-back API" "http://127.0.0.1:8000/health" ok "${old_revision}" \
+        wait_for_http "rolled-back API revision ${old_revision}" "http://127.0.0.1:8000/health" ok "${old_revision}" \
             && wait_for_validated_json "rolled-back database-backed dashboard" "http://127.0.0.1:8000/api/public/dashboard" dashboard \
-            && wait_for_http "rolled-back frontend" "http://127.0.0.1:3000/sign-in"
+            && wait_for_http "rolled-back frontend" "http://127.0.0.1:3000/sign-in" \
+            && wait_for_http "public rolled-back API revision ${old_revision}" "https://api.spyboxd.com/health" ok "${old_revision}" \
+            && wait_for_validated_json "public rolled-back database-backed dashboard" "https://api.spyboxd.com/api/public/dashboard" dashboard \
+            && wait_for_http "public rolled-back frontend" "https://spyboxd.com/sign-in"
         return
     fi
 

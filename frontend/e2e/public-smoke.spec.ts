@@ -124,13 +124,30 @@ test('watching activity identifies month-to-date events and excludes them from t
     { exact: true },
   )).toBeVisible();
   await expect(activityChart.getByLabel('Average watch events per completed month')).toHaveText('15.0');
-  await expect(activityChart.getByText('Avg/Completed Month', { exact: true })).toBeVisible();
+  await expect(activityChart.getByLabel('Average unique films per completed month')).toHaveText('12.0');
+  await expect(activityChart.getByText('Watch Events/Mo', { exact: true })).toBeVisible();
+  await expect(activityChart.getByText('Unique Films/Mo', { exact: true })).toBeVisible();
   await expect(activityChart.getByRole('img')).toHaveAccessibleName(
-    /July 2026 is month to date and is excluded from the completed-month average.*15\.0 watch events per completed month/,
+    /July 2026 is month to date and is excluded from the completed-month average.*15\.0 watch events and 12\.0 unique films per completed month/,
   );
   await expect(activityChart.getByRole('list', { name: 'Watching Activity data points' })).toContainText(
-    'July 2026, month to date: 90 watch events; average rating 3.9',
+    'July 2026, month to date: 90 watch events; 70 unique films; average rating 3.9',
   );
+
+  // The chart canvas must stay inside the fixed-height card so the x-axis
+  // labels are never painted over by the following section.
+  const cardBox = await activityChart.boundingBox();
+  const canvasBox = await activityChart.getByRole('img').boundingBox();
+  expect(cardBox).not.toBeNull();
+  expect(canvasBox).not.toBeNull();
+  expect(canvasBox!.y + canvasBox!.height).toBeLessThanOrEqual(cardBox!.y + cardBox!.height + 1);
+
+  // Stat captions must render on a single line, not flex-shrunk into two.
+  for (const caption of ['Watch Events/Mo', 'Unique Films/Mo']) {
+    const captionBox = await activityChart.getByText(caption, { exact: true }).boundingBox();
+    expect(captionBox).not.toBeNull();
+    expect(captionBox!.height).toBeLessThanOrEqual(20);
+  }
 });
 
 test('analysis list panels keep intrinsic heights without animated glass artifacts', async ({ page }) => {

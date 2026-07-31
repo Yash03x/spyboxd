@@ -13,6 +13,8 @@ import {
 } from '../components/insights/ComparePanels';
 import TasteTimelinePanel from '../components/insights/TasteTimelinePanel';
 import { FeatureState, ProfileAvatar, WorkspaceTabs } from '../components/insights/InsightUI';
+import AdminScopeToggle from '../components/AdminScopeToggle';
+import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { useUrlProfileSelection } from '../hooks/useUrlProfileSelection';
 import {
   insightsApi,
@@ -102,10 +104,7 @@ export default function Compare() {
   const requestedWindow = Number(searchParams.get('window') ?? 7);
   const windowDays = VALID_WINDOWS.has(requestedWindow) ? requestedWindow : 7;
 
-  const profilesQuery = useQuery({
-    queryKey: ['profiles'],
-    queryFn: profileApi.getProfiles,
-  });
+  const profilesQuery = useScopedProfiles();
   const completedProfiles = useMemo(
     () => (profilesQuery.data ?? []).filter((profile) => profile.scraping_status === 'completed'),
     [profilesQuery.data],
@@ -191,7 +190,14 @@ export default function Compare() {
 
   if (profilesQuery.isLoading) return <FeatureState title="Loading profiles" message="Preparing the comparison workspace." loading />;
   if (profilesQuery.error) return <FeatureState title="Profiles unavailable" message="The profile directory could not be loaded." />;
-  if (completedProfiles.length < 2) return <FeatureState title="Track two profiles to compare" message="Add or request at least two Letterboxd profiles in My Profiles before opening Compare." actionHref="/profiles" actionLabel="Open My Profiles" />;
+  if (completedProfiles.length < 2) {
+    return (
+      <div className="mx-auto max-w-[92rem] space-y-5">
+        <div className="flex justify-end"><AdminScopeToggle /></div>
+        <FeatureState title="Track two profiles to compare" message="Add or request at least two Letterboxd profiles in My Profiles before opening Compare." actionHref="/profiles" actionLabel="Open My Profiles" />
+      </div>
+    );
+  }
 
   return (
     <motion.div
@@ -205,7 +211,9 @@ export default function Compare() {
           <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">Compare Profiles</h1>
           <p className="mt-2 text-sm text-white/55">Understand how two people&apos;s movie lives overlap.</p>
         </div>
-        <div className="flex items-center gap-1 self-start rounded-xl border border-white/12 bg-black/15 p-1" aria-label="Comparison time window">
+        <div className="flex flex-wrap items-center gap-3 self-start">
+        <AdminScopeToggle />
+        <div className="flex items-center gap-1 rounded-xl border border-white/12 bg-black/15 p-1" aria-label="Comparison time window">
           {[1, 7, 30].map((value) => (
             <button
               key={value}
@@ -217,6 +225,7 @@ export default function Compare() {
               {value === 1 ? '1 day' : `${value} days`}
             </button>
           ))}
+        </div>
         </div>
       </header>
 

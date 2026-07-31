@@ -506,7 +506,7 @@ class ClerkProductionValidatorTests(unittest.TestCase):
 
     def test_clerk_bridge_is_exact_opt_in_and_never_restarts_dev_artifact(self) -> None:
         release_script = SCRIPT.with_name("release.sh").read_text(encoding="utf-8")
-        workflow = (SCRIPT.parents[1] / ".github/workflows/deploy.yml").read_text(
+        workflow = (SCRIPT.parents[1] / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
 
@@ -530,7 +530,7 @@ class ClerkProductionValidatorTests(unittest.TestCase):
         )
 
     def test_external_smoke_redirect_probe_is_line_terminated(self) -> None:
-        workflow = (SCRIPT.parents[1] / ".github/workflows/deploy.yml").read_text(
+        workflow = (SCRIPT.parents[1] / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
 
@@ -540,7 +540,7 @@ class ClerkProductionValidatorTests(unittest.TestCase):
         )
 
     def test_external_failure_stops_a_first_activation_without_a_rollback(self) -> None:
-        workflow = (SCRIPT.parents[1] / ".github/workflows/deploy.yml").read_text(
+        workflow = (SCRIPT.parents[1] / ".github/workflows/ci.yml").read_text(
             encoding="utf-8"
         )
 

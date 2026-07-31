@@ -203,11 +203,15 @@ if expected_revision and payload.get("revision") != expected_revision:
 }
 
 wait_for_validated_json() {
-    local name="$1" url="$2" kind="$3" response attempt
+    local name="$1" url="$2" kind="$3" expected_revision="${4:-}" response attempt
+    local -a validator_args=("${kind}")
+    if [[ -n "${expected_revision}" ]]; then
+        validator_args+=(--revision "${expected_revision}")
+    fi
     for attempt in $(seq 1 12); do
         if response="$(curl --silent --show-error --fail --max-time 5 "${url}" 2>/dev/null)" \
             && printf '%s' "${response}" \
-                | python3 "${health_validator}" "${kind}" >/dev/null; then
+                | python3 "${health_validator}" "${validator_args[@]}" >/dev/null; then
             log "${name} is ready"
             return 0
         fi

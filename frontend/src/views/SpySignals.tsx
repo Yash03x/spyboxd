@@ -12,7 +12,10 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import SpySignalsControls, { type SignalGapDays } from '../components/SpySignalsControls';
 import SpySignalsResults from '../components/SpySignalsResults';
 import RewatchEchoesPanel from '../components/insights/RewatchEchoesPanel';
-import { profileApi, spySignalsApi } from '../services/api';
+import AdminScopeToggle from '../components/AdminScopeToggle';
+import { useAdminScope } from '../hooks/useAdminScope';
+import { useScopedProfiles } from '../hooks/useScopedProfiles';
+import { spySignalsApi } from '../services/api';
 
 const VALID_GAPS = new Set<SignalGapDays>([0, 1, 3]);
 
@@ -46,16 +49,12 @@ const SpySignals: React.FC = () => {
   const [appliedProfiles, setAppliedProfiles] = useState<string[]>([]);
   const [appliedGap, setAppliedGap] = useState<SignalGapDays>(1);
 
+  const { isAdmin, isGlobalAdminView, effectiveScope } = useAdminScope();
   const {
     data: profiles,
     isLoading: profilesLoading,
     error: profilesError,
-  } = useQuery({
-    queryKey: ['profiles'],
-    queryFn: profileApi.getProfiles,
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
+  } = useScopedProfiles();
 
   const rewatchEchoesQuery = useQuery({
     queryKey: ['rewatch-echoes', [...appliedProfiles].sort(), appliedGap],
@@ -97,6 +96,12 @@ const SpySignals: React.FC = () => {
     setAppliedGap((current) => current === queryState.gapDays ? current : queryState.gapDays);
   }, [profilesArray, serializedSearchParams]);
 
+  // The empty-list "all profiles" shorthand expands server-side to the caller's
+  // default set: everything for admins, the tracked set otherwise. An admin in
+  // the tracked view must therefore always send the selection explicitly.
+  const allProfilesSelected = appliedProfiles.length === profilesArray.length;
+  const canUseServerDefault = allProfilesSelected && (!isAdmin || isGlobalAdminView);
+
   const {
     data: signals,
     isLoading: signalsLoading,
@@ -107,11 +112,12 @@ const SpySignals: React.FC = () => {
     queryKey: [
       'spy-signals',
       'events',
-      appliedProfiles.length === profilesArray.length ? 'all' : [...appliedProfiles].sort(),
+      effectiveScope,
+      allProfilesSelected ? 'all' : [...appliedProfiles].sort(),
       appliedGap,
     ],
     queryFn: () => spySignalsApi.getSignals(
-      appliedProfiles.length === profilesArray.length ? [] : appliedProfiles,
+      canUseServerDefault ? [] : appliedProfiles,
       appliedGap,
     ),
     enabled: appliedProfiles.length >= 2,
@@ -145,11 +151,14 @@ const SpySignals: React.FC = () => {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5 }}
     >
-      <header>
-        <h1 className="text-4xl font-bold text-white text-glow">Spy Signals</h1>
-        <p className="mt-2 max-w-3xl text-white/60">
-          Find people who watched the same film on the same day or within a chosen time gap.
-        </p>
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-4xl font-bold text-white text-glow">Spy Signals</h1>
+          <p className="mt-2 max-w-3xl text-white/60">
+            Find people who watched the same film on the same day or within a chosen time gap.
+          </p>
+        </div>
+        <AdminScopeToggle />
       </header>
 
       {profilesLoading ? (

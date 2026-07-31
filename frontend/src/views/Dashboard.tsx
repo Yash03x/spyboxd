@@ -30,17 +30,16 @@ import ProfileCard from '../components/ProfileCard';
 import RatingDistributionChart from '../components/Charts/RatingDistributionChart';
 import ActivityChart from '../components/Charts/ActivityChart';
 import RecentChangesCard from '../components/insights/RecentChangesCard';
+import AdminScopeToggle from '../components/AdminScopeToggle';
 import { useCurrentUser } from '../hooks/useCurrentUser';
+import { useAdminScope } from '../hooks/useAdminScope';
 
 const Dashboard: React.FC = () => {
   const [deletingProfile, setDeletingProfile] = useState<string | null>(null);
-  const [dashboardScope, setDashboardScope] = useState<'tracked' | 'global'>('global');
   const router = useRouter();
   const queryClient = useQueryClient();
   const currentUserQuery = useCurrentUser();
-  const isAdmin = currentUserQuery.data?.is_admin ?? false;
-  const isGlobalAdminView = isAdmin && dashboardScope === 'global';
-  const effectiveDashboardScope: 'tracked' | 'global' = isGlobalAdminView ? 'global' : 'tracked';
+  const { isGlobalAdminView, effectiveScope: effectiveDashboardScope } = useAdminScope();
   
   const { data: profiles, isLoading, error, refetch } = useQuery({
     queryKey: ['profiles', 'dashboard', effectiveDashboardScope],
@@ -69,25 +68,6 @@ const Dashboard: React.FC = () => {
     staleTime: 2 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
-
-  const adminScopeToggle = isAdmin ? (
-    <div className="inline-flex rounded-xl border border-white/10 bg-black/20 p-1" aria-label="Dashboard scope">
-      <button
-        type="button"
-        onClick={() => setDashboardScope('tracked')}
-        className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${dashboardScope === 'tracked' ? 'bg-cinema-500 text-white' : 'text-white/55 hover:text-white'}`}
-      >
-        Monitored
-      </button>
-      <button
-        type="button"
-        onClick={() => setDashboardScope('global')}
-        className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${dashboardScope === 'global' ? 'bg-cinema-500 text-white' : 'text-white/55 hover:text-white'}`}
-      >
-        Global admin
-      </button>
-    </div>
-  ) : null;
 
   // Handle profile deletion
   const handleDeleteProfile = async (username: string) => {
@@ -136,7 +116,7 @@ const Dashboard: React.FC = () => {
             {isGlobalAdminView ? 'Analytics across the complete managed profile library.' : 'Analytics across the Letterboxd profiles you monitor.'}
           </p>
           </div>
-          {adminScopeToggle}
+          <AdminScopeToggle />
         </div>
         <section className="card-cinema flex min-h-80 flex-col items-center justify-center px-6 text-center">
           <motion.div
@@ -219,7 +199,7 @@ const Dashboard: React.FC = () => {
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}
         >
-          {adminScopeToggle}
+          <AdminScopeToggle />
           <motion.button 
             onClick={handleRefreshAll}
             className="btn-secondary flex items-center space-x-2"

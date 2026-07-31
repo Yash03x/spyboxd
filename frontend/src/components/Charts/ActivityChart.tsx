@@ -28,6 +28,8 @@ ChartJS.register(
 interface ActivityData {
   month: string;
   movies_watched: number;
+  // Optional: cached snapshots produced before this field existed omit it.
+  unique_movies?: number | null;
   average_rating: number | null;
   is_partial: boolean;
 }
@@ -53,12 +55,27 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
   const completedAverage = completedPoints.length > 0
     ? completedTotal / completedPoints.length
     : null;
+  const completedUniqueValues = completedPoints.map((item) => item.unique_movies);
+  const uniqueAverage = completedPoints.length > 0
+    && completedUniqueValues.every((value): value is number => typeof value === 'number')
+    ? completedUniqueValues.reduce((sum, value) => sum + value, 0) / completedPoints.length
+    : null;
   const partialMonth = partialPoint
     ? formatMonth(partialPoint.month, 'long', 'numeric')
     : null;
+  const averageSummary = completedAverage === null
+    ? 'No completed-month average is available.'
+    : uniqueAverage === null
+      ? `Average: ${completedAverage.toFixed(1)} watch events per completed month.`
+      : `Average: ${completedAverage.toFixed(1)} watch events and ${uniqueAverage.toFixed(1)} unique films per completed month.`;
   const chartAccessibilityLabel = partialMonth
-    ? `${title}. ${partialMonth} is month to date and is excluded from the completed-month average. ${completedAverage === null ? 'No completed-month average is available.' : `Average: ${completedAverage.toFixed(1)} watch events per completed month.`}`
-    : `${title}. ${completedAverage === null ? 'No completed-month average is available.' : `Average: ${completedAverage.toFixed(1)} watch events per completed month.`}`;
+    ? `${title}. ${partialMonth} is month to date and is excluded from the completed-month average. ${averageSummary}`
+    : `${title}. ${averageSummary}`;
+
+  // Only plot unique films when every month has the value; mixed legacy cache
+  // snapshots would otherwise draw a line with holes and a misleading band.
+  const hasUniqueSeries = data.length > 0
+    && data.every((item) => typeof item.unique_movies === 'number');
 
   const chartData = {
     labels: data.map((item) => (
@@ -71,7 +88,9 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         borderColor: '#f57c00',
         backgroundColor: 'rgba(245, 124, 0, 0.1)',
         borderWidth: 3,
-        fill: true,
+        // With the unique-films line present, the orange band spans only the
+        // gap between the two counts, so it reads as rewatch volume.
+        fill: hasUniqueSeries ? '+1' : true,
         tension: 0.4,
         pointBackgroundColor: '#f57c00',
         pointBorderColor: '#ffffff',
@@ -82,6 +101,23 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         pointHoverBorderColor: '#ffffff',
         pointHoverBorderWidth: 3,
       },
+      ...(hasUniqueSeries ? [{
+        label: 'Unique Films',
+        data: data.map(item => item.unique_movies as number),
+        borderColor: '#cbd5e1',
+        backgroundColor: 'rgba(148, 163, 184, 0.08)',
+        borderWidth: 2.5,
+        fill: 'origin' as const,
+        tension: 0.4,
+        pointBackgroundColor: '#cbd5e1',
+        pointBorderColor: '#0f172a',
+        pointBorderWidth: 2,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        pointHoverBackgroundColor: '#e2e8f0',
+        pointHoverBorderColor: '#0f172a',
+        pointHoverBorderWidth: 2,
+      }] : []),
       {
         label: 'Average Rating',
         data: data.map(item => item.average_rating !== null ? item.average_rating * 10 : null), // Scale to make visible
@@ -135,7 +171,7 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
         },
         title: {
           display: true,
-          text: 'Watch Events',
+          text: hasUniqueSeries ? 'Films / Events' : 'Watch Events',
           color: '#f57c00',
           font: {
             family: 'Inter',
@@ -205,6 +241,19 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
             }
             return `${context.dataset.label}${periodSuffix}: ${context.raw}`;
           },
+          afterBody: (items) => {
+            // The plotted dataset already labels unique films; this fallback
+            // only covers mixed legacy data where the series is not drawn.
+            if (hasUniqueSeries) {
+              return [];
+            }
+            const point = items.length > 0 ? data[items[0].dataIndex] : undefined;
+            if (typeof point?.unique_movies !== 'number') {
+              return [];
+            }
+            const periodSuffix = point.is_partial ? ' (MTD)' : '';
+            return [`Unique Films${periodSuffix}: ${point.unique_movies}`];
+          },
         },
       },
     },
@@ -217,13 +266,13 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
   return (
     <motion.section
       aria-label={title}
-      className="card-cinema h-96"
+      className="card-cinema flex h-96 flex-col"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, delay: 0.1 }}
     >
-      <div className="flex items-center justify-between mb-6">
-        <div>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="min-w-[15rem] flex-1">
           <h3 className="text-lg font-semibold text-white">{title}</h3>
           <p className="text-white/60 text-sm">
             {partialMonth
@@ -231,24 +280,35 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
               : 'Monthly watch events'}
           </p>
         </div>
-        
-        <motion.div 
-          className="text-center"
+
+        <motion.div
+          className="flex shrink-0 items-start gap-5"
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.4 }}
         >
-          <output
-            aria-label="Average watch events per completed month"
-            className="block text-xl font-bold text-cinema-400"
-          >
-            {completedAverage === null ? '—' : completedAverage.toFixed(1)}
-          </output>
-          <div className="text-xs text-white/60">Avg/Completed Month</div>
+          <div className="text-center">
+            <output
+              aria-label="Average watch events per completed month"
+              className="block text-xl font-bold text-cinema-400"
+            >
+              {completedAverage === null ? '—' : completedAverage.toFixed(1)}
+            </output>
+            <div className="whitespace-nowrap text-xs text-white/60">Watch Events/Mo</div>
+          </div>
+          <div className="text-center">
+            <output
+              aria-label="Average unique films per completed month"
+              className="block text-xl font-bold text-slate-300"
+            >
+              {uniqueAverage === null ? '—' : uniqueAverage.toFixed(1)}
+            </output>
+            <div className="whitespace-nowrap text-xs text-white/60">Unique Films/Mo</div>
+          </div>
         </motion.div>
       </div>
-      
-      <div className="h-72">
+
+      <div className="min-h-0 flex-1">
         {data.length > 0 ? (
           <motion.div 
             className="h-full"
@@ -267,6 +327,7 @@ const ActivityChart: React.FC<ActivityChartProps> = ({
                 <li key={item.month}>
                   {formatMonth(item.month, 'long', 'numeric')}
                   {item.is_partial ? ', month to date' : ''}: {item.movies_watched} watch events;{' '}
+                  {typeof item.unique_movies === 'number' ? `${item.unique_movies} unique films; ` : ''}
                   {item.average_rating === null
                     ? 'average rating unavailable'
                     : `average rating ${item.average_rating.toFixed(1)}`}

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
+import tarfile
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
@@ -924,6 +928,120 @@ class AdditiveMigrationPostgresTests(unittest.TestCase):
                     )
             finally:
                 transaction.rollback()
+
+    def test_previous_application_revision_serves_upgraded_seeded_schema(self) -> None:
+        """Run the actual prior backend checkout against the migrated fixture."""
+
+        previous_revision = os.getenv("SPYBOXD_PREVIOUS_APP_REVISION", "").strip()
+        if not previous_revision:
+            self.skipTest("SPYBOXD_PREVIOUS_APP_REVISION is not configured")
+        if not re.fullmatch(r"[0-9a-f]{40}", previous_revision):
+            self.fail("SPYBOXD_PREVIOUS_APP_REVISION must be a full Git commit")
+
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{previous_revision}^{{commit}}"],
+            cwd=REPO_ROOT,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", previous_revision, "HEAD"],
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(
+            ancestor.returncode,
+            0,
+            "the compatibility revision must be an ancestor of the tested checkout",
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="spyboxd-previous-app-compatibility-"
+        ) as temporary_directory:
+            temporary = Path(temporary_directory)
+            archive_path = temporary / "previous-backend.tar"
+            source_root = temporary / "source"
+            source_root.mkdir(mode=0o700)
+            subprocess.run(
+                [
+                    "git",
+                    "archive",
+                    "--format=tar",
+                    f"--output={archive_path}",
+                    previous_revision,
+                    "backend",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            with tarfile.open(archive_path, mode="r:") as archive:
+                archive.extractall(source_root, filter="data")
+
+            previous_backend = source_root / "backend"
+            self.assertTrue((previous_backend / "main.py").is_file())
+            probe = temporary / "probe.py"
+            probe.write_text(
+                """
+import json
+from fastapi.testclient import TestClient
+from main import app
+
+with TestClient(app) as client:
+    response = client.get("/api/public/dashboard")
+    if response.status_code != 200:
+        raise SystemExit(f"previous dashboard returned HTTP {response.status_code}")
+    payload = response.json()
+required = {
+    "activity_data",
+    "data_health",
+    "rating_distribution",
+    "signal_counts",
+    "system_stats",
+    "timestamp",
+}
+if not isinstance(payload, dict) or not required.issubset(payload):
+    raise SystemExit("previous dashboard returned an invalid contract")
+stats = payload.get("system_stats")
+if (
+    not isinstance(stats, dict)
+    or stats.get("total_profiles", 0) < 2
+    or stats.get("total_movies_tracked", 0) < 1
+):
+    raise SystemExit("previous dashboard did not read the seeded database")
+print("SPYBOXD_PREVIOUS_APP_PROBE=" + json.dumps(stats, sort_keys=True))
+""".lstrip(),
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DATABASE_URL": self.database_url.render_as_string(
+                        hide_password=False
+                    ),
+                    "PGOPTIONS": f"-csearch_path={self.schema_name}",
+                    "PYTHONPATH": str(previous_backend),
+                    "SPYBOXD_APP_REVISION": previous_revision,
+                }
+            )
+            completed = subprocess.run(
+                [sys.executable, str(probe)],
+                cwd=previous_backend,
+                env=environment,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("SPYBOXD_PREVIOUS_APP_PROBE=", completed.stdout)
 
 
 if __name__ == "__main__":
