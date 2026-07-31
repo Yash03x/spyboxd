@@ -19,7 +19,7 @@ import {
   SignalIcon as SignalIconSolid,
   ScaleIcon as ScaleIconSolid,
 } from '@heroicons/react/24/solid';
-import { LogOut, Menu, UsersRound, X } from 'lucide-react';
+import { LogOut, Menu, UsersRound, Waypoints, X } from 'lucide-react';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import AdminScopeToggle from './AdminScopeToggle';
 
@@ -55,6 +55,13 @@ const NAVIGATION_ITEMS = [
     icon: UsersRound,
     activeIcon: UsersRound,
     description: 'Find a Group Pick',
+  },
+  {
+    path: '/network',
+    label: 'Network',
+    icon: Waypoints,
+    activeIcon: Waypoints,
+    description: 'The Follow Graph',
   },
   {
     path: '/profiles',
