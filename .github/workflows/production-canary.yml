@@ -101,16 +101,11 @@ jobs:
                 exit 1
               }
               ci_runs="${RUNNER_TEMP}/spyboxd-active-ci.json"
-              deploy_runs="${RUNNER_TEMP}/spyboxd-active-deploy.json"
               gh api \
                 --header 'X-GitHub-Api-Version: 2022-11-28' \
                 "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&per_page=20" \
                 >"${ci_runs}"
-              gh api \
-                --header 'X-GitHub-Api-Version: 2022-11-28' \
-                "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs?branch=main&per_page=20" \
-                >"${deploy_runs}"
-              python3 - "${current_main_sha}" "${ci_runs}" "${deploy_runs}" <<'PY'
+              python3 - "${current_main_sha}" "${ci_runs}" <<'PY'
           from datetime import datetime, timezone
           import json
           from pathlib import Path
@@ -139,7 +134,7 @@ jobs:
                       active.append(run)
           if not active:
               raise SystemExit(
-                  "production is behind main and no current CI or deployment started within 30 minutes"
+                  "production is behind main and no current production CI started within 30 minutes"
               )
           PY
               printf 'exact_release=false\n' >>"${GITHUB_OUTPUT}"

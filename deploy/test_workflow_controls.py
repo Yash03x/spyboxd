@@ -78,8 +78,9 @@ class WorkflowControlsTests(unittest.TestCase):
     def test_rollback_does_not_queue_behind_tmdb_enrichment(self) -> None:
         tmdb_group = workflow_concurrency_group(".github/workflows/tmdb-enrichment.yml")
         rollback_group = workflow_concurrency_group(".github/workflows/rollback.yml")
-        deploy_group = workflow_concurrency_group(".github/workflows/deploy.yml")
-        self.assertEqual(rollback_group, deploy_group)
+        ci = read_repo_file(".github/workflows/ci.yml")
+        deployment = ci.split("\n  deploy_production:\n", maxsplit=1)[1]
+        self.assertIn(f"      group: {rollback_group}", deployment)
         self.assertNotEqual(tmdb_group, rollback_group)
 
         workflow = read_repo_file(".github/workflows/tmdb-enrichment.yml")
@@ -100,9 +101,10 @@ class WorkflowControlsTests(unittest.TestCase):
     def test_privileged_jobs_start_with_pinned_harden_runner(self) -> None:
         ci = read_repo_file(".github/workflows/ci.yml")
         release_bundle = ci.split("\n  release_bundle:\n", maxsplit=1)[1]
+        deployment = ci.split("\n  deploy_production:\n", maxsplit=1)[1]
         dependency_review = read_repo_file(".github/workflows/dependency-review.yml")
 
-        for workflow_job in (release_bundle, dependency_review):
+        for workflow_job in (release_bundle, deployment, dependency_review):
             self.assertIn(HARDEN_RUNNER, workflow_job)
             self.assertIn("egress-policy: audit", workflow_job)
             self.assertLess(
@@ -112,32 +114,28 @@ class WorkflowControlsTests(unittest.TestCase):
         self.assertNotIn("pull-requests: write", dependency_review)
         self.assertNotIn("comment-summary-in-pr", dependency_review)
 
-    def test_deployment_is_an_exact_main_ci_handoff_without_pr_workflow_runs(self) -> None:
+    def test_deployment_is_an_exact_main_ci_job_without_extra_workflow_runs(self) -> None:
         ci = read_repo_file(".github/workflows/ci.yml")
-        deployment = read_repo_file(".github/workflows/deploy.yml")
+        deployment = ci.split("\n  deploy_production:\n", maxsplit=1)[1]
 
         self.assertIn(
             "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
             ci,
         )
         self.assertIn("deploy_production:", ci)
+        self.assertFalse((ROOT / ".github/workflows/deploy.yml").exists())
         self.assertIn("needs: release_bundle", ci)
-        self.assertIn("uses: ./.github/workflows/deploy.yml", ci)
-        self.assertIn("release_sha: ${{ github.sha }}", ci)
-        self.assertIn("ci_run_id: ${{ github.run_id }}", ci)
+        self.assertNotIn("uses: ./.github/workflows/deploy.yml", ci)
+        self.assertIn("runs-on: ubuntu-24.04", deployment)
         self.assertNotIn("secrets: inherit", ci)
-        self.assertIn("workflow_call:", deployment)
-        self.assertNotIn("workflow_run:", deployment)
         self.assertIn("environment:\n      name: production", deployment)
-        for secret_name in ("VPS_HOST", "VPS_HOST_FINGERPRINT", "VPS_SSH_KEY"):
-            self.assertRegex(
-                deployment,
-                rf"(?m)^      {secret_name}:\n        required: false$",
-            )
+        self.assertIn("SSH_HOST: ${{ secrets.VPS_HOST }}", deployment)
+        self.assertIn("SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}", deployment)
+        self.assertIn("SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}", deployment)
         self.assertIn('[[ "${CI_RUN_ID}" == "${GITHUB_RUN_ID}" ]]', deployment)
         self.assertIn('[[ "${RELEASE_SHA}" == "${GITHUB_SHA}" ]]', deployment)
-        self.assertIn("ref: ${{ inputs.release_sha }}", deployment)
-        self.assertIn("run-id: ${{ inputs.ci_run_id }}", deployment)
+        self.assertIn("ref: ${{ github.sha }}", deployment)
+        self.assertIn("run-id: ${{ github.run_id }}", deployment)
 
     def test_dependabot_groups_nonmajor_updates_for_every_runtime_source(self) -> None:
         cases = (
