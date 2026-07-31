@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setupClerkTestingToken as realSetupClerkTestingToken } from '@clerk/testing/playwright';
 
 import {
   applicationSessionToken,
   decodeSession,
   expiryProofDeadlineMilliseconds,
+  installClerkTestingToken,
   isPrivateSignInRedirect,
   proveSignOutClosure,
   validateTasks,
@@ -25,10 +27,12 @@ function task(label, closure, userId, profile) {
 
 function plan() {
   return {
-    version: 2,
+    version: 3,
     api_base: 'https://api.spyboxd.com',
     app_origin: APP_ORIGIN,
     task_origin: TASK_ORIGIN,
+    testing_token: `testing-${'a'.repeat(48)}`,
+    testing_token_expires_at: Math.floor(Date.now() / 1000) + 600,
     session_max_duration_seconds: 120,
     tasks: [
       task('A', 'sign_out', 'user_A123', 'alpha'),
@@ -56,6 +60,120 @@ test('browser plan requires distinct sign-out and natural-expiry closures', () =
   const wrongDuration = plan();
   wrongDuration.session_max_duration_seconds = 1800;
   assert.throws(() => validateTasks(wrongDuration), /task contract is invalid/);
+
+  const expiredTestingToken = plan();
+  expiredTestingToken.testing_token_expires_at = Math.floor(Date.now() / 1000) + 30;
+  assert.throws(() => validateTasks(expiredTestingToken), /task contract is invalid/);
+});
+
+test('Clerk Testing Token is installed before one-use task navigation and cleared', async () => {
+  const events = [];
+  const diagnostics = [];
+  let taskHandler;
+  const context = {
+    async route(url, handler, options) {
+      events.push(['route', url, options]);
+      taskHandler = handler;
+    },
+  };
+  const testingToken = `testing-${'b'.repeat(48)}`;
+  const taskUrl = `${TASK_ORIGIN}/v1/agent-tasks/a-ticket`;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  console.warn = (...values) => diagnostics.push(values.map(String).join(' '));
+  console.error = (...values) => diagnostics.push(values.map(String).join(' '));
+  let clear;
+  try {
+    clear = await installClerkTestingToken(
+      context,
+      taskUrl,
+      TASK_ORIGIN,
+      testingToken,
+      async (options) => {
+        assert.equal(options.context, context);
+        assert.deepEqual(options.options, { frontendApiUrl: 'clerk.spyboxd.com' });
+        assert.equal(process.env.CLERK_TESTING_TOKEN, testingToken);
+        console.warn(`Clerk retry URL contained ${testingToken}`);
+        console.error(new Error(`Clerk route failed with ${testingToken}`));
+        events.push(['setup']);
+      },
+      (secret) => events.push(['mask', secret]),
+    );
+    assert.deepEqual(events, [
+      ['mask', testingToken],
+      ['setup'],
+      ['route', taskUrl, { times: 1 }],
+    ]);
+
+    let continuedUrl;
+    await taskHandler({
+      request: () => ({ url: () => taskUrl }),
+      continue: async ({ url }) => { continuedUrl = new URL(url); },
+    });
+    assert.equal(continuedUrl.origin, TASK_ORIGIN);
+    assert.equal(continuedUrl.pathname, '/v1/agent-tasks/a-ticket');
+    assert.equal(continuedUrl.searchParams.get('__clerk_testing_token'), testingToken);
+  } finally {
+    clear?.();
+    console.warn = originalWarn;
+    console.error = originalError;
+  }
+  assert.equal(process.env.CLERK_TESTING_TOKEN, undefined);
+  assert.equal(diagnostics.some((line) => line.includes(testingToken)), false);
+  assert.equal(
+    diagnostics.filter((line) => line.includes('[REDACTED_TESTING_TOKEN]')).length,
+    2,
+  );
+});
+
+test('real Clerk helper failure diagnostics cannot expose the production Testing Token', async () => {
+  const testingToken = `testing-${'c'.repeat(48)}`;
+  const taskUrl = `${TASK_ORIGIN}/v1/agent-tasks/a-ticket`;
+  const handlers = [];
+  const context = {
+    async route(matcher, handler) {
+      handlers.push({ matcher, handler });
+    },
+  };
+  const diagnostics = [];
+  const originalWarn = console.warn;
+  const originalSetTimeout = globalThis.setTimeout;
+  console.warn = (...values) => diagnostics.push(values.map(String).join(' '));
+  globalThis.setTimeout = (callback) => {
+    callback();
+    return 0;
+  };
+  let clear;
+  try {
+    clear = await installClerkTestingToken(
+      context,
+      taskUrl,
+      TASK_ORIGIN,
+      testingToken,
+      realSetupClerkTestingToken,
+      () => {},
+    );
+    assert.equal(handlers.length, 2);
+    const fapiHandler = handlers[0].handler;
+    let fetches = 0;
+    await fapiHandler({
+      request: () => ({ url: () => `${TASK_ORIGIN}/v1/client` }),
+      fetch: async ({ url }) => {
+        fetches += 1;
+        throw new Error(`simulated FAPI failure for ${url}`);
+      },
+      continue: async () => {},
+    });
+    assert.equal(fetches, 4);
+  } finally {
+    clear?.();
+    console.warn = originalWarn;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+  assert.equal(process.env.CLERK_TESTING_TOKEN, undefined);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].includes(testingToken), false);
+  assert.match(diagnostics[0], /REDACTED_TESTING_TOKEN/);
 });
 
 test('session token contract requires a future expiry and session identity', () => {

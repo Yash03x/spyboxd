@@ -143,9 +143,20 @@ class WorkflowControlsTests(unittest.TestCase):
         browser = read_repo_file("frontend/scripts/run-production-auth-canary.mjs")
 
         self.assertIn('"redirect_url": f"{app_origin}/"', guardian)
+        self.assertIn('"https://api.clerk.com/v1/testing_tokens"', guardian)
+        self.assertIn('"testing_token": testing_token', guardian)
         self.assertIn("return \"cleanup_failed\"", guardian)
+        self.assertIn("setupClerkTestingToken", browser)
+        self.assertIn("installClerkTestingToken", browser)
+        self.assertIn("::add-mask::${secret}", browser)
+        self.assertLess(
+            browser.index("maskSecret(testingToken);"),
+            browser.index("process.env.CLERK_TESTING_TOKEN = testingToken;"),
+        )
+        self.assertIn("__clerk_testing_token", browser)
         self.assertIn("clerk.session.getToken()", browser)
         self.assertIn("`${taskContract.appOrigin}/profiles`", browser)
+        self.assertNotIn("CLERK_SECRET_KEY: ${{", workflow)
         self.assertIn('"${guardian_status}" == cleanup_failed', workflow)
         self.assertLess(
             workflow.index('"${guardian_status}" == cleanup_failed'),

@@ -29,6 +29,7 @@ USER_ID_PATTERN = re.compile(r"user_[A-Za-z0-9]+")
 PROFILE_PATTERN = re.compile(r"[A-Za-z0-9_]{2,15}")
 SESSION_ID_PATTERN = re.compile(r"sess_[A-Za-z0-9]+")
 OPAQUE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,200}")
+TESTING_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~-]{20,2048}")
 LEASE_ID_PATTERN = re.compile(r"gha-[1-9][0-9]{0,19}-[1-9][0-9]{0,9}")
 APP_ORIGIN = "https://spyboxd.com"
 DEFAULT_API_BASE = "https://api.spyboxd.com"
@@ -42,7 +43,10 @@ LOCK_NAME = ".auth-canary.lock"
 LIVE_SESSION_STATUSES = ("active",)
 SESSION_MAX_DURATION_SECONDS = 120
 SESSION_EXPIRY_GRACE_SECONDS = 5
-BROWSER_PLAN_VERSION = 2
+BROWSER_PLAN_VERSION = 3
+TESTING_TOKEN_MIN_REMAINING_SECONDS = 300
+# Clerk issues these for one hour; permit only two minutes of host clock skew.
+TESTING_TOKEN_MAX_REMAINING_SECONDS = 3720
 BROWSER_CLOSURE_BY_LABEL = {
     "A": "sign_out",
     "B": "session_expiry",
@@ -517,6 +521,43 @@ def _retire_agent_task(secret_key: str, agent_task_id: str) -> bool:
     raise AuthCanaryError("a Clerk canary task could not be proven inactive")
 
 
+def _create_testing_token(secret_key: str) -> tuple[str, int]:
+    created = _json(
+        _request(
+            "https://api.clerk.com/v1/testing_tokens",
+            method="POST",
+            bearer=secret_key,
+            clerk_backend=True,
+        ),
+        "Clerk production Testing Token creation",
+        200,
+    )
+    token = created.get("token") if isinstance(created, dict) else None
+    expires_at = created.get("expires_at") if isinstance(created, dict) else None
+    if (
+        not isinstance(created, dict)
+        or created.get("object") != "testing_token"
+        or not isinstance(token, str)
+        or not TESTING_TOKEN_PATTERN.fullmatch(token)
+    ):
+        raise AuthCanaryError("Clerk returned an invalid production Testing Token")
+    if isinstance(expires_at, bool) or not isinstance(expires_at, int):
+        raise AuthCanaryError("Clerk returned an invalid Testing Token expiry")
+
+    # Clerk SDKs expose this timestamp in milliseconds while older REST
+    # responses used seconds. Normalize either documented representation into
+    # seconds before the private browser-plan handoff.
+    expires_at_seconds = expires_at // 1000 if expires_at > 10_000_000_000 else expires_at
+    remaining_seconds = expires_at_seconds - int(time.time())
+    if not (
+        TESTING_TOKEN_MIN_REMAINING_SECONDS
+        <= remaining_seconds
+        <= TESTING_TOKEN_MAX_REMAINING_SECONDS
+    ):
+        raise AuthCanaryError("Clerk returned an unexpectedly bounded Testing Token")
+    return token, expires_at_seconds
+
+
 def _create_agent_task(
     secret_key: str,
     identity: CanaryIdentity,
@@ -595,6 +636,8 @@ def _build_browser_plan(
     api_base: str,
     app_origin: str,
     task_origin: str,
+    testing_token: str,
+    testing_token_expires_at: int,
     tasks: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     if len(tasks) != len(BROWSER_CLOSURE_BY_LABEL):
@@ -623,11 +666,22 @@ def _build_browser_plan(
 
     if seen_labels != set(BROWSER_CLOSURE_BY_LABEL):
         raise AuthCanaryError("authenticated browser plan is missing a task label")
+    if not TESTING_TOKEN_PATTERN.fullmatch(testing_token):
+        raise AuthCanaryError("authenticated browser plan has an invalid Testing Token")
+    if (
+        isinstance(testing_token_expires_at, bool)
+        or not isinstance(testing_token_expires_at, int)
+        or testing_token_expires_at - int(time.time())
+        < TESTING_TOKEN_MIN_REMAINING_SECONDS
+    ):
+        raise AuthCanaryError("authenticated browser plan has an expired Testing Token")
     return {
         "version": BROWSER_PLAN_VERSION,
         "api_base": api_base,
         "app_origin": app_origin,
         "task_origin": task_origin,
+        "testing_token": testing_token,
+        "testing_token_expires_at": testing_token_expires_at,
         "session_max_duration_seconds": SESSION_MAX_DURATION_SECONDS,
         "tasks": planned_tasks,
     }
@@ -1171,6 +1225,9 @@ def run_guardian(
                 _verify_bootstrap_clerk_usernames(secret_key, identities)
             _require_zero_live_sessions(secret_key, identities)
             state["session_baseline_proven_zero"] = True
+            state["phase"] = "creating_testing_token"
+            _write_private_json(state_path, state)
+            testing_token, testing_token_expires_at = _create_testing_token(secret_key)
             state["phase"] = "creating_tasks"
             _write_private_json(state_path, state)
 
@@ -1195,6 +1252,8 @@ def run_guardian(
                 api_base=api_base,
                 app_origin=APP_ORIGIN,
                 task_origin=next(iter(task_origins)),
+                testing_token=testing_token,
+                testing_token_expires_at=testing_token_expires_at,
                 tasks=tasks,
             )
             state["phase"] = "waiting_for_browser"
