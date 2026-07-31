@@ -17,6 +17,7 @@ from database.models import (
     ProfileFeedState,
     ProfileFavoriteMovie,
     ProfileFilm,
+    ProfileFollowEdge,
     ProfileSourceActivity,
     ProfileSync,
     Rating,
@@ -772,6 +773,99 @@ def _upsert_watchlist(
     return len(seen_movie_ids)
 
 
+def _resolve_counterpart_profile_ids(analyzer_profile, db: Session) -> Dict[str, int]:
+    """Bulk-map counterpart usernames from both social frames to canonical profiles."""
+    names = set()
+    for frame_name in ("following", "followers"):
+        for row in frame_records(getattr(analyzer_profile, frame_name, pd.DataFrame())):
+            username = clean_text(first_value(row, ("Username",)), max_length=50)
+            if username:
+                names.add(username.casefold())
+    if not names:
+        return {}
+    return {
+        username.casefold(): profile_id
+        for profile_id, username in (
+            db.query(Profile.id, Profile.username)
+            .filter(func.lower(Profile.username).in_(sorted(names)))
+            .all()
+        )
+    }
+
+
+def _upsert_follow_edges(
+    *,
+    analyzer_profile,
+    profile_id: int,
+    sync: ProfileSync,
+    direction: str,
+    frame_name: str,
+    authoritative: bool,
+    counterpart_ids: Mapping[str, int],
+    db: Session,
+) -> int:
+    """Reconcile one social surface, mirroring the watchlist snapshot semantics.
+
+    An authoritative snapshot soft-removes edges that disappeared (unfollow);
+    an absent surface preserves prior state untouched. Re-follows resurrect
+    the soft-removed row so the change feed emits a fresh added event.
+    """
+    existing = {
+        edge.counterpart_username_normalized: edge
+        for edge in (
+            db.query(ProfileFollowEdge)
+            .filter(
+                ProfileFollowEdge.profile_id == profile_id,
+                ProfileFollowEdge.direction == direction,
+            )
+            .all()
+        )
+    }
+    seen = set()
+    for source_position, row in enumerate(
+        frame_records(getattr(analyzer_profile, frame_name, pd.DataFrame())), start=1
+    ):
+        username = clean_text(first_value(row, ("Username",)), max_length=50)
+        if not username:
+            continue
+        normalized = username.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        edge = existing.get(normalized)
+        if edge is None:
+            edge = ProfileFollowEdge(
+                profile_id=profile_id,
+                direction=direction,
+                counterpart_username_normalized=normalized,
+                first_seen_profile_sync_id=sync.id,
+            )
+            db.add(edge)
+            existing[normalized] = edge
+        edge.counterpart_username = username
+        edge.counterpart_display_name = clean_text(
+            first_value(row, ("Display_Name", "Display Name")), max_length=200
+        )
+        edge.counterpart_avatar_url = clean_text(
+            first_value(row, ("Avatar_URL", "Avatar URL")), max_length=500
+        )
+        edge.counterpart_profile_url = normalize_letterboxd_url(
+            first_value(row, ("Profile_URL", "Profile URL"))
+        )
+        edge.position = parse_integer(first_value(row, ("Position",)), minimum=1) or source_position
+        edge.counterpart_profile_id = counterpart_ids.get(normalized)
+        edge.last_seen_profile_sync_id = sync.id
+        edge.removed_at = None
+
+    if authoritative:
+        now = _utcnow()
+        for normalized, edge in existing.items():
+            if normalized not in seen and edge.removed_at is None:
+                edge.removed_at = now
+    db.flush()
+    return len(seen)
+
+
 def _upsert_source_activities(
     *,
     analyzer_profile,
@@ -1154,6 +1248,8 @@ def _dataset_file_names(analyzer_profile, dataset_name: str) -> List[str]:
         "comments": ["comments.csv"],
         "lists": ["lists.csv"],
         "favorites": ["favorites.csv"],
+        "following": ["following.csv"],
+        "followers": ["followers.csv"],
     }
     if dataset_name == "list_items":
         return sorted(
@@ -1196,6 +1292,8 @@ def _upsert_sync_datasets(
         "lists",
         "list_items",
         "favorites",
+        "following",
+        "followers",
     ):
         filenames = _dataset_file_names(analyzer_profile, dataset_name)
         infos = [source_files[name] for name in filenames]
@@ -1274,6 +1372,21 @@ def _build_coverage(
         limitations.append("Custom list metadata was imported, but list memberships were not included.")
     if not authoritative.get("profile"):
         limitations.append("Profile metadata was not included in this sync.")
+    social_unavailable = sorted(
+        {
+            str(unavailable[name])
+            for name in ("following", "followers")
+            if unavailable.get(name)
+        }
+    )
+    if social_unavailable:
+        limitations.append(
+            "Social graph unavailable ("
+            + "; ".join(social_unavailable)
+            + "); prior imported state was preserved."
+        )
+    elif not authoritative.get("following") and not authoritative.get("followers"):
+        limitations.append("Following/follower data was not included in this sync.")
 
     history_available = bool(
         authoritative.get("films") or authoritative.get("ratings") or authoritative.get("watched")
@@ -1521,6 +1634,30 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             db=db,
         )
 
+        following_authoritative = _source_present(analyzer_profile, "following.csv")
+        followers_authoritative = _source_present(analyzer_profile, "followers.csv")
+        counterpart_ids = _resolve_counterpart_profile_ids(analyzer_profile, db)
+        following_count = _upsert_follow_edges(
+            analyzer_profile=analyzer_profile,
+            profile_id=profile_id,
+            sync=sync,
+            direction="following",
+            frame_name="following",
+            authoritative=following_authoritative,
+            counterpart_ids=counterpart_ids,
+            db=db,
+        )
+        followers_count = _upsert_follow_edges(
+            analyzer_profile=analyzer_profile,
+            profile_id=profile_id,
+            sync=sync,
+            direction="follower",
+            frame_name="followers",
+            authoritative=followers_authoritative,
+            counterpart_ids=counterpart_ids,
+            db=db,
+        )
+
         authoritative = {
             "profile": _source_present(analyzer_profile, "profile.csv"),
             "films": films_authoritative,
@@ -1534,6 +1671,8 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             "lists": list_metadata_authoritative,
             "list_items": list_items_authoritative,
             "favorites": favorites_authoritative,
+            "following": following_authoritative,
+            "followers": followers_authoritative,
         }
         imported_counts = {
             "profile": int(authoritative["profile"]),
@@ -1548,6 +1687,8 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             "lists": list_count,
             "list_items": list_item_count,
             "favorites": favorite_count,
+            "following": following_count,
+            "followers": followers_count,
             "profile_films": profile_film_count,
             "source_activities": source_activity_count,
         }
@@ -1598,6 +1739,17 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             profile.total_reviews = review_count
         profile.last_scraped_at = now
         profile.scraping_status = "completed"
+
+        # This profile is (or just became) canonical: attach it to any social
+        # edges across the library that name its username, mirroring how
+        # pending access requests are fulfilled when a profile completes.
+        db.query(ProfileFollowEdge).filter(
+            ProfileFollowEdge.counterpart_username_normalized == profile.username.casefold(),
+            ProfileFollowEdge.counterpart_profile_id.is_(None),
+        ).update(
+            {ProfileFollowEdge.counterpart_profile_id: profile.id},
+            synchronize_session=False,
+        )
 
         # A successful authoritative snapshot resolves any RSS rolling-window
         # gap and establishes a fresh reconciliation boundary.  The next feed
