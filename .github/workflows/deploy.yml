@@ -1,10 +1,16 @@
 name: Deploy Production
 
-on: # zizmor: ignore[dangerous-triggers] Only trusted main push artifacts pass repository, SHA, and provenance checks before secrets load.
-  workflow_run:
-    workflows: [Production CI]
-    branches: [main]
-    types: [completed]
+on:
+  workflow_call:
+    inputs:
+      release_sha:
+        description: Exact trusted main commit packaged by the caller
+        required: true
+        type: string
+      ci_run_id:
+        description: Exact Production CI run containing the attested bundle
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -20,19 +26,19 @@ jobs:
   deploy:
     name: Exact-SHA release
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.release_sha == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment:
       name: production
       url: https://spyboxd.com
     env:
-      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
-      REMOTE_BUNDLE: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz
-      REMOTE_CHECKSUM: /tmp/spyboxd-release-${{ github.event.workflow_run.head_sha }}.tar.gz.sha256
+      RELEASE_SHA: ${{ inputs.release_sha }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      REMOTE_BUNDLE: /tmp/spyboxd-release-${{ inputs.release_sha }}.tar.gz
+      REMOTE_CHECKSUM: /tmp/spyboxd-release-${{ inputs.release_sha }}.tar.gz.sha256
       REPOSITORY_URL: https://github.com/${{ github.repository }}.git
       CLERK_BRIDGE_EDGE: ${{ vars.PRODUCTION_CLERK_BRIDGE_EDGE }}
 
@@ -48,6 +54,9 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${CI_RUN_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "${CI_RUN_ID}" == "${GITHUB_RUN_ID}" ]]
+          [[ "${RELEASE_SHA}" == "${GITHUB_SHA}" ]]
 
           current_main_sha="$(
             curl --silent --show-error --fail --connect-timeout 10 --max-time 30 \
@@ -66,7 +75,7 @@ jobs:
       - name: Check out exact deployment helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ inputs.release_sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -77,7 +86,7 @@ jobs:
           path: ${{ runner.temp }}/spyboxd-transfer
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ inputs.ci_run_id }}
 
       - name: Verify exact release artifact
         run: |
@@ -348,6 +357,49 @@ jobs:
             [ "${#previous_target}" -eq 40 ] || exit 64
           fi
           case "${clerk_bridge_mode}" in true|false) ;; *) exit 64 ;; esac
+
+          # Standard immutable-release recovery is executable and failure-injected
+          # in CI. The inline state machine below remains only as a compatibility
+          # fallback for the one-time legacy/Clerk bridge paths and for a failure
+          # that happened before the exact helper commit reached the VPS repository.
+          if [ "${clerk_bridge_mode}" = false ] && [ "${previous_target}" != legacy ]; then
+            reconcile_runner="$(mktemp /tmp/spyboxd-reconcile-state.XXXXXX)"
+            cleanup_reconcile_runner() {
+              rm -f -- "${reconcile_runner}"
+            }
+            trap cleanup_reconcile_runner EXIT HUP INT TERM
+            helper_available=false
+            if git --git-dir="${app_root}/repository" rev-parse --is-bare-repository >/dev/null 2>&1; then
+              if git --git-dir="${app_root}/repository" show \
+                  "${release_sha}:deploy/reconcile-interrupted-deployment.sh" \
+                  >"${reconcile_runner}" 2>/dev/null; then
+                helper_available=true
+              fi
+            elif git -C "${app_root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              if git -C "${app_root}" show \
+                  "${release_sha}:deploy/reconcile-interrupted-deployment.sh" \
+                  >"${reconcile_runner}" 2>/dev/null; then
+                helper_available=true
+              fi
+            fi
+            if [ "${helper_available}" = true ]; then
+              chmod 0700 "${reconcile_runner}"
+              if "${reconcile_runner}" \
+                  "${release_sha}" "${previous_target}" "${clerk_bridge_mode}"; then
+                reconcile_status=0
+              else
+                reconcile_status=$?
+              fi
+              rm -f -- "${reconcile_runner}"
+              reconcile_runner=''
+              trap - EXIT HUP INT TERM
+              exit "${reconcile_status}"
+            fi
+            rm -f -- "${reconcile_runner}"
+            reconcile_runner=''
+            trap - EXIT HUP INT TERM
+            echo 'Exact reconciliation helper was unavailable; using the compatibility fallback.' >&2
+          fi
 
           for command_name in curl flock git id python3 readlink seq stat sudo timeout; do
             command -v "${command_name}" >/dev/null 2>&1 || {

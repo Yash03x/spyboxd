@@ -1,0 +1,22 @@
+FROM node:24-alpine@sha256:f70403e87646dc51b45295f4b8b70cdad0b63d2297c4c9899119b03f7af7a6b3
+
+WORKDIR /app
+
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000
+
+# CI downloads the exact .next artifact already built, linted, and type-checked;
+# the required Playwright job exercises the same artifact. This packages that
+# output without compiling it again merely to test the Compose runtime graph.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY .next ./.next
+COPY public ./public
+COPY next.config.ts ./next.config.ts
+COPY scripts ./scripts
+
+EXPOSE 3000
+
+CMD ["npm", "run", "start"]

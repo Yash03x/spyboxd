@@ -2,12 +2,21 @@
 
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { chromium } from 'playwright';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const USER_ID = /^user_[A-Za-z0-9]+$/;
+const SESSION_ID = /^sess_[A-Za-z0-9]+$/;
 const PROFILE = /^[A-Za-z0-9_]{2,15}$/;
+const BROWSER_PLAN_VERSION = 2;
+const EXPECTED_SESSION_MAX_DURATION_SECONDS = 120;
+const JWT_EXPIRY_GRACE_SECONDS = 5;
+const SESSION_EXPIRY_GRACE_SECONDS = 15;
+const MAX_EXPIRY_OVERHEAD_SECONDS = 30;
+const PRIVATE_PROOF_PATH = '/profiles';
+const CLOSURES = new Set(['sign_out', 'session_expiry']);
 
 class CanaryError extends Error {}
 
@@ -85,8 +94,13 @@ function bareHttpsOrigin(value, label) {
   return parsed.origin;
 }
 
-function validateTasks(payload) {
-  if (!payload || payload.version !== 1 || !Array.isArray(payload.tasks)) {
+export function validateTasks(payload) {
+  if (
+    !payload
+    || payload.version !== BROWSER_PLAN_VERSION
+    || payload.session_max_duration_seconds !== EXPECTED_SESSION_MAX_DURATION_SECONDS
+    || !Array.isArray(payload.tasks)
+  ) {
     fail('authenticated canary task contract is invalid');
   }
   const apiBase = bareHttpsOrigin(payload.api_base, 'API base');
@@ -101,6 +115,7 @@ function validateTasks(payload) {
   const labels = new Set();
   const userIds = new Set();
   const profiles = new Set();
+  const closures = new Set();
   for (const task of payload.tasks) {
     let taskUrl;
     try {
@@ -110,6 +125,7 @@ function validateTasks(payload) {
     }
     if (
       !['A', 'B'].includes(task?.label)
+      || !CLOSURES.has(task?.closure)
       || !USER_ID.test(task?.user_id ?? '')
       || !PROFILE.test(task?.profile ?? '')
       || taskUrl.protocol !== 'https:'
@@ -123,14 +139,25 @@ function validateTasks(payload) {
     labels.add(task.label);
     userIds.add(task.user_id);
     profiles.add(task.profile.toLowerCase());
+    closures.add(task.closure);
   }
-  if (labels.size !== 2 || userIds.size !== 2 || profiles.size !== 2) {
+  if (
+    labels.size !== 2
+    || userIds.size !== 2
+    || profiles.size !== 2
+    || closures.size !== 2
+  ) {
     fail('authenticated canary tasks are not isolated identities');
   }
-  return { apiBase, appOrigin, tasks: payload.tasks };
+  return {
+    apiBase,
+    appOrigin,
+    sessionMaxDurationSeconds: payload.session_max_duration_seconds,
+    tasks: payload.tasks,
+  };
 }
 
-function decodeSession(token) {
+export function decodeSession(token, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (typeof token !== 'string' || token.length < 100 || token.split('.').length !== 3) {
     fail('Clerk did not establish a valid session token');
   }
@@ -140,10 +167,63 @@ function decodeSession(token) {
   } catch {
     fail('Clerk returned an invalid session token');
   }
-  if (!USER_ID.test(payload?.sub ?? '')) {
-    fail('Clerk session token omitted its user identity');
+  if (
+    !USER_ID.test(payload?.sub ?? '')
+    || !SESSION_ID.test(payload?.sid ?? '')
+    || !Number.isSafeInteger(payload?.exp)
+    || payload.exp <= nowSeconds
+  ) {
+    fail('Clerk session token omitted a valid identity or future expiry');
   }
-  return { userId: payload.sub };
+  return {
+    userId: payload.sub,
+    sessionId: payload.sid,
+    expiresAtSeconds: payload.exp,
+  };
+}
+
+export function expiryProofDeadlineMilliseconds(
+  sessionStartedAtMilliseconds,
+  tokenExpiresAtSeconds,
+  sessionMaxDurationSeconds,
+) {
+  if (
+    !Number.isSafeInteger(sessionStartedAtMilliseconds)
+    || sessionStartedAtMilliseconds <= 0
+    || !Number.isSafeInteger(tokenExpiresAtSeconds)
+    || !Number.isSafeInteger(sessionMaxDurationSeconds)
+    || sessionMaxDurationSeconds !== EXPECTED_SESSION_MAX_DURATION_SECONDS
+  ) {
+    fail('authenticated canary expiry inputs are invalid');
+  }
+  const tokenDeadline = (tokenExpiresAtSeconds + JWT_EXPIRY_GRACE_SECONDS) * 1000;
+  const sessionDeadline = sessionStartedAtMilliseconds
+    + ((sessionMaxDurationSeconds + SESSION_EXPIRY_GRACE_SECONDS) * 1000);
+  const proofDeadline = Math.max(tokenDeadline, sessionDeadline);
+  const maximumDeadline = sessionStartedAtMilliseconds
+    + ((sessionMaxDurationSeconds + MAX_EXPIRY_OVERHEAD_SECONDS) * 1000);
+  if (proofDeadline > maximumDeadline) {
+    fail('Clerk JWT expiry exceeds the bounded Agent Task session');
+  }
+  return proofDeadline;
+}
+
+export function isPrivateSignInRedirect(urlValue, appOrigin, privatePath = PRIVATE_PROOF_PATH) {
+  let parsed;
+  try {
+    parsed = new URL(urlValue);
+  } catch {
+    return false;
+  }
+  const redirectTargets = parsed.searchParams.getAll('redirect_url');
+  return parsed.origin === appOrigin
+    && !parsed.username
+    && !parsed.password
+    && parsed.pathname.replace(/\/+$/, '') === '/sign-in'
+    && !parsed.hash
+    && parsed.searchParams.size === 1
+    && redirectTargets.length === 1
+    && redirectTargets[0] === `${appOrigin}${privatePath}`;
 }
 
 async function sessionCookie(context, appOrigin, timeoutMilliseconds = 30_000) {
@@ -167,13 +247,16 @@ async function sessionCookie(context, appOrigin, timeoutMilliseconds = 30_000) {
 }
 
 async function responseJson(context, apiBase, path, token, expectedStatus, label) {
+  const headers = {
+    Accept: 'application/json',
+    'Cache-Control': 'no-cache',
+  };
+  if (typeof token === 'string') {
+    headers.Authorization = `Bearer ${token}`;
+  }
   const response = await context.request.get(`${apiBase}${path}`, {
     failOnStatusCode: false,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-      'Cache-Control': 'no-cache',
-    },
+    headers,
     timeout: 15_000,
   });
   if (response.status() !== expectedStatus) {
@@ -292,10 +375,95 @@ async function validateIdentity(context, apiBase, task, other, token) {
   );
 }
 
+function requireDetail(payload, expected, label) {
+  if (!payload || payload.detail !== expected) {
+    fail(`${label} returned an unexpected authentication error`);
+  }
+}
+
+async function proveAnonymousPrivateBoundary(page, context, apiBase, appOrigin, label) {
+  const anonymousMe = await responseJson(
+    context,
+    apiBase,
+    '/api/me',
+    undefined,
+    401,
+    `${label} anonymous API boundary`,
+  );
+  requireDetail(anonymousMe, 'Missing authorization token', `${label} anonymous API boundary`);
+
+  await page.goto(`${appOrigin}${PRIVATE_PROOF_PATH}`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 45_000,
+  });
+  await page.waitForURL(
+    (url) => isPrivateSignInRedirect(url.href, appOrigin),
+    { timeout: 45_000 },
+  );
+}
+
+export async function proveSignOutClosure(page, context, apiBase, appOrigin, label) {
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  await signOut.waitFor({ state: 'visible', timeout: 30_000 });
+  await signOut.click({ timeout: 30_000 });
+  await page.waitForURL(
+    (url) => url.origin === appOrigin && url.pathname === '/' && !url.search && !url.hash,
+    { timeout: 45_000 },
+  );
+  await page.getByRole('link', { name: 'Sign in to monitor profiles', exact: true }).waitFor({
+    state: 'visible',
+    timeout: 30_000,
+  });
+  await proveAnonymousPrivateBoundary(page, context, apiBase, appOrigin, label);
+}
+
+async function proveSessionExpiryClosure(
+  page,
+  context,
+  apiBase,
+  appOrigin,
+  label,
+  token,
+  sessionStartedAtMilliseconds,
+  tokenExpiresAtSeconds,
+  sessionMaxDurationSeconds,
+) {
+  // Clerk refreshes short-lived cookie JWTs while the browser session is live.
+  // Waiting past both the captured JWT exp and the Agent Task session ceiling
+  // proves the backend expiry check and the frontend's eventual signed-out state.
+  const proofDeadline = expiryProofDeadlineMilliseconds(
+    sessionStartedAtMilliseconds,
+    tokenExpiresAtSeconds,
+    sessionMaxDurationSeconds,
+  );
+  const remainingMilliseconds = proofDeadline - Date.now();
+  const maximumWaitMilliseconds = (
+    sessionMaxDurationSeconds + MAX_EXPIRY_OVERHEAD_SECONDS
+  ) * 1000;
+  if (remainingMilliseconds > maximumWaitMilliseconds) {
+    fail(`${label} expiry proof exceeded its bounded wait`);
+  }
+  if (remainingMilliseconds > 0) {
+    await page.waitForTimeout(remainingMilliseconds);
+  }
+
+  const expiredMe = await responseJson(
+    context,
+    apiBase,
+    '/api/me',
+    token,
+    401,
+    `${label} expired JWT boundary`,
+  );
+  requireDetail(expiredMe, 'Token has expired', `${label} expired JWT boundary`);
+  await proveAnonymousPrivateBoundary(page, context, apiBase, appOrigin, label);
+}
+
 async function main() {
   const { tasksPath } = argumentsFromCommandLine();
   const taskContract = validateTasks(await readBoundedJson(tasksPath, 'task file'));
 
+  const { chromium } = await import('playwright');
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
@@ -309,6 +477,7 @@ async function main() {
       let token;
       try {
         const page = await context.newPage();
+        const sessionStartedAtMilliseconds = Date.now();
         await page.goto(task.task_url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
         await page.waitForURL(
           (url) => url.origin === taskContract.appOrigin
@@ -322,11 +491,30 @@ async function main() {
         if (session.userId !== task.user_id) {
           fail(`Clerk Agent Task resolved the wrong canary ${task.label} identity`);
         }
-        await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor({
-          state: 'visible',
-          timeout: 30_000,
-        });
         await validateIdentity(context, taskContract.apiBase, task, other, token);
+        if (task.closure === 'sign_out') {
+          await proveSignOutClosure(
+            page,
+            context,
+            taskContract.apiBase,
+            taskContract.appOrigin,
+            `canary ${task.label}`,
+          );
+        } else if (task.closure === 'session_expiry') {
+          await proveSessionExpiryClosure(
+            page,
+            context,
+            taskContract.apiBase,
+            taskContract.appOrigin,
+            `canary ${task.label}`,
+            token,
+            sessionStartedAtMilliseconds,
+            session.expiresAtSeconds,
+            taskContract.sessionMaxDurationSeconds,
+          );
+        } else {
+          fail(`canary ${task.label} has an unsupported closure proof`);
+        }
       } finally {
         token = undefined;
         await context.clearCookies();
@@ -338,13 +526,18 @@ async function main() {
       await browser.close();
     }
   }
-  process.stdout.write('authenticated production canary passed: 2 browser sessions remained isolated\n');
+  process.stdout.write(
+    'authenticated production canary passed: two-user isolation, sign-out, and natural expiry proven\n',
+  );
 }
 
-main().catch((error) => {
-  const detail = error instanceof CanaryError
-    ? error.message
-    : 'browser-backed isolation check failed';
-  process.stderr.write(`authenticated production canary failed: ${detail}\n`);
-  process.exitCode = 1;
-});
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : '';
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    const detail = error instanceof CanaryError
+      ? error.message
+      : 'browser-backed isolation check failed';
+    process.stderr.write(`authenticated production canary failed: ${detail}\n`);
+    process.exitCode = 1;
+  });
+}
