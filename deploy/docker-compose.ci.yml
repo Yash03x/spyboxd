@@ -1,0 +1,22 @@
+services:
+  postgres:
+    container_name: !reset null
+    restart: "no"
+    ports: !reset []
+
+  api:
+    container_name: !reset null
+    restart: "no"
+    ports: !reset []
+
+  rss-poller:
+    container_name: !reset null
+    restart: "no"
+
+  frontend:
+    container_name: !reset null
+    restart: "no"
+    ports: !reset []
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prebuilt

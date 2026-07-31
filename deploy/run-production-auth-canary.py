@@ -42,6 +42,13 @@ LOCK_NAME = ".auth-canary.lock"
 LIVE_SESSION_STATUSES = ("active",)
 SESSION_MAX_DURATION_SECONDS = 120
 SESSION_EXPIRY_GRACE_SECONDS = 5
+BROWSER_PLAN_VERSION = 2
+BROWSER_CLOSURE_BY_LABEL = {
+    "A": "sign_out",
+    "B": "session_expiry",
+}
+DATABASE_STATE_BOOTSTRAP = "bootstrap"
+DATABASE_STATE_PROVISIONED = "provisioned"
 
 
 class AuthCanaryError(RuntimeError):
@@ -50,6 +57,16 @@ class AuthCanaryError(RuntimeError):
 
 class GuardianInterrupted(AuthCanaryError):
     pass
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, request, file_pointer, code, message, headers, new_url  # noqa: ANN001
+    ):
+        return None
+
+
+_CLERK_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 @dataclass(frozen=True)
@@ -167,14 +184,56 @@ def _validate_database_rows(
     identity_rows: Iterable[Mapping[str, Any]],
     tracked_rows: Iterable[Mapping[str, Any]],
     configured_admin_ids: set[str],
-) -> None:
+    profile_rows: Iterable[Mapping[str, Any]] = (),
+    claimed_rows: Iterable[Mapping[str, Any]] = (),
+) -> str:
     expected_ids = {identity.user_id for identity in identities}
     if expected_ids & configured_admin_ids:
         raise AuthCanaryError("a configured canary identity is an administrator")
-    by_user = {str(row["clerk_user_id"]): row for row in identity_rows}
+
+    identity_row_list = list(identity_rows)
+    by_user = {str(row["clerk_user_id"]): row for row in identity_row_list}
+    if len(identity_row_list) != len(by_user):
+        raise AuthCanaryError("the canary identity database state is ambiguous")
+    if not by_user:
+        expected_profiles = {identity.profile.casefold() for identity in identities}
+        profile_row_list = list(profile_rows)
+        by_profile: dict[str, Mapping[str, Any]] = {}
+        for row in profile_row_list:
+            username = row.get("username")
+            if not isinstance(username, str):
+                raise AuthCanaryError("a bootstrap canary profile is invalid")
+            normalized = username.casefold()
+            if normalized in by_profile:
+                raise AuthCanaryError("the bootstrap canary profile state is ambiguous")
+            by_profile[normalized] = row
+        if set(by_profile) != expected_profiles:
+            raise AuthCanaryError(
+                "both bootstrap canary profiles must already exist in Spyboxd"
+            )
+        for identity in identities:
+            row = by_profile[identity.profile.casefold()]
+            if (
+                row.get("is_active") is not True
+                or row.get("scraping_status") != "completed"
+            ):
+                raise AuthCanaryError(
+                    f"bootstrap canary profile {identity.label} is not completed "
+                    "and active"
+                )
+        if list(claimed_rows):
+            raise AuthCanaryError(
+                "a bootstrap canary profile is already claimed by another "
+                "Spyboxd identity"
+            )
+        if list(tracked_rows):
+            raise AuthCanaryError("the bootstrap canary identity state is inconsistent")
+        return DATABASE_STATE_BOOTSTRAP
+
     if set(by_user) != expected_ids:
         raise AuthCanaryError(
-            "both canary identities must already be provisioned in Spyboxd"
+            "canary identities must be either both absent or both provisioned "
+            "in Spyboxd"
         )
 
     tracked: dict[str, set[str]] = {identity.user_id: set() for identity in identities}
@@ -199,13 +258,14 @@ def _validate_database_rows(
             raise AuthCanaryError(
                 f"canary identity {identity.label} must track exactly its own profile"
             )
+    return DATABASE_STATE_PROVISIONED
 
 
 def _database_preflight(
     database_url: str,
     identities: tuple[CanaryIdentity, CanaryIdentity],
     configured_admin_ids: set[str],
-) -> None:
+) -> str:
     try:
         from sqlalchemy import create_engine, text
     except ImportError as exc:
@@ -247,13 +307,52 @@ def _database_preflight(
                 .mappings()
                 .all()
             )
+            profile_rows = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT username, is_active, scraping_status
+                    FROM profiles
+                    WHERE lower(username) IN (:profile_a, :profile_b)
+                    """
+                    ),
+                    {
+                        "profile_a": identities[0].profile.casefold(),
+                        "profile_b": identities[1].profile.casefold(),
+                    },
+                )
+                .mappings()
+                .all()
+            )
+            claimed_rows = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT clerk_user_id, letterboxd_username
+                    FROM app_users
+                    WHERE lower(letterboxd_username) IN (:profile_a, :profile_b)
+                    """
+                    ),
+                    {
+                        "profile_a": identities[0].profile.casefold(),
+                        "profile_b": identities[1].profile.casefold(),
+                    },
+                )
+                .mappings()
+                .all()
+            )
     except Exception as exc:
         raise AuthCanaryError("the canary database preflight failed") from exc
     finally:
         if engine is not None:
             engine.dispose()
-    _validate_database_rows(
-        identities, identity_rows, tracked_rows, configured_admin_ids
+    return _validate_database_rows(
+        identities,
+        identity_rows,
+        tracked_rows,
+        configured_admin_ids,
+        profile_rows,
+        claimed_rows,
     )
 
 
@@ -302,9 +401,12 @@ def _request(
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         # Safe because the parsed HTTPS origin is pinned to api.clerk.com above.
-        opened = urllib.request.urlopen(request, timeout=10)  # nosec B310
+        opened = _CLERK_OPENER.open(request, timeout=10)
     except urllib.error.HTTPError as exc:
-        return HttpResponse(exc.code, _bounded_body(exc), exc.headers)
+        try:
+            return HttpResponse(exc.code, _bounded_body(exc), exc.headers)
+        finally:
+            exc.close()
     except (OSError, urllib.error.URLError) as exc:
         raise AuthCanaryError(
             "an authenticated canary dependency could not be reached"
@@ -320,6 +422,42 @@ def _json(response: HttpResponse, label: str, expected_status: int) -> Any:
         return json.loads(response.body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AuthCanaryError(f"{label} returned invalid JSON") from exc
+
+
+def _verify_bootstrap_clerk_usernames(
+    secret_key: str,
+    identities: tuple[CanaryIdentity, CanaryIdentity],
+) -> None:
+    for identity in identities:
+        payload = _json(
+            _request(
+                "https://api.clerk.com/v1/users/"
+                + urllib.parse.quote(identity.user_id, safe=""),
+                bearer=secret_key,
+                clerk_backend=True,
+            ),
+            f"Clerk user lookup for bootstrap canary {identity.label}",
+            200,
+        )
+        username = payload.get("username") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("id") != identity.user_id
+            or not isinstance(username, str)
+            or username.casefold() != identity.profile.casefold()
+        ):
+            raise AuthCanaryError(
+                f"bootstrap canary {identity.label} Clerk username does not "
+                "match its configured profile"
+            )
+
+
+def _require_post_browser_provisioning(database_state: str) -> None:
+    if database_state != DATABASE_STATE_PROVISIONED:
+        raise AuthCanaryError(
+            "the browser flow did not provision both canary identities with "
+            "one-profile tracking"
+        )
 
 
 def _origin(value: str, label: str) -> str:
@@ -448,11 +586,60 @@ def _create_agent_task(
     }
 
 
+def _build_browser_plan(
+    *,
+    api_base: str,
+    app_origin: str,
+    task_origin: str,
+    tasks: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if len(tasks) != len(BROWSER_CLOSURE_BY_LABEL):
+        raise AuthCanaryError("authenticated browser plan requires exactly two tasks")
+
+    planned_tasks: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    for task in tasks:
+        label = task.get("label")
+        if not isinstance(label, str):
+            raise AuthCanaryError("authenticated browser plan has invalid task labels")
+        closure = BROWSER_CLOSURE_BY_LABEL.get(label)
+        if closure is None or label in seen_labels:
+            raise AuthCanaryError("authenticated browser plan has invalid task labels")
+        if task.get("task_origin") != task_origin:
+            raise AuthCanaryError(
+                "authenticated browser plan has inconsistent task origins"
+            )
+        seen_labels.add(label)
+        planned_tasks.append(
+            {
+                **{key: value for key, value in task.items() if key != "task_origin"},
+                "closure": closure,
+            }
+        )
+
+    if seen_labels != set(BROWSER_CLOSURE_BY_LABEL):
+        raise AuthCanaryError("authenticated browser plan is missing a task label")
+    return {
+        "version": BROWSER_PLAN_VERSION,
+        "api_base": api_base,
+        "app_origin": app_origin,
+        "task_origin": task_origin,
+        "session_max_duration_seconds": SESSION_MAX_DURATION_SECONDS,
+        "tasks": planned_tasks,
+    }
+
+
 def _list_sessions(
     secret_key: str, user_id: str, status_filter: str
 ) -> list[dict[str, Any]]:
+    limit = 100
     query = urllib.parse.urlencode(
-        {"user_id": user_id, "status": status_filter, "limit": 100}
+        {
+            "user_id": user_id,
+            "status": status_filter,
+            "limit": limit,
+            "paginated": "true",
+        }
     )
     payload = _json(
         _request(
@@ -463,12 +650,23 @@ def _list_sessions(
         "Clerk canary session listing",
         200,
     )
-    if not isinstance(payload, list):
+    if not isinstance(payload, dict):
         raise AuthCanaryError("Clerk returned an invalid session list")
-    if len(payload) >= 100:
+    raw_sessions = payload.get("data")
+    total_count = payload.get("total_count")
+    if (
+        not isinstance(raw_sessions, list)
+        or isinstance(total_count, bool)
+        or not isinstance(total_count, int)
+        or total_count < 0
+    ):
+        raise AuthCanaryError("Clerk returned an invalid session list")
+    if total_count != len(raw_sessions):
+        raise AuthCanaryError("Clerk returned an ambiguous paginated session list")
+    if total_count >= limit:
         raise AuthCanaryError("a dedicated canary user has too many sessions")
     sessions: list[dict[str, Any]] = []
-    for item in payload:
+    for item in raw_sessions:
         if not isinstance(item, dict):
             raise AuthCanaryError("Clerk returned an invalid session entry")
         session_id = item.get("id")
@@ -951,7 +1149,11 @@ def run_guardian(
                 signal_number, _signal_handler
             )
         try:
-            _database_preflight(database_url, identities, configured_admin_ids)
+            database_state = _database_preflight(
+                database_url, identities, configured_admin_ids
+            )
+            if database_state == DATABASE_STATE_BOOTSTRAP:
+                _verify_bootstrap_clerk_usernames(secret_key, identities)
             _require_zero_live_sessions(secret_key, identities)
             state["session_baseline_proven_zero"] = True
             state["phase"] = "creating_tasks"
@@ -971,16 +1173,15 @@ def run_guardian(
                 )
                 for identity in identities
             ]
-            task_origins = {task.pop("task_origin") for task in tasks}
+            task_origins = {task.get("task_origin") for task in tasks}
             if len(task_origins) != 1:
                 raise AuthCanaryError("Clerk returned inconsistent task origins")
-            plan = {
-                "version": 1,
-                "api_base": api_base,
-                "app_origin": APP_ORIGIN,
-                "task_origin": next(iter(task_origins)),
-                "tasks": tasks,
-            }
+            plan = _build_browser_plan(
+                api_base=api_base,
+                app_origin=APP_ORIGIN,
+                task_origin=next(iter(task_origins)),
+                tasks=tasks,
+            )
             state["phase"] = "waiting_for_browser"
             _write_private_json(state_path, state)
             _write_private_json(lease_dir / PLAN_NAME, plan)
@@ -992,6 +1193,11 @@ def run_guardian(
                         "authenticated browser canary did not finish before its deadline"
                     )
                 time.sleep(0.5)
+            state["phase"] = "verifying_database_provisioning"
+            _write_private_json(state_path, state)
+            _require_post_browser_provisioning(
+                _database_preflight(database_url, identities, configured_admin_ids)
+            )
         except BaseException as exc:  # noqa: BLE001 - signals must enter the cleanup path
             primary_error = exc
         finally:

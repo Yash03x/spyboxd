@@ -75,23 +75,22 @@ class RuntimeHealthValidationTests(unittest.TestCase):
                     health.validate_dashboard(payload)
 
     def test_ready_requires_matching_revision_and_database_schema(self) -> None:
-        health.validate_ready(
-            {
-                "status": "ready",
-                "revision": "a" * 40,
-                "checks": {"database": "ok", "schema": "current"},
-            },
-            "a" * 40,
+        healthy = {
+            "status": "ready",
+            "revision": "a" * 40,
+            "checks": {"database": "ok", "schema": "current"},
+        }
+        health.validate_ready(healthy, "a" * 40)
+
+        invalid = (
+            {**healthy, "revision": "b" * 40},
+            {**healthy, "checks": {"database": "unavailable", "schema": "current"}},
+            {**healthy, "checks": {"database": "ok", "schema": "pending"}},
         )
-        with self.assertRaises(health.HealthValidationError):
-            health.validate_ready(
-                {
-                    "status": "ready",
-                    "revision": "b" * 40,
-                    "checks": {"database": "ok", "schema": "current"},
-                },
-                "a" * 40,
-            )
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                with self.assertRaises(health.HealthValidationError):
+                    health.validate_ready(payload, "a" * 40)
 
     def test_rss_rejects_degraded_http_200_payload(self) -> None:
         healthy = {

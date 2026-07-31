@@ -9,7 +9,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: spyboxd-production-deploy
+  # Enrichment only updates resumable TMDB cache rows. Keep it out of the
+  # deploy/rollback lane so an emergency rollback never waits for this job.
+  group: spyboxd-production-tmdb-enrichment
   queue: max
   cancel-in-progress: false
 
@@ -51,10 +53,34 @@ jobs:
 
           current_link=/opt/spyboxd/current
           env_file=/etc/spyboxd/api.env
-          python_path="${current_link}/.venv/bin/python"
-          runner_path="${current_link}/deploy/run-tmdb-enrichment.sh"
 
           [ -L "${current_link}" ]
+          active_release="$(readlink -f -- "${current_link}")"
+          case "${active_release}" in
+            /opt/spyboxd/releases/*)
+              ;;
+            *)
+              echo 'The active release link resolves outside the release directory.' >&2
+              exit 1
+              ;;
+          esac
+          active_revision="${active_release##*/}"
+          case "${active_revision}" in
+            *[!0-9a-f]*|'')
+              echo 'The active release directory is not a lowercase Git revision.' >&2
+              exit 1
+              ;;
+          esac
+          [ "${#active_revision}" -eq 40 ]
+          [ "${active_release}" = "/opt/spyboxd/releases/${active_revision}" ]
+          [ -f "${active_release}/REVISION" ]
+          [ "$(tr -d '\r\n' <"${active_release}/REVISION")" = "${active_revision}" ]
+
+          # Pin every executable path to one release. A concurrent rollback may
+          # switch /opt/spyboxd/current, but this bounded cache run stays
+          # internally consistent and cannot execute a mixed release.
+          python_path="${active_release}/.venv/bin/python"
+          runner_path="${active_release}/deploy/run-tmdb-enrichment.sh"
           [ -f "${env_file}" ] && [ ! -L "${env_file}" ] && [ -r "${env_file}" ]
           [ -x "${python_path}" ] && [ -x "${runner_path}" ]
           if systemctl is-enabled --quiet spyboxd-tmdb-enrichment.timer 2>/dev/null \
@@ -64,7 +90,7 @@ jobs:
             exit 1
           fi
 
-          exec "${python_path}" - "${env_file}" "${runner_path}" <<'PY'
+          exec "${python_path}" - "${env_file}" "${runner_path}" "${active_release}" <<'PY'
           import os
           from pathlib import Path
           import sys
@@ -73,6 +99,7 @@ jobs:
 
           env_path = Path(sys.argv[1])
           runner_path = Path(sys.argv[2])
+          active_release = Path(sys.argv[3])
           values = {
               key: value
               for key, value in dotenv_values(env_path).items()
@@ -94,9 +121,9 @@ jobs:
 
           environment = os.environ.copy()
           environment.update(values)
-          # Each committed batch is resumable. Keeping this run small caps the
-          # time it can occupy the shared production deployment queue while
-          # still processing roughly the prior daily volume across four runs.
+          environment["SPYBOXD_CURRENT_LINK"] = str(active_release)
+          # Each committed batch is cache-aware and resumable. Keeping this run
+          # small bounds its overlap with a deployment or emergency rollback.
           environment["TMDB_ENRICHMENT_LIMIT"] = "50"
           environment["TMDB_ENRICHMENT_BATCH_SIZE"] = "10"
           os.execve(runner_path, [str(runner_path)], environment)

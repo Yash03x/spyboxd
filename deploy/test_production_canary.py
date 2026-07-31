@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -242,26 +243,178 @@ class ProductionCanaryTests(unittest.TestCase):
             auth_canary.CanaryIdentity("A", "user_A123", "alpha"),
             auth_canary.CanaryIdentity("B", "user_B123", "beta"),
         )
-        auth_canary._validate_database_rows(
-            identities,
-            [
-                {
-                    "clerk_user_id": "user_A123",
-                    "letterboxd_username": "Alpha",
-                    "is_active": True,
-                },
-                {
-                    "clerk_user_id": "user_B123",
-                    "letterboxd_username": "Beta",
-                    "is_active": True,
-                },
-            ],
-            [
-                {"clerk_user_id": "user_A123", "username": "Alpha"},
-                {"clerk_user_id": "user_B123", "username": "Beta"},
-            ],
-            set(),
+        self.assertEqual(
+            auth_canary._validate_database_rows(
+                identities,
+                [
+                    {
+                        "clerk_user_id": "user_A123",
+                        "letterboxd_username": "Alpha",
+                        "is_active": True,
+                    },
+                    {
+                        "clerk_user_id": "user_B123",
+                        "letterboxd_username": "Beta",
+                        "is_active": True,
+                    },
+                ],
+                [
+                    {"clerk_user_id": "user_A123", "username": "Alpha"},
+                    {"clerk_user_id": "user_B123", "username": "Beta"},
+                ],
+                set(),
+            ),
+            auth_canary.DATABASE_STATE_PROVISIONED,
         )
+
+    def test_auth_canary_first_run_accepts_two_completed_unclaimed_profiles(self):
+        identities = (
+            auth_canary.CanaryIdentity("A", "user_A123", "alpha"),
+            auth_canary.CanaryIdentity("B", "user_B123", "beta"),
+        )
+        self.assertEqual(
+            auth_canary._validate_database_rows(
+                identities,
+                [],
+                [],
+                set(),
+                [
+                    {
+                        "username": "Alpha",
+                        "is_active": True,
+                        "scraping_status": "completed",
+                    },
+                    {
+                        "username": "Beta",
+                        "is_active": True,
+                        "scraping_status": "completed",
+                    },
+                ],
+                [],
+            ),
+            auth_canary.DATABASE_STATE_BOOTSTRAP,
+        )
+
+    def test_auth_canary_first_run_rejects_partial_incomplete_or_claimed_state(self):
+        identities = (
+            auth_canary.CanaryIdentity("A", "user_A123", "alpha"),
+            auth_canary.CanaryIdentity("B", "user_B123", "beta"),
+        )
+        completed_profiles = [
+            {
+                "username": "alpha",
+                "is_active": True,
+                "scraping_status": "completed",
+            },
+            {
+                "username": "beta",
+                "is_active": True,
+                "scraping_status": "completed",
+            },
+        ]
+        with self.assertRaisesRegex(auth_canary.AuthCanaryError, "both absent"):
+            auth_canary._validate_database_rows(
+                identities,
+                [
+                    {
+                        "clerk_user_id": "user_A123",
+                        "letterboxd_username": "alpha",
+                        "is_active": True,
+                    }
+                ],
+                [{"clerk_user_id": "user_A123", "username": "alpha"}],
+                set(),
+                completed_profiles,
+                [],
+            )
+        with self.assertRaisesRegex(auth_canary.AuthCanaryError, "not completed"):
+            auth_canary._validate_database_rows(
+                identities,
+                [],
+                [],
+                set(),
+                [
+                    {**completed_profiles[0], "scraping_status": "pending"},
+                    completed_profiles[1],
+                ],
+                [],
+            )
+        with self.assertRaisesRegex(auth_canary.AuthCanaryError, "already claimed"):
+            auth_canary._validate_database_rows(
+                identities,
+                [],
+                [],
+                set(),
+                completed_profiles,
+                [
+                    {
+                        "clerk_user_id": "user_someone_else",
+                        "letterboxd_username": "alpha",
+                    }
+                ],
+            )
+
+    def test_auth_canary_bootstrap_verifies_clerk_usernames(self):
+        identities = (
+            auth_canary.CanaryIdentity("A", "user_A123", "alpha"),
+            auth_canary.CanaryIdentity("B", "user_B123", "beta"),
+        )
+        responses = [
+            auth_canary.HttpResponse(
+                200,
+                json.dumps({"id": "user_A123", "username": "Alpha"}).encode(),
+                {},
+            ),
+            auth_canary.HttpResponse(
+                200,
+                json.dumps({"id": "user_B123", "username": "Beta"}).encode(),
+                {},
+            ),
+        ]
+        with mock.patch.object(
+            auth_canary, "_request", side_effect=responses
+        ) as request:
+            auth_canary._verify_bootstrap_clerk_usernames("sk_live_test", identities)
+        self.assertEqual(request.call_count, 2)
+        self.assertTrue(
+            all(call.kwargs["clerk_backend"] for call in request.call_args_list)
+        )
+
+        responses[1] = auth_canary.HttpResponse(
+            200,
+            json.dumps({"id": "user_B123", "username": "someone_else"}).encode(),
+            {},
+        )
+        with (
+            mock.patch.object(auth_canary, "_request", side_effect=responses),
+            self.assertRaisesRegex(auth_canary.AuthCanaryError, "does not match"),
+        ):
+            auth_canary._verify_bootstrap_clerk_usernames("sk_live_test", identities)
+
+    def test_auth_canary_requires_provisioned_database_state_after_browser(self):
+        auth_canary._require_post_browser_provisioning(
+            auth_canary.DATABASE_STATE_PROVISIONED
+        )
+        with self.assertRaisesRegex(auth_canary.AuthCanaryError, "did not provision"):
+            auth_canary._require_post_browser_provisioning(
+                auth_canary.DATABASE_STATE_BOOTSTRAP
+            )
+
+    def test_authenticated_workflow_stages_and_deletes_ephemeral_identity_config(self):
+        workflow = (
+            DEPLOY_DIR.parent / ".github" / "workflows" / "production-canary.yml"
+        ).read_text(encoding="utf-8")
+        for name in (
+            "SPYBOXD_CANARY_USER_A_ID",
+            "SPYBOXD_CANARY_PROFILE_A",
+            "SPYBOXD_CANARY_USER_B_ID",
+            "SPYBOXD_CANARY_PROFILE_B",
+        ):
+            self.assertIn(f"secrets.{name}", workflow)
+        self.assertIn('local_env="${RUNNER_TEMP}/spyboxd-auth-canary.env"', workflow)
+        self.assertIn('--canary-env "${canary_env_path}"', workflow)
+        self.assertIn("shred --force --iterations=1 --zero --remove", workflow)
+        self.assertNotIn("/etc/spyboxd/canary.env", workflow)
 
     def test_authenticated_canary_pins_the_documented_clerk_api_version_header(self):
         class Opened:
@@ -280,8 +433,8 @@ class ProductionCanaryTests(unittest.TestCase):
                 return False
 
         with mock.patch.object(
-            auth_canary.urllib.request, "urlopen", return_value=Opened()
-        ) as urlopen:
+            auth_canary._CLERK_OPENER, "open", return_value=Opened()
+        ) as open_request:
             auth_canary._request(
                 "https://api.clerk.com/v1/agents/tasks",
                 method="POST",
@@ -289,10 +442,72 @@ class ProductionCanaryTests(unittest.TestCase):
                 payload={"permissions": "*"},
                 clerk_backend=True,
             )
-        request = urlopen.call_args.args[0]
+        request = open_request.call_args.args[0]
         headers = {name.lower(): value for name, value in request.header_items()}
         self.assertEqual(headers["clerk-api-version"], "2026-05-12")
         self.assertNotIn("clerk-version", headers)
+
+    def test_authenticated_canary_never_follows_clerk_redirects(self):
+        redirect = auth_canary.urllib.error.HTTPError(
+            "https://api.clerk.com/v1/sessions",
+            302,
+            "Found",
+            {"Location": "https://evil.example/collect"},
+            io.BytesIO(b""),
+        )
+        with mock.patch.object(
+            auth_canary._CLERK_OPENER, "open", side_effect=redirect
+        ) as open_request:
+            response = auth_canary._request(
+                "https://api.clerk.com/v1/sessions",
+                bearer="sk_live_test",
+                clerk_backend=True,
+            )
+        self.assertEqual(response.status, 302)
+        self.assertEqual(open_request.call_count, 1)
+        self.assertEqual(
+            open_request.call_args.args[0].full_url,
+            "https://api.clerk.com/v1/sessions",
+        )
+
+    def test_authenticated_canary_requires_explicit_complete_session_pagination(self):
+        session = {
+            "id": "sess_A123456",
+            "user_id": "user_A123",
+            "status": "active",
+        }
+        response = auth_canary.HttpResponse(
+            200,
+            json.dumps({"data": [session], "total_count": 1}).encode(),
+            {},
+        )
+        with mock.patch.object(auth_canary, "_request", return_value=response) as request:
+            self.assertEqual(
+                auth_canary._list_sessions(
+                    "sk_live_test", "user_A123", "active"
+                ),
+                [session],
+            )
+        self.assertIn("paginated=true", request.call_args.args[0])
+
+        invalid_payloads = (
+            [session],
+            {"data": [session], "total_count": 2},
+            {"data": [session], "total_count": True},
+            {"data": [session] * 100, "total_count": 100},
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload_type=type(payload).__name__):
+                response = auth_canary.HttpResponse(
+                    200, json.dumps(payload).encode(), {}
+                )
+                with (
+                    mock.patch.object(auth_canary, "_request", return_value=response),
+                    self.assertRaises(auth_canary.AuthCanaryError),
+                ):
+                    auth_canary._list_sessions(
+                        "sk_live_test", "user_A123", "active"
+                    )
 
     def test_authenticated_canary_records_task_id_before_url_validation(self):
         identity = auth_canary.CanaryIdentity("A", "user_A123", "alpha")
@@ -329,6 +544,73 @@ class ProductionCanaryTests(unittest.TestCase):
             request.call_args.kwargs["payload"]["redirect_url"],
             "https://spyboxd.com/profiles",
         )
+
+    def test_authenticated_browser_plan_assigns_sign_out_and_expiry_proofs(self):
+        tasks = [
+            {
+                "label": "A",
+                "user_id": "user_A123",
+                "profile": "alpha",
+                "task_url": "https://clerk.spyboxd.com/task-a",
+                "task_origin": "https://clerk.spyboxd.com",
+            },
+            {
+                "label": "B",
+                "user_id": "user_B123",
+                "profile": "beta",
+                "task_url": "https://clerk.spyboxd.com/task-b",
+                "task_origin": "https://clerk.spyboxd.com",
+            },
+        ]
+        plan = auth_canary._build_browser_plan(
+            api_base="https://api.spyboxd.com",
+            app_origin="https://spyboxd.com",
+            task_origin="https://clerk.spyboxd.com",
+            tasks=tasks,
+        )
+        self.assertEqual(plan["version"], auth_canary.BROWSER_PLAN_VERSION)
+        self.assertEqual(
+            plan["session_max_duration_seconds"],
+            auth_canary.SESSION_MAX_DURATION_SECONDS,
+        )
+        self.assertEqual(
+            [task["closure"] for task in plan["tasks"]],
+            ["sign_out", "session_expiry"],
+        )
+        self.assertNotIn("closure", tasks[0])
+        self.assertNotIn("closure", tasks[1])
+
+    def test_authenticated_browser_plan_rejects_duplicate_or_inconsistent_tasks(self):
+        base = {
+            "label": "A",
+            "user_id": "user_A123",
+            "profile": "alpha",
+            "task_url": "https://clerk.spyboxd.com/task-a",
+            "task_origin": "https://clerk.spyboxd.com",
+        }
+        with self.assertRaisesRegex(auth_canary.AuthCanaryError, "task labels"):
+            auth_canary._build_browser_plan(
+                api_base="https://api.spyboxd.com",
+                app_origin="https://spyboxd.com",
+                task_origin="https://clerk.spyboxd.com",
+                tasks=[base, {**base, "user_id": "user_B123", "profile": "beta"}],
+            )
+        with self.assertRaisesRegex(auth_canary.AuthCanaryError, "task origins"):
+            auth_canary._build_browser_plan(
+                api_base="https://api.spyboxd.com",
+                app_origin="https://spyboxd.com",
+                task_origin="https://clerk.spyboxd.com",
+                tasks=[
+                    base,
+                    {
+                        "label": "B",
+                        "user_id": "user_B123",
+                        "profile": "beta",
+                        "task_url": "https://clerk.spyboxd.com/task-b",
+                        "task_origin": "https://other.example",
+                    },
+                ],
+            )
 
     def test_authenticated_canary_refuses_users_with_preexisting_sessions(self):
         identities = (
