@@ -127,6 +127,9 @@ jobs:
       - name: Type-check frontend
         run: npm run typecheck
 
+      - name: Test the production authentication canary
+        run: node --test scripts/run-production-auth-canary.test.mjs
+
       - name: Prove the production launcher accepts the pinned Node major
         run: NODE_ENV=production npm run start -- --version
 
@@ -250,7 +253,6 @@ jobs:
           [[ "$("${runtime_dir}/node" --version)" == v24.18.1 ]]
           [[ -s "${runtime_dir}/LICENSE.nodejs" ]]
           "${runtime_dir}/node" --check frontend/scripts/runtime-proof.cjs
-          "${runtime_dir}/node" --test frontend/scripts/run-production-auth-canary.test.mjs
 
       - name: Test production Clerk configuration guard
         run: python3 -m unittest -v deploy/test_validate_clerk_production.py

@@ -49,11 +49,11 @@ class WorkflowControlsTests(unittest.TestCase):
         self.assertIn("path: frontend/.next", ci)
         self.assertIn("bash deploy/run-compose-smoke.sh", ci)
         self.assertIn("deploy/docker-compose.ci.yml", ci)
-        self.assertIn(
-            '"${runtime_dir}/node" --test '
-            "frontend/scripts/run-production-auth-canary.test.mjs",
-            ci,
+        install_index = ci.index("npm ci --no-audit --no-fund")
+        canary_test_index = ci.index(
+            "node --test scripts/run-production-auth-canary.test.mjs"
         )
+        self.assertLess(install_index, canary_test_index)
         self.assertIn("--project-name", smoke)
         self.assertIn("build --pull api frontend", smoke)
         self.assertIn("docker build --check -f frontend/Dockerfile .", smoke)
