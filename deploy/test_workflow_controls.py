@@ -211,6 +211,24 @@ class WorkflowControlsTests(unittest.TestCase):
         )
         self.assertIn("Retaining the historical previous-release marker", reconcile)
 
+        # The exit-code mapping must live inside the activation step itself:
+        # the workflow has several identical heredoc terminators, and a
+        # mapping stranded in a later step leaves the activation step
+        # swallowing every failure while the superseded output never gets
+        # written, so spurious external-smoke rollbacks fire instead.
+        activate_step = ci[
+            ci.index("name: Release validated commit to Hetzner")
+            : ci.index("name: Reconcile an interrupted or failed activation")
+        ]
+        reconcile_step = ci[
+            ci.index("name: Reconcile an interrupted or failed activation")
+            : ci.index("name: Verify public release from GitHub runner")
+        ]
+        self.assertIn('|| activation_status=$?', activate_step)
+        self.assertIn('if [ "${activation_status}" -eq 75 ]; then', activate_step)
+        self.assertIn('exit "${activation_status}"', activate_step)
+        self.assertNotIn("activation_status", reconcile_step)
+
     def test_dependabot_groups_nonmajor_updates_for_every_runtime_source(self) -> None:
         cases = (
             ("npm", "/frontend", "npm-minor-and-patch"),

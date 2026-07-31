@@ -828,6 +828,16 @@ jobs:
             SPYBOXD_CLERK_BRIDGE_EDGE="${CLERK_BRIDGE_EDGE}" \
               "${release_runner}" "${RELEASE_SHA}" "${REMOTE_BUNDLE}"
           REMOTE
+          if [ "${activation_status}" -eq 75 ]; then
+            # The release yielded because main moved past it mid-flight; the
+            # newer deploy owns production. Record a clean skip so the failed
+            # -activation reconciliation and public verification never run
+            # against a release that deliberately stood down.
+            echo "superseded=true" >>"${GITHUB_OUTPUT}"
+            echo "Release ${RELEASE_SHA} was superseded on main before activation; yielding to the newer deploy." >&2
+            exit 0
+          fi
+          exit "${activation_status}"
 
       - name: Reconcile an interrupted or failed activation
         if: >-
@@ -1427,16 +1437,6 @@ jobs:
           [ "$(read_state_revision active)" = "${previous_target}" ]
           echo "Restored healthy previous release ${previous_target} after interrupted activation."
           REMOTE
-          if [ "${activation_status}" -eq 75 ]; then
-            # The release yielded because main moved past it mid-flight; the
-            # newer deploy owns production. Record a clean skip so the failed
-            # -activation reconciliation and public verification never run
-            # against a release that deliberately stood down.
-            echo "superseded=true" >>"${GITHUB_OUTPUT}"
-            echo "Release ${RELEASE_SHA} was superseded on main before activation; yielding to the newer deploy." >&2
-            exit 0
-          fi
-          exit "${activation_status}"
 
       - name: Verify public release from GitHub runner
         id: external_smoke
