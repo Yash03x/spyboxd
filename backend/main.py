@@ -15,6 +15,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Que
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes.activity import router as activity_router
+from api.routes.follow_graph import router as follow_graph_router
 from api.routes.insights import router as insights_router
 from api.routes.profile_access import router as profile_access_router
 from auth import ClerkUser, get_admin_user, get_current_user, get_upload_user
@@ -358,6 +359,7 @@ app.add_middleware(
 app.include_router(insights_router)
 app.include_router(activity_router)
 app.include_router(profile_access_router)
+app.include_router(follow_graph_router)
 
 @app.get("/health")
 async def health_check():

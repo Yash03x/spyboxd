@@ -13,15 +13,17 @@ import {
   TrashIcon,
   UserCircleIcon,
 } from '@heroicons/react/24/outline';
-import { FileArchive, Send, ShieldCheck, Upload, UserPlus, Users } from 'lucide-react';
+import { ChevronDown, ChevronUp, Compass, FileArchive, Send, ShieldCheck, Upload, UserPlus, Users } from 'lucide-react';
 import {
   adminProfileRequestApi,
+  followGraphApi,
   profileApi,
   type ProfileRequestStatus,
 } from '../services/api';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
+import ProfileFollowGraph from '../components/ProfileFollowGraph';
 import { ProfileAvatar } from '../components/insights/InsightUI';
 import toast from 'react-hot-toast';
 
@@ -72,6 +74,8 @@ const ProfileManager: React.FC = () => {
   const [residentialSyncFiles, setResidentialSyncFiles] = useState<FileList | null>(null);
   const [exportFiles, setExportFiles] = useState<FileList | null>(null);
   const [hasOwnerPublishingConsent, setHasOwnerPublishingConsent] = useState(false);
+  const [requestingSuggestion, setRequestingSuggestion] = useState<string | null>(null);
+  const [openFollowGraph, setOpenFollowGraph] = useState<string | null>(null);
   const residentialSyncInputRef = useRef<HTMLInputElement>(null);
   const exportInputRef = useRef<HTMLInputElement>(null);
 
@@ -135,6 +139,17 @@ const ProfileManager: React.FC = () => {
     refetchOnWindowFocus: false,
   });
 
+  // Follow-graph suggestions degrade quietly: a 404 (endpoint not deployed
+  // yet) or an empty list both render the "No social data synced yet" state.
+  const followSuggestionsQuery = useQuery({
+    queryKey: ['follow-suggestions'],
+    queryFn: () => followGraphApi.getSuggestions(),
+    enabled: currentUserQuery.isSuccess,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
   const refreshProfileSurfaces = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ['profiles'] }),
     queryClient.invalidateQueries({ queryKey: ['profile-catalog'] }),
@@ -142,6 +157,8 @@ const ProfileManager: React.FC = () => {
     queryClient.invalidateQueries({ queryKey: ['admin-profile-requests'] }),
     queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] }),
     queryClient.invalidateQueries({ queryKey: ['recent-changes'] }),
+    queryClient.invalidateQueries({ queryKey: ['follow-suggestions'] }),
+    queryClient.invalidateQueries({ queryKey: ['follow-graph'] }),
   ]);
 
   const requestProfileMutation = useMutation({
@@ -557,6 +574,97 @@ const ProfileManager: React.FC = () => {
             </button>
           </form>
         </div>
+      </motion.section>
+
+      <motion.section
+        className="card-cinema"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.31 }}
+        aria-labelledby="who-to-track-next-title"
+        data-testid="who-to-track-next"
+      >
+        <div className="flex items-start gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cinema-400/25 bg-cinema-500/10 text-cinema-300">
+            <Compass className="h-5 w-5" />
+          </span>
+          <div>
+            <h2 id="who-to-track-next-title" className="text-xl font-bold text-white">Who to track next</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-white/60">
+              People followed by several of your monitored profiles. Monitor the ones already synced in Spyboxd, or request the rest for the next residential sync.
+            </p>
+          </div>
+        </div>
+
+        {followSuggestionsQuery.isLoading ? (
+          <p className="mt-5 text-sm text-white/45">Scanning imported follow lists…</p>
+        ) : followSuggestionsQuery.error || (followSuggestionsQuery.data?.suggestions.length ?? 0) === 0 ? (
+          <p className="mt-5 rounded-xl border border-white/10 bg-black/15 p-4 text-sm text-white/45">
+            No social data synced yet. Suggestions appear once follow lists are imported for your monitored profiles.
+          </p>
+        ) : (
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {(followSuggestionsQuery.data?.suggestions ?? []).map((suggestion) => {
+              const suggestionProfileId = suggestion.profile_id;
+              const canTrackDirectly = suggestion.already_imported && suggestionProfileId !== null;
+              const isTrackingSuggestion = canTrackDirectly && trackingProfileId === suggestionProfileId;
+              const isRequestingSuggestion = requestingSuggestion === suggestion.username;
+              const hiddenFollowerCount = suggestion.followed_by.length - 5;
+              return (
+                <article key={suggestion.username} className="flex flex-col rounded-xl border border-white/10 bg-black/15 p-4">
+                  <div className="flex items-center gap-3">
+                    <ProfileAvatar profile={{ username: suggestion.username, avatar_url: suggestion.avatar_url }} size="lg" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold text-white">{suggestion.display_name || suggestion.username}</p>
+                      <p className="truncate text-xs text-white/45">
+                        @{suggestion.username} · followed by {suggestion.followed_by_count}
+                        {suggestion.follows_back_count > 0 ? ` · follows ${suggestion.follows_back_count} back` : ''}
+                      </p>
+                    </div>
+                    {canTrackDirectly ? (
+                      <button
+                        type="button"
+                        disabled={isTrackingSuggestion}
+                        onClick={() => trackCatalogProfileMutation.mutate(suggestionProfileId)}
+                        aria-label={`Monitor ${suggestion.username}`}
+                        className="shrink-0 rounded-lg border border-cinema-400/25 bg-cinema-500/10 px-3 py-2 text-xs font-semibold text-cinema-200 transition-colors hover:bg-cinema-500/20 disabled:opacity-50"
+                      >
+                        {isTrackingSuggestion ? 'Saving…' : 'Monitor'}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={requestProfileMutation.isPending}
+                        onClick={() => {
+                          setRequestingSuggestion(suggestion.username);
+                          requestProfileMutation.mutate(suggestion.username, {
+                            onSettled: () => setRequestingSuggestion(null),
+                          });
+                        }}
+                        aria-label={`Request ${suggestion.username}`}
+                        className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/70 transition-colors hover:bg-white/10 disabled:opacity-50"
+                      >
+                        {isRequestingSuggestion ? 'Requesting…' : 'Request'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {suggestion.followed_by.slice(0, 5).map((follower) => (
+                      <span key={follower} className="rounded-md border border-cinema-400/20 bg-cinema-500/10 px-2 py-0.5 text-[10px] font-semibold text-cinema-200">
+                        @{follower}
+                      </span>
+                    ))}
+                    {hiddenFollowerCount > 0 && (
+                      <span className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/45">
+                        +{hiddenFollowerCount} more
+                      </span>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </motion.section>
 
       {(profileRequestsQuery.isLoading || profileRequestsQuery.error || (profileRequestsQuery.data?.length ?? 0) > 0) && (
@@ -1005,6 +1113,23 @@ const ProfileManager: React.FC = () => {
                       <div className="text-xs text-white/50 text-center">
                         Synced {new Date(profile.last_scraped_at).toLocaleDateString()}
                       </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setOpenFollowGraph((current) => (current === profile.username ? null : profile.username))}
+                      aria-expanded={openFollowGraph === profile.username}
+                      aria-label={`${openFollowGraph === profile.username ? 'Hide' : 'Show'} follow graph for ${profile.username}`}
+                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                    >
+                      <Users className="h-3.5 w-3.5" />
+                      Follow graph
+                      {openFollowGraph === profile.username
+                        ? <ChevronUp className="h-3.5 w-3.5" />
+                        : <ChevronDown className="h-3.5 w-3.5" />}
+                    </button>
+                    {openFollowGraph === profile.username && (
+                      <ProfileFollowGraph username={profile.username} />
                     )}
                   </div>
                 );

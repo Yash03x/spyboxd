@@ -979,4 +979,101 @@ export const changesApi = {
   },
 };
 
+// Counterpart payload carried by follow-related recent changes
+// (follow_added | follow_removed | follower_gained | follower_lost).
+export interface FollowChangePayload {
+  username: string;
+  display_name: string | null;
+  profile_url: string | null;
+}
+
+export type FollowGraphDirection = 'following' | 'followers' | 'both';
+
+export interface FollowGraphEdge {
+  direction: 'following' | 'follower';
+  counterpart_username: string;
+  counterpart_display_name: string | null;
+  counterpart_avatar_url: string | null;
+  counterpart_profile_url: string | null;
+  position: number | null;
+  is_imported_profile: boolean;
+  counterpart_profile_id: number | null;
+  removed_at: string | null;
+}
+
+export interface FollowGraphResponse {
+  username: string;
+  following_count: number | null;
+  followers_count: number | null;
+  edges: FollowGraphEdge[];
+  total: number;
+}
+
+export interface FollowMutualPair {
+  a: string;
+  b: string;
+  a_follows_b: boolean;
+  b_follows_a: boolean;
+  mutual: boolean;
+}
+
+export interface FollowMutualsResponse {
+  profiles: string[];
+  pairs: FollowMutualPair[];
+  rollups: Record<string, { follows_in_group: number; followed_by_in_group: number }>;
+}
+
+export interface FollowSuggestion {
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  followed_by: string[];
+  followed_by_count: number;
+  follows_back_count: number;
+  already_imported: boolean;
+  profile_id: number | null;
+}
+
+export interface FollowSuggestionsResponse {
+  suggestions: FollowSuggestion[];
+}
+
+export const followGraphApi = {
+  getFollowGraph: async (
+    username: string,
+    params: {
+      direction?: FollowGraphDirection;
+      includeRemoved?: boolean;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): Promise<FollowGraphResponse> => {
+    const response = await api.get(`/api/profiles/${encodeURIComponent(username)}/follow-graph`, {
+      params: {
+        direction: params.direction ?? 'both',
+        include_removed: params.includeRemoved ?? false,
+        limit: params.limit ?? 100,
+        offset: params.offset ?? 0,
+      },
+    });
+    return response.data;
+  },
+
+  getMutuals: async (profiles: string[]): Promise<FollowMutualsResponse> => {
+    const params = selectedProfileParams(profiles);
+    const response = await api.get('/api/follow-graph/mutuals', { params });
+    return response.data;
+  },
+
+  getSuggestions: async (options: { limit?: number; minOverlap?: number } = {}): Promise<FollowSuggestionsResponse> => {
+    const response = await api.get('/api/follow-graph/suggestions', {
+      params: {
+        limit: options.limit ?? 20,
+        min_overlap: options.minOverlap ?? 2,
+      },
+    });
+    return response.data;
+  },
+};
+
 export default api;

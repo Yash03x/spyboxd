@@ -1,10 +1,10 @@
 'use client';
 
 import React from 'react';
-import { ArrowRight, Clock3, Heart, ListChecks, Radar, RefreshCw, Star } from 'lucide-react';
+import { ArrowRight, Clock3, Heart, ListChecks, Radar, RefreshCw, Star, UserMinus, UserPlus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
-import type { RecentChange, RecentChangesResponse } from '../../services/api';
+import type { FollowChangePayload, RecentChange, RecentChangesResponse } from '../../services/api';
 
 const CHANGE_LABELS: Record<string, string> = {
   film_added: 'Film added',
@@ -27,7 +27,32 @@ const CHANGE_LABELS: Record<string, string> = {
   list_item_added: 'List entry added',
   list_item_removed: 'List entry removed',
   list_item_updated: 'List entry updated',
+  follow_added: 'Followed',
+  follow_removed: 'Unfollowed',
+  follower_gained: 'Follower gained',
+  follower_lost: 'Follower lost',
 };
+
+const FOLLOW_CHANGE_VERBS: Record<string, string> = {
+  follow_added: 'followed',
+  follow_removed: 'unfollowed',
+  follower_gained: 'gained follower',
+  follower_lost: 'lost follower',
+};
+
+function followCounterpart(change: RecentChange): FollowChangePayload | null {
+  if (!(change.change_type in FOLLOW_CHANGE_VERBS)) return null;
+  for (const candidate of [change.after, change.before]) {
+    if (
+      candidate
+      && typeof candidate === 'object'
+      && typeof (candidate as { username?: unknown }).username === 'string'
+    ) {
+      return candidate as FollowChangePayload;
+    }
+  }
+  return null;
+}
 
 function changeLabel(change: RecentChange): string {
   return CHANGE_LABELS[change.change_type]
@@ -35,6 +60,10 @@ function changeLabel(change: RecentChange): string {
 }
 
 function changeSubject(change: RecentChange): string {
+  const counterpart = followCounterpart(change);
+  if (counterpart) {
+    return `${change.username} ${FOLLOW_CHANGE_VERBS[change.change_type]} @${counterpart.username}`;
+  }
   const title = change.movie?.title ?? change.list?.name;
   const entity = change.entity_type.replaceAll('_', ' ');
   if (title) return `${change.username} · ${title}`;
@@ -49,6 +78,10 @@ function changeTime(change: RecentChange): string {
 }
 
 function ChangeIcon({ change }: { change: RecentChange }) {
+  if (change.change_type in FOLLOW_CHANGE_VERBS) {
+    const Icon = change.change_type === 'follow_removed' || change.change_type === 'follower_lost' ? UserMinus : UserPlus;
+    return <Icon className="h-3.5 w-3.5" />;
+  }
   const entity = `${change.change_type} ${change.entity_type}`.toLowerCase();
   const Icon = entity.includes('rating') ? Star : entity.includes('like') || entity.includes('favorite') ? Heart : entity.includes('list') ? ListChecks : Radar;
   return <Icon className="h-3.5 w-3.5" />;
