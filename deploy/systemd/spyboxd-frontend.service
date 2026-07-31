@@ -14,7 +14,10 @@ EnvironmentFile=/etc/spyboxd/frontend.env
 Environment=NODE_ENV=production
 Environment=NEXT_TELEMETRY_DISABLED=1
 Environment=NODE_OPTIONS=--dns-result-order=ipv4first
-ExecStart=/usr/bin/npm run start -- --hostname localhost --port 3000
+Environment=SPYBOXD_RUNTIME_PROOF_FILE=/var/cache/spyboxd-frontend/runtime-proof.json
+# The fallback keeps pre-runtime rollback releases bootable during the bounded
+# transition; every new release uses its attested self-contained Node binary.
+ExecStart=/bin/sh -c 'if [ -x /opt/spyboxd/current/frontend/.runtime/node ] && [ ! -L /opt/spyboxd/current/frontend/.runtime/node ] && [ -f /opt/spyboxd/current/frontend/scripts/runtime-proof.cjs ] && [ ! -L /opt/spyboxd/current/frontend/scripts/runtime-proof.cjs ]; then exec /opt/spyboxd/current/frontend/.runtime/node --require /opt/spyboxd/current/frontend/scripts/runtime-proof.cjs /opt/spyboxd/current/frontend/node_modules/next/dist/bin/next start --hostname localhost --port 3000; fi; exec /usr/bin/npm run start -- --hostname localhost --port 3000'
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=60

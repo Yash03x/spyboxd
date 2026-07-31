@@ -25,7 +25,7 @@ jobs:
   rollback:
     name: Guarded retained-release rollback
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     environment:
       name: production
@@ -36,6 +36,11 @@ jobs:
       ROLLBACK_CONFIRMATION: ${{ inputs.confirmation }}
 
     steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
       - name: Check out exact rollback helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,14 +117,20 @@ jobs:
 
             rollback_runner="$(mktemp /tmp/spyboxd-rollback.XXXXXX)"
             clerk_validator="$(mktemp /tmp/spyboxd-clerk-validator.XXXXXX)"
-            trap 'rm -f -- "${rollback_runner}" "${clerk_validator}"' EXIT
+            health_validator="$(mktemp /tmp/spyboxd-health-validator.XXXXXX)"
+            trap 'rm -f -- "${rollback_runner}" "${clerk_validator}" "${health_validator}"' EXIT
             repository_git show "${ROLLBACK_SCRIPT_SHA}:deploy/rollback.sh" >"${rollback_runner}"
             repository_git show \
               "${ROLLBACK_SCRIPT_SHA}:deploy/validate-clerk-production.py" \
               >"${clerk_validator}"
+            repository_git show \
+              "${ROLLBACK_SCRIPT_SHA}:deploy/check-runtime-health.py" \
+              >"${health_validator}"
             chmod 0700 "${rollback_runner}"
             chmod 0600 "${clerk_validator}"
+            chmod 0600 "${health_validator}"
             SPYBOXD_CLERK_VALIDATOR="${clerk_validator}" \
+              SPYBOXD_HEALTH_VALIDATOR="${health_validator}" \
               "${rollback_runner}" "${ROLLBACK_TARGET}"
           REMOTE
 

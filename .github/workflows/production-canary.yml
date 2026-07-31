@@ -1,0 +1,500 @@
+name: Production Canary
+
+on:
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      require_authenticated:
+        description: Require the opt-in two-user Clerk isolation phase
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: read # inspect current main CI/deployment activity during release grace
+  contents: read # checkout the exact canary contract revision
+
+jobs:
+  public_canary:
+    name: Public and anonymous privacy contracts
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: spyboxd-production-public-canary
+      cancel-in-progress: true
+    env:
+      AUTH_CANARY_REQUIRED: ${{ (github.event_name == 'workflow_dispatch' && inputs.require_authenticated) || (github.event_name == 'schedule' && github.event.schedule == '7 * * * *' && vars.PRODUCTION_AUTH_CANARY_ENABLED == 'true') }}
+    outputs:
+      exact_release: ${{ steps.release_alignment.outputs.exact_release }}
+      revision: ${{ steps.public_canary.outputs.revision }}
+
+    steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Check out the exact canary contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify public data, ingestion, UI, and anonymous privacy
+        id: public_canary
+        run: |
+          set -Eeuo pipefail
+          revision_file="${RUNNER_TEMP}/spyboxd-production-revision"
+          [[ ! -e "${revision_file}" && ! -L "${revision_file}" ]]
+          python3 deploy/run-production-canary.py \
+            --health-validator deploy/check-runtime-health.py \
+            --attempts 3 \
+            --retry-delay-seconds 10 \
+            --write-revision "${revision_file}"
+          read -r production_revision extra <"${revision_file}"
+          [[ "${production_revision}" =~ ^[0-9a-f]{40}$ && -z "${extra:-}" ]]
+          printf 'revision=%s\n' "${production_revision}" >>"${GITHUB_OUTPUT}"
+
+      - name: Prove the reported release belongs to main
+        id: release_alignment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCTION_REVISION: ${{ steps.public_canary.outputs.revision }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${PRODUCTION_REVISION}" =~ ^[0-9a-f]{40}$ ]]
+          current_main_sha="$(
+            gh api \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              --jq '.object.sha'
+          )"
+          [[ "${current_main_sha}" =~ ^[0-9a-f]{40}$ ]]
+          comparison_file="${RUNNER_TEMP}/spyboxd-release-comparison.json"
+          gh api \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/${GITHUB_REPOSITORY}/compare/${PRODUCTION_REVISION}...${current_main_sha}" \
+            >"${comparison_file}"
+          read -r comparison_status ahead_by extra < <(
+            python3 - "${comparison_file}" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(payload.get("status", ""), payload.get("ahead_by", ""))
+          PY
+          )
+          [[ -z "${extra:-}" && "${ahead_by}" =~ ^[0-9]+$ ]]
+          case "${comparison_status}" in
+            identical)
+              (( ahead_by == 0 ))
+              printf 'exact_release=true\n' >>"${GITHUB_OUTPUT}"
+              ;;
+            ahead)
+              (( ahead_by == 1 )) || {
+                echo 'Production is more than one commit behind current main.' >&2
+                exit 1
+              }
+              ci_runs="${RUNNER_TEMP}/spyboxd-active-ci.json"
+              deploy_runs="${RUNNER_TEMP}/spyboxd-active-deploy.json"
+              gh api \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&per_page=20" \
+                >"${ci_runs}"
+              gh api \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs?branch=main&per_page=20" \
+                >"${deploy_runs}"
+              python3 - "${current_main_sha}" "${ci_runs}" "${deploy_runs}" <<'PY'
+          from datetime import datetime, timezone
+          import json
+          from pathlib import Path
+          import sys
+
+          current_main_sha, *paths = sys.argv[1:]
+          active_statuses = {"queued", "in_progress", "requested", "waiting", "pending"}
+          now = datetime.now(timezone.utc)
+          active = []
+          for path in paths:
+              payload = json.loads(Path(path).read_text(encoding="utf-8"))
+              for run in payload.get("workflow_runs", []):
+                  created_at = run.get("created_at")
+                  if not isinstance(created_at, str):
+                      continue
+                  try:
+                      created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                  except ValueError:
+                      continue
+                  age_seconds = (now - created).total_seconds()
+                  if (
+                      run.get("head_sha") == current_main_sha
+                      and run.get("status") in active_statuses
+                      and -300 <= age_seconds <= 1800
+                  ):
+                      active.append(run)
+          if not active:
+              raise SystemExit(
+                  "production is behind main and no current CI or deployment started within 30 minutes"
+              )
+          PY
+              printf 'exact_release=false\n' >>"${GITHUB_OUTPUT}"
+              echo 'Production is temporarily behind current main while its exact CI or deployment is active.'
+              ;;
+            *)
+              echo 'Production reported a release that is not an ancestor of main.' >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Record the authenticated canary prerequisite
+        if: env.AUTH_CANARY_REQUIRED != 'true'
+        run: |
+          {
+            echo '### Authenticated isolation phase not enabled'
+            echo
+            echo 'The public, RSS, redirect, and anonymous API checks passed.'
+            echo 'To enable the hourly fail-closed two-user phase, enable Clerk Agent Tasks, provision two dedicated non-admin canary accounts that each track only their own profile, create `/etc/spyboxd/canary.env` from `deploy/env/canary.env.example` on the VPS, and set the repository Actions variable `PRODUCTION_AUTH_CANARY_ENABLED=true`.'
+            echo 'No Clerk, database, password, or session secret belongs in GitHub.'
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Require exact release alignment for authenticated isolation
+        if: env.AUTH_CANARY_REQUIRED == 'true' && steps.release_alignment.outputs.exact_release != 'true'
+        run: |
+          echo 'Authenticated isolation is fail-closed until the exact main release is deployed.' >&2
+          exit 1
+
+      - name: Summarize passing public contracts
+        if: success()
+        env:
+          PRODUCTION_REVISION: ${{ steps.public_canary.outputs.revision }}
+        run: |
+          {
+            echo '### Production public canary passed'
+            echo
+            echo "- Release: \`${PRODUCTION_REVISION}\`"
+            echo '- Readiness: reported deployed release belongs to main; database and schema current'
+            echo '- Public surface: aggregate dashboard, homepage, and sign-in healthy'
+            echo '- Ingestion: RSS semantic health healthy'
+            echo '- Privacy: 7 identifying UI routes redirected and 20 data-bearing API routes rejected anonymous access'
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  authenticated_canary:
+    name: Clerk-backed non-admin isolation
+    needs: public_canary
+    if: >-
+      needs.public_canary.result == 'success' &&
+      needs.public_canary.outputs.exact_release == 'true' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.require_authenticated) ||
+      (github.event_name == 'schedule' && github.event.schedule == '7 * * * *' &&
+      vars.PRODUCTION_AUTH_CANARY_ENABLED == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: spyboxd-production-auth-canary
+      queue: max
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: https://spyboxd.com
+
+    steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Check out the exact canary and SSH helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up the pinned Node.js runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.18.1"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the browser canary runtime before loading production credentials
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Establish one pinned IPv4 production SSH connection
+        id: production_ssh
+        env:
+          SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: deploy/production-ssh.sh open
+
+      - name: Allocate a private remote canary script path
+        id: remote_canary
+        run: |
+          set -Eeuo pipefail
+          remote_path="$(deploy/production-ssh.sh run mktemp /tmp/spyboxd-auth-canary.XXXXXX)"
+          [[ "${remote_path}" =~ ^/tmp/spyboxd-auth-canary\.[A-Za-z0-9]{6}$ ]]
+          printf 'path=%s\n' "${remote_path}" >>"${GITHUB_OUTPUT}"
+
+      - name: Install the exact remote Clerk task helper
+        env:
+          REMOTE_CANARY_PATH: ${{ steps.remote_canary.outputs.path }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${REMOTE_CANARY_PATH}" =~ ^/tmp/spyboxd-auth-canary\.[A-Za-z0-9]{6}$ ]]
+          expected_hash="$(sha256sum deploy/run-production-auth-canary.py | awk '{print $1}')"
+          [[ "${expected_hash}" =~ ^[0-9a-f]{64}$ ]]
+          deploy/production-ssh.sh copy \
+            deploy/run-production-auth-canary.py \
+            "spyboxd-production:${REMOTE_CANARY_PATH}"
+          deploy/production-ssh.sh run sh -s -- \
+            "${REMOTE_CANARY_PATH}" "${expected_hash}" <<'REMOTE'
+          set -eu
+          canary_path="$1"
+          expected_hash="$2"
+          case "${canary_path}" in
+            /tmp/spyboxd-auth-canary.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+            *) exit 64 ;;
+          esac
+          case "${expected_hash}" in
+            *[!0-9a-f]*|'') exit 64 ;;
+          esac
+          [ "${#expected_hash}" -eq 64 ]
+          [ -f "${canary_path}" ] && [ ! -L "${canary_path}" ]
+          [ "$(sha256sum "${canary_path}" | awk '{print $1}')" = "${expected_hash}" ]
+          chmod 0700 "${canary_path}"
+          REMOTE
+
+      - name: Prove browser-backed isolation under a fail-safe VPS guardian
+        env:
+          REMOTE_CANARY_PATH: ${{ steps.remote_canary.outputs.path }}
+        run: |
+          set -Eeuo pipefail
+          task_file="${RUNNER_TEMP}/spyboxd-auth-tasks.json"
+          lease_id="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_lease="/opt/spyboxd/shared/auth-canary-leases/${lease_id}"
+          remote_plan="${remote_lease}/plan.json"
+          [[ ! -e "${task_file}" && ! -L "${task_file}" ]]
+          [[ "${lease_id}" =~ ^gha-[1-9][0-9]{0,19}-[1-9][0-9]{0,9}$ ]]
+          [[ "${REMOTE_CANARY_PATH}" =~ ^/tmp/spyboxd-auth-canary\.[A-Za-z0-9]{6}$ ]]
+
+          guardian_started=0
+          signal_guardian() {
+            if (( guardian_started == 1 )); then
+              timeout --signal=TERM --kill-after=5s 30s \
+                deploy/production-ssh.sh run \
+                  "${REMOTE_CANARY_PATH}" complete --lease-id "${lease_id}" \
+                  >/dev/null 2>&1 || true
+            fi
+          }
+          trap signal_guardian EXIT
+          trap 'signal_guardian; exit 130' INT TERM
+
+          deploy/production-ssh.sh run sh -s -- \
+            "${REMOTE_CANARY_PATH}" "${lease_id}" <<'REMOTE'
+          set -eu
+          canary_path="$1"
+          lease_id="$2"
+          case "${canary_path}" in
+            /tmp/spyboxd-auth-canary.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+            *) exit 64 ;;
+          esac
+          case "${lease_id}" in
+            gha-*-*) ;;
+            *) exit 64 ;;
+          esac
+          lease_numbers="${lease_id#gha-}"
+          run_id="${lease_numbers%-*}"
+          run_attempt="${lease_numbers##*-}"
+          case "${run_id}" in
+            ''|0*|*[!0-9]*) exit 64 ;;
+          esac
+          case "${run_attempt}" in
+            ''|0*|*[!0-9]*) exit 64 ;;
+          esac
+          current_link=/opt/spyboxd/current
+          python_path="${current_link}/.venv/bin/python"
+          [ -L "${current_link}" ] && [ -x "${python_path}" ]
+          command -v nohup >/dev/null
+          command -v setsid >/dev/null
+          umask 077
+          nohup setsid "${python_path}" "${canary_path}" guard \
+            --lease-id "${lease_id}" \
+            --max-wait-seconds 600 \
+            </dev/null >/dev/null 2>&1 &
+          guardian_pid=$!
+          sleep 2
+          if kill -0 "${guardian_pid}" 2>/dev/null; then
+            exit 0
+          fi
+          status="$("${python_path}" "${canary_path}" status --lease-id "${lease_id}")"
+          [ "${status}" = failed ]
+          REMOTE
+          guardian_started=1
+
+          plan_ready=0
+          for _ in $(seq 1 60); do
+            if deploy/production-ssh.sh run test -f "${remote_plan}"; then
+              plan_ready=1
+              break
+            fi
+            guardian_status="$(
+              deploy/production-ssh.sh run \
+                "${REMOTE_CANARY_PATH}" status --lease-id "${lease_id}"
+            )"
+            if [[ "${guardian_status}" == failed ]]; then
+              break
+            fi
+            sleep 2
+          done
+
+          browser_status=1
+          if (( plan_ready == 1 )); then
+            umask 077
+            if deploy/production-ssh.sh copy \
+              "spyboxd-production:${remote_plan}" "${task_file}"
+            then
+              chmod 0600 "${task_file}"
+              browser_status=0
+              (
+                cd frontend
+                node scripts/run-production-auth-canary.mjs --tasks "${task_file}"
+              ) || browser_status=$?
+            fi
+          else
+            echo 'The VPS guardian did not publish a canary plan.' >&2
+          fi
+
+          signal_guardian
+          guardian_status=running
+          for _ in $(seq 1 180); do
+            guardian_status="$(
+              deploy/production-ssh.sh run \
+                "${REMOTE_CANARY_PATH}" status --lease-id "${lease_id}"
+            )"
+            if [[ "${guardian_status}" == passed || "${guardian_status}" == failed ]]; then
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${guardian_status}" == passed || "${guardian_status}" == failed ]]; then
+            guardian_started=0
+          fi
+          if [[ "${guardian_status}" != passed ]]; then
+            echo 'The VPS guardian did not prove Clerk task and session cleanup.' >&2
+            exit 1
+          fi
+          if (( browser_status != 0 )); then
+            exit "${browser_status}"
+          fi
+
+      - name: Enforce the VPS cleanup backstop and retire the lease
+        if: always() && steps.remote_canary.outputs.path != ''
+        env:
+          REMOTE_CANARY_PATH: ${{ steps.remote_canary.outputs.path }}
+        run: |
+          set -Eeuo pipefail
+          lease_id="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [[ "${lease_id}" =~ ^gha-[1-9][0-9]{0,19}-[1-9][0-9]{0,9}$ ]]
+          if [[ ! -f "${RUNNER_TEMP}/spyboxd-production-ssh.config" ]]; then
+            exit 0
+          fi
+          [[ "${REMOTE_CANARY_PATH}" =~ ^/tmp/spyboxd-auth-canary\.[A-Za-z0-9]{6}$ ]]
+          guardian_status="$(
+            deploy/production-ssh.sh run \
+              "${REMOTE_CANARY_PATH}" status --lease-id "${lease_id}"
+          )"
+          if [[ "${guardian_status}" == running ]]; then
+            deploy/production-ssh.sh run \
+              "${REMOTE_CANARY_PATH}" complete --lease-id "${lease_id}" \
+              >/dev/null
+            for _ in $(seq 1 180); do
+              sleep 2
+              guardian_status="$(
+                deploy/production-ssh.sh run \
+                  "${REMOTE_CANARY_PATH}" status --lease-id "${lease_id}"
+              )"
+              if [[ "${guardian_status}" != running ]]; then
+                break
+              fi
+            done
+          fi
+          if [[ "${guardian_status}" == absent ]]; then
+            exit 0
+          fi
+          timeout --signal=TERM --kill-after=15s 5m \
+            deploy/production-ssh.sh run \
+              "${REMOTE_CANARY_PATH}" cleanup --lease-id "${lease_id}"
+
+      - name: Remove the remote canary helper
+        if: always() && steps.remote_canary.outputs.path != ''
+        env:
+          REMOTE_CANARY_PATH: ${{ steps.remote_canary.outputs.path }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${REMOTE_CANARY_PATH}" =~ ^/tmp/spyboxd-auth-canary\.[A-Za-z0-9]{6}$ ]]
+          deploy/production-ssh.sh run sh -s -- "${REMOTE_CANARY_PATH}" <<'REMOTE'
+          set -eu
+          canary_path="$1"
+          case "${canary_path}" in
+            /tmp/spyboxd-auth-canary.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+            *) exit 64 ;;
+          esac
+          if [ -L "${canary_path}" ]; then
+            echo 'Refusing to remove a remote canary symlink.' >&2
+            exit 1
+          fi
+          if [ -f "${canary_path}" ]; then
+            rm -f -- "${canary_path}"
+          elif [ -e "${canary_path}" ]; then
+            echo 'Refusing to remove a non-file remote canary path.' >&2
+            exit 1
+          fi
+          REMOTE
+
+      - name: Close production SSH and securely remove local key material
+        if: always()
+        run: |
+          if [[ -x deploy/production-ssh.sh ]]; then
+            deploy/production-ssh.sh close
+          fi
+
+      - name: Securely remove one-time local canary material
+        if: always()
+        run: |
+          for path in \
+            "${RUNNER_TEMP}/spyboxd-auth-tasks.json"
+          do
+            if [[ -L "${path}" ]]; then
+              echo 'Refusing to remove a local canary symlink.' >&2
+              exit 1
+            elif [[ -f "${path}" ]]; then
+              chmod 0600 "${path}"
+              shred --force --iterations=1 --zero --remove -- "${path}"
+            elif [[ -e "${path}" ]]; then
+              echo 'Refusing to remove non-file local canary material.' >&2
+              exit 1
+            fi
+          done
+
+      - name: Summarize passing authenticated isolation
+        if: success()
+        env:
+          PRODUCTION_REVISION: ${{ needs.public_canary.outputs.revision }}
+        run: |
+          {
+            echo '### Production authenticated canary passed'
+            echo
+            echo "- Release: \`${PRODUCTION_REVISION}\`"
+            echo '- Two short-lived browser-established non-admin Clerk sessions proved per-user profile isolation'
+            echo '- Global/admin access remained denied and the VPS re-listed both users to prove no canary session remained live'
+            echo '- Clerk and database secrets remained on the VPS'
+          } >>"${GITHUB_STEP_SUMMARY}"

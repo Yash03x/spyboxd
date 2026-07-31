@@ -84,6 +84,10 @@ current_release="$(readlink -f "${CURRENT_LINK}" || true)"
 current_revision="$(basename "${current_release}")"
 [[ "${current_revision}" =~ ^[0-9a-f]{40}$ ]] \
     || fail "the active release directory does not identify an exact revision"
+health_validator="${SPYBOXD_HEALTH_VALIDATOR:-${current_release}/deploy/check-runtime-health.py}"
+readonly health_validator
+[[ -f "${health_validator}" && ! -L "${health_validator}" ]] \
+    || fail "trusted runtime health validator is unavailable"
 [[ -z "${EXPECTED_CURRENT_REVISION}" || "${current_revision}" == "${EXPECTED_CURRENT_REVISION}" ]] \
     || fail "the active revision changed before rollback acquired the deployment lock"
 [[ "$(read_state_revision active)" == "${current_revision}" ]] \
@@ -96,6 +100,35 @@ target_release="${RELEASES_DIR}/${target_revision}"
 [[ -f "${target_release}/REVISION" ]] \
     && [[ "$(<"${target_release}/REVISION")" == "${target_revision}" ]] \
     || fail "rollback target has an invalid revision marker"
+target_manifest="${target_release}/.spyboxd-release-manifest.json"
+[[ -f "${target_manifest}" && ! -L "${target_manifest}" ]] \
+    || fail "rollback target has no immutable release manifest"
+target_manifest_format="$(python3 - "${target_manifest}" "${target_revision}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path, expected_revision = sys.argv[1:]
+try:
+    manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+if (
+    not isinstance(manifest, dict)
+    or manifest.get("format_version") not in {1, 2}
+    or manifest.get("revision") != expected_revision
+):
+    raise SystemExit(1)
+print(manifest["format_version"])
+PY
+)" || fail "rollback target has an invalid release manifest"
+if [[ "${target_manifest_format}" == 2 ]]; then
+    [[ -x "${target_release}/frontend/.runtime/node" ]] \
+        && [[ ! -L "${target_release}/frontend/.runtime/node" ]] \
+        && [[ -f "${target_release}/frontend/.runtime/LICENSE.nodejs" ]] \
+        && [[ ! -L "${target_release}/frontend/.runtime/LICENSE.nodejs" ]] \
+        || fail "runtime-aware rollback target is missing its self-contained Node.js runtime"
+fi
 if [[ ! -f "${target_release}/.revision-health-v1" ]]; then
     [[ "$(read_state_revision previous)" == "${target_revision}" ]] \
         || fail "only the trusted previous release may use transitional legacy health verification"
@@ -109,9 +142,6 @@ fi
 [[ -n "${CLERK_VALIDATOR}" ]] \
     && [[ -f "${CLERK_VALIDATOR}" && ! -L "${CLERK_VALIDATOR}" ]] \
     || fail "trusted production Clerk configuration validator is unavailable"
-target_manifest="${target_release}/.spyboxd-release-manifest.json"
-[[ -f "${target_manifest}" && ! -L "${target_manifest}" ]] \
-    || fail "rollback target has no immutable release manifest"
 python3 "${CLERK_VALIDATOR}" runtime \
     --frontend-env "${FRONTEND_ENV_FILE}" \
     --api-env "${API_ENV_FILE}" \
@@ -172,20 +202,38 @@ if expected_revision and payload.get("revision") != expected_revision:
     return 1
 }
 
+wait_for_validated_json() {
+    local name="$1" url="$2" kind="$3" response attempt
+    for attempt in $(seq 1 12); do
+        if response="$(curl --silent --show-error --fail --max-time 5 "${url}" 2>/dev/null)" \
+            && printf '%s' "${response}" \
+                | python3 "${health_validator}" "${kind}" >/dev/null; then
+            log "${name} is ready"
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 check_release() {
     local revision="$1" label="$2" release_path="$3"
     if [[ -f "${release_path}/.revision-health-v1" ]]; then
         wait_for_http "${label} API revision ${revision}" "http://127.0.0.1:8000/health" ok "${revision}" \
+            && wait_for_validated_json "${label} database-backed dashboard" "http://127.0.0.1:8000/api/public/dashboard" dashboard \
             && wait_for_http "${label} frontend" "http://127.0.0.1:3000/sign-in" \
             && wait_for_http "${label} public API revision ${revision}" "https://api.spyboxd.com/health" ok "${revision}" \
+            && wait_for_validated_json "${label} public database-backed dashboard" "https://api.spyboxd.com/api/public/dashboard" dashboard \
             && wait_for_http "${label} public frontend" "https://spyboxd.com/sign-in"
         return
     fi
 
     log "${label} release predates revision-aware health; verifying its exact symlink target and liveness"
     wait_for_http "${label} API" "http://127.0.0.1:8000/health" ok \
+        && wait_for_validated_json "${label} database-backed dashboard" "http://127.0.0.1:8000/api/public/dashboard" dashboard \
         && wait_for_http "${label} frontend" "http://127.0.0.1:3000/sign-in" \
         && wait_for_http "${label} public API" "https://api.spyboxd.com/health" ok \
+        && wait_for_validated_json "${label} public database-backed dashboard" "https://api.spyboxd.com/api/public/dashboard" dashboard \
         && wait_for_http "${label} public frontend" "https://spyboxd.com/sign-in"
 }
 

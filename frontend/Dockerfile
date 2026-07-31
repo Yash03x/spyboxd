@@ -1,10 +1,10 @@
-FROM node:20-alpine AS deps
+FROM node:24-alpine@sha256:f70403e87646dc51b45295f4b8b70cdad0b63d2297c4c9899119b03f7af7a6b3 AS deps
 
 WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm ci
 
-FROM node:20-alpine AS builder
+FROM node:24-alpine@sha256:f70403e87646dc51b45295f4b8b70cdad0b63d2297c4c9899119b03f7af7a6b3 AS builder
 
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
@@ -27,7 +27,7 @@ ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL} \
 
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:24-alpine@sha256:f70403e87646dc51b45295f4b8b70cdad0b63d2297c4c9899119b03f7af7a6b3 AS runner
 
 WORKDIR /app
 
@@ -41,6 +41,7 @@ RUN npm ci --omit=dev
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/next.config.ts ./next.config.ts
+COPY --from=builder /app/scripts ./scripts
 
 EXPOSE 3000
 
