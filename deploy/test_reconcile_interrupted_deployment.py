@@ -325,6 +325,28 @@ class InterruptedDeploymentReconciliationTests(unittest.TestCase):
         )
         self.assertFalse((self.state / "previous").exists())
 
+    def test_stale_previous_marker_from_an_older_deploy_is_retained(self) -> None:
+        # Steady production state after a successful deploy keeps the previous
+        # marker pointing at the release before the active one. An attempt that
+        # failed before activation must restore the active release and keep
+        # that marker as the standing rollback target instead of refusing.
+        ancestor_revision = "1234567890abcdef1234567890abcdef12345678"
+        self.current_link.unlink()
+        self.current_link.symlink_to(self.previous_release)
+        self._write_state(self.previous_revision, ancestor_revision)
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.current_link.resolve(), self.previous_release)
+        self.assertEqual(
+            (self.state / "active").read_text().strip(), self.previous_revision
+        )
+        self.assertEqual(
+            (self.state / "previous").read_text().strip(), ancestor_revision
+        )
+        self.assertIn(
+            "Retaining the historical previous-release marker", result.stdout
+        )
+
     def test_first_activation_stops_services_and_clears_current_state(self) -> None:
         self._write_state(self.attempted_revision, None)
         result = self._run("none")

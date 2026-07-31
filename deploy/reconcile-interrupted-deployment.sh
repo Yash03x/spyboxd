@@ -199,7 +199,11 @@ if [[ "${active_marker}" == "${RELEASE_SHA}" ]]; then
 elif [[ -n "${previous_marker}" \
     && "${previous_marker}" != "${PREVIOUS_TARGET}" \
     && "${previous_marker}" != "${RELEASE_SHA}" ]]; then
-    fail "the previous release-state marker does not identify a recovery revision"
+    # The activation never switched away from PREVIOUS_TARGET, so a valid
+    # marker naming an older revision is ordinary residue from the last
+    # successful deploy: it is the rollback target of the release that is
+    # still active and must be preserved, not treated as corruption.
+    log "Retaining the historical previous-release marker ${previous_marker} for the still-active release."
 fi
 
 validate_runtime_release "${PREVIOUS_RELEASE}" "${PREVIOUS_TARGET}" false
