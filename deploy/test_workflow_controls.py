@@ -47,6 +47,12 @@ class WorkflowControlsTests(unittest.TestCase):
         self.assertIn("needs: frontend", ci)
         self.assertIn("Download the already-built frontend artifact", ci)
         self.assertIn("path: frontend/.next", ci)
+        self.assertEqual(ci.count("name: frontend-next-${{ github.sha }}"), 3)
+        self.assertNotIn(
+            "frontend-next-${{ github.sha }}-${{ github.run_attempt }}",
+            ci,
+        )
+        self.assertIn("overwrite: true", ci)
         self.assertIn("bash deploy/run-compose-smoke.sh", ci)
         self.assertIn("deploy/docker-compose.ci.yml", ci)
         install_index = ci.index("npm ci --no-audit --no-fund")
