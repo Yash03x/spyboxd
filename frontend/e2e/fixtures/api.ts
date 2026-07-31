@@ -537,6 +537,24 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   }
   if (path === '/api/watch-together') return json(route, watchTogether);
 
+  // Social graph (contract-shaped empty states until fixtures grow edges).
+  if (path === '/api/follow-graph/suggestions') return json(route, { suggestions: [] });
+  if (path === '/api/follow-graph/mutuals') {
+    return json(route, { profiles: [], pairs: [], rollups: {} });
+  }
+  {
+    const followGraphMatch = path.match(/^\/api\/profiles\/([^/]+)\/follow-graph$/);
+    if (followGraphMatch) {
+      return json(route, {
+        username: decodeURIComponent(followGraphMatch[1]),
+        following_count: null,
+        followers_count: null,
+        edges: [],
+        total: 0,
+      });
+    }
+  }
+
   return route.fulfill({
     status: 404,
     contentType: 'application/json',
