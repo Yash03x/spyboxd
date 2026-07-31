@@ -4,12 +4,14 @@ from itertools import combinations
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, case, desc, extract, false, func, or_
 from .models import (
+    AppUser,
     Movie,
     MovieList,
     MovieListItem,
     Profile,
     ProfileDataChange,
     ProfileFavoriteMovie,
+    ProfileFeedState,
     ProfileFilm,
     ProfileSourceActivity,
     ProfileSync,
@@ -632,6 +634,38 @@ class ProfileRepository:
             .filter(func.lower(Profile.username) == username.strip().casefold())
             .one_or_none()
         )
+
+    def rename_profile(self, profile: Profile, new_username: str) -> bool:
+        """Carry a canonical profile to a new Letterboxd username in place.
+
+        Letterboxd 404s old profile URLs without a redirect after a username
+        change, so the imported dataset keeps its identity and the RSS feed
+        state is repointed at the new feed URL with its failure backoff
+        cleared. App users whose account mirrors the old username follow it.
+        Returns whether a feed state row was repointed.
+        """
+        old_username = profile.username
+        profile.username = new_username
+
+        feed_state = self.db.get(ProfileFeedState, profile.id)
+        if feed_state is not None:
+            # Mirrors services.rss_incremental._default_feed_url; usernames
+            # are restricted to [A-Za-z0-9_-] so no quoting is required.
+            feed_state.feed_url = f"https://letterboxd.com/{new_username}/rss/"
+            feed_state.consecutive_failures = 0
+            feed_state.last_error = None
+            feed_state.last_http_status = None
+            feed_state.next_poll_at = datetime.now(timezone.utc)
+
+        self.db.query(AppUser).filter(
+            func.lower(AppUser.letterboxd_username) == old_username.strip().casefold()
+        ).update(
+            {AppUser.letterboxd_username: new_username},
+            synchronize_session=False,
+        )
+
+        self.db.commit()
+        return feed_state is not None
     
     def get_profile_by_id(self, profile_id: int) -> Optional[Profile]:
         return self.db.query(Profile).filter(Profile.id == profile_id).first()

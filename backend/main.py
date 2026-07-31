@@ -117,6 +117,10 @@ class ProfileUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class ProfileRename(BaseModel):
+    new_username: str
+
+
 class PublicSystemStats(BaseModel):
     total_profiles: int = Field(ge=0)
     total_movies_tracked: int = Field(ge=0)
@@ -807,6 +811,46 @@ async def update_profile(
     _refresh_dashboard_snapshot_cache(db)
     
     return {"message": f"Profile updated for {username}", "profile": updated_profile.to_dict()}
+
+@app.post("/profiles/{username}/rename")
+async def rename_profile(
+    username: str,
+    payload: ProfileRename,
+    db: Session = Depends(get_db),
+    _user: ClerkUser = Depends(get_active_upload_user),
+):
+    """Carry a profile to a renamed Letterboxd account.
+
+    Letterboxd 404s the old URLs without a redirect, so the residential sync
+    workflow needs to rename the canonical profile in place (keeping every
+    imported dataset and tracking mapping) before uploading a fresh bundle
+    under the new username — otherwise the upload would create a duplicate.
+    Shares the ingestion-token trust model with /upload/.
+    """
+    new_username = payload.new_username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", new_username):
+        raise HTTPException(status_code=422, detail="Invalid Letterboxd username")
+
+    profile_repo = ProfileRepository(db)
+    profile = profile_repo.get_profile_by_username(username)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    existing = profile_repo.get_profile_by_username(new_username)
+    if existing is not None and existing.id != profile.id:
+        raise HTTPException(status_code=409, detail="Target username already exists")
+
+    old_username = profile.username
+    feed_repointed = profile_repo.rename_profile(profile, new_username)
+    _refresh_dashboard_snapshot_cache(db)
+
+    return {
+        "message": f"Profile renamed from {old_username} to {new_username}",
+        "old_username": old_username,
+        "new_username": new_username,
+        "feed_repointed": feed_repointed,
+    }
+
 
 @app.delete("/profiles/{username}")
 async def delete_profile(

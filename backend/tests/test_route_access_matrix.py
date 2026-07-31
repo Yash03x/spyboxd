@@ -72,4 +72,7 @@ def test_existing_mutations_keep_admin_or_ingestion_auth():
     for method, path in admin_routes:
         assert "get_admin_user" in _dependency_names(_route(method, path))
     assert "get_active_upload_user" in _dependency_names(_route("POST", "/upload/"))
+    assert "get_active_upload_user" in _dependency_names(
+        _route("POST", "/profiles/{username}/rename")
+    )
     assert "get_current_user" in _dependency_names(_route("POST", "/profiles/{profile_id}/tracking"))
