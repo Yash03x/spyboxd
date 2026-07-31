@@ -83,3 +83,31 @@ test('an admin can switch between personal monitoring and the preserved global d
   await expect(page.getByText('Analytics across the complete managed profile library')).toBeVisible();
   await expect(page.getByText('Managed Profiles', { exact: true }).first()).toBeVisible();
 });
+
+test('the admin scope toggle appears on every analytics page and persists across pages', async ({ page }) => {
+  await installApiMocks(page, { isAdmin: true });
+
+  await page.goto('/spy-signals');
+  await expect(page.getByRole('button', { name: 'Global admin' })).toBeVisible();
+
+  const trackedProfilesRequest = page.waitForRequest((request) => (
+    new URL(request.url()).pathname === '/profiles/tracked'
+  ));
+  await page.getByRole('button', { name: 'Monitored', exact: true }).click();
+  await trackedProfilesRequest;
+
+  for (const path of ['/analysis', '/compare', '/watch-together', '/dashboard']) {
+    await page.goto(path);
+    await expect(page.getByRole('button', { name: 'Monitored', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  }
+});
+
+test('the scope toggle never renders for non-admin users', async ({ page }) => {
+  await installApiMocks(page, { isAdmin: false });
+
+  for (const path of ['/dashboard', '/spy-signals', '/analysis', '/compare', '/watch-together']) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Global admin' })).toHaveCount(0);
+  }
+});

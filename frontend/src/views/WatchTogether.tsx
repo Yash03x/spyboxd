@@ -9,10 +9,11 @@ import { useSearchParams } from 'next/navigation';
 import ProfileMultiSelect from '../components/insights/ProfileMultiSelect';
 import { FeatureState } from '../components/insights/InsightUI';
 import WatchTogetherResults from '../components/insights/WatchTogetherResults';
+import AdminScopeToggle from '../components/AdminScopeToggle';
+import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { useUrlProfileSelection } from '../hooks/useUrlProfileSelection';
 import {
   insightsApi,
-  profileApi,
   type FeatureCoverage,
   type WatchTogetherMode,
 } from '../services/api';
@@ -116,7 +117,7 @@ export default function WatchTogether() {
     setDraftFilters((current) => sameWatchFilters(current, appliedFilters) ? current : appliedFilters);
   }, [appliedFilters]);
 
-  const profilesQuery = useQuery({ queryKey: ['profiles'], queryFn: profileApi.getProfiles });
+  const profilesQuery = useScopedProfiles();
   const providerRegionsQuery = useQuery({
     queryKey: ['watch-provider-regions'],
     queryFn: insightsApi.getWatchProviderRegions,
@@ -197,7 +198,14 @@ export default function WatchTogether() {
 
   if (profilesQuery.isLoading) return <FeatureState title="Loading profiles" message="Preparing the group picker." loading />;
   if (profilesQuery.error) return <FeatureState title="Profiles unavailable" message="The profile directory could not be loaded." />;
-  if (completedProfiles.length < 2) return <FeatureState title="Track two profiles for a group pick" message="Add or request at least two Letterboxd profiles in My Profiles before asking for a group movie pick." actionHref="/profiles" actionLabel="Open My Profiles" />;
+  if (completedProfiles.length < 2) {
+    return (
+      <div className="mx-auto max-w-[92rem] space-y-4">
+        <div className="flex justify-end"><AdminScopeToggle /></div>
+        <FeatureState title="Track two profiles for a group pick" message="Add or request at least two Letterboxd profiles in My Profiles before asking for a group movie pick." actionHref="/profiles" actionLabel="Open My Profiles" />
+      </div>
+    );
+  }
 
   return (
     <motion.div
@@ -211,15 +219,18 @@ export default function WatchTogether() {
           <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">Watch Together</h1>
           <p className="mt-2 text-sm text-white/55">Find the best film for this group tonight.</p>
         </div>
-        <ProfileMultiSelect
-          profiles={completedProfiles}
-          selectedUsernames={selection.draftProfiles}
-          minSelection={2}
-          maxSelection={8}
-          label="Group profiles"
-          onChange={selection.setDraftProfiles}
-          className="w-full lg:w-72"
-        />
+        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center lg:w-auto">
+          <AdminScopeToggle />
+          <ProfileMultiSelect
+            profiles={completedProfiles}
+            selectedUsernames={selection.draftProfiles}
+            minSelection={2}
+            maxSelection={8}
+            label="Group profiles"
+            onChange={selection.setDraftProfiles}
+            className="w-full lg:w-72"
+          />
+        </div>
       </header>
 
       <nav className="grid min-w-0 grid-cols-2 gap-1 rounded-xl border border-white/12 bg-black/15 p-1 sm:flex sm:overflow-x-auto" aria-label="Watch Together mode">
