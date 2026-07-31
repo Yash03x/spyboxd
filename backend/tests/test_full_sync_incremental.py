@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.database.models import (
     Movie,
+    MemberComment,
+    MemberContentLike,
     MovieList,
     MovieListItem,
     Profile,
@@ -51,6 +53,8 @@ TABLES = (
     WatchEvent.__table__,
     Review.__table__,
     WatchlistItem.__table__,
+    MemberComment.__table__,
+    MemberContentLike.__table__,
     MovieList.__table__,
     MovieListItem.__table__,
     ProfileFavoriteMovie.__table__,

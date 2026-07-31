@@ -75,6 +75,7 @@ class Profile(Base):
     # profile and renamed in place instead of duplicated.
     letterboxd_person_id = Column(BigInteger, nullable=True)
     member_badge = Column(String(20), nullable=True)  # 'Patron' | 'Pro' | 'Crew'
+    pronoun = Column(String(50), nullable=True)  # official-export profile.csv only
     metadata_synced_at = Column(DateTime(timezone=True), nullable=True)
     last_profile_sync_id = Column(
         BigInteger,
@@ -140,6 +141,16 @@ class Profile(Base):
         back_populates="profile",
         cascade="all, delete-orphan",
         foreign_keys="ProfileFollowEdge.profile_id",
+    )
+    content_likes = relationship(
+        "MemberContentLike",
+        back_populates="profile",
+        cascade="all, delete-orphan",
+    )
+    member_comments = relationship(
+        "MemberComment",
+        back_populates="profile",
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
@@ -1056,6 +1067,80 @@ class ProfileFollowEdge(Base):
             postgresql_where=sql_text("removed_at IS NULL"),
         ),
         Index("ix_profile_follow_edges_counterpart_profile", "counterpart_profile_id"),
+    )
+
+
+class MemberContentLike(Base):
+    """A like the profile's owner placed on another member's review or list.
+
+    Official account exports are the only source: likes/reviews.csv and
+    likes/lists.csv carry just the like date and the boxd.it short URL of the
+    liked content, so rows are URL-keyed with no film or author linkage.
+    """
+
+    __tablename__ = "member_content_likes"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False)
+    content_type = Column(String(10), nullable=False)  # 'review' | 'list'
+    target_url = Column(String(500), nullable=False)
+    liked_date = Column(Date, nullable=True)
+    first_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    last_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    removed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    profile = relationship("Profile", back_populates="content_likes")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id", "content_type", "target_url",
+            name="unique_member_content_like",
+        ),
+        CheckConstraint(
+            "content_type IN ('review', 'list')",
+            name="ck_member_content_likes_type",
+        ),
+        Index("ix_member_content_likes_profile_removed", "profile_id", "removed_at"),
+    )
+
+
+class MemberComment(Base):
+    """A comment the profile's owner wrote on Letterboxd (export-only).
+
+    comments.csv carries the date, the boxd.it URL of the commented content,
+    and the comment HTML. The same member can comment repeatedly on one
+    thread, so identity is a digest over (url, date, text).
+    """
+
+    __tablename__ = "member_comments"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False)
+    comment_key = Column(String(600), nullable=False)
+    target_url = Column(String(500), nullable=False)
+    comment_html = Column(Text, nullable=True)
+    commented_date = Column(Date, nullable=True)
+    first_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    last_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    removed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    profile = relationship("Profile", back_populates="member_comments")
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "comment_key", name="unique_member_comment"),
+        Index("ix_member_comments_profile_removed", "profile_id", "removed_at"),
     )
 
 

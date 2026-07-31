@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import csv
+import io
 import math
 import json
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -54,6 +56,8 @@ class LoadedProfileData:
     all_films: pd.DataFrame
     following: pd.DataFrame
     followers: pd.DataFrame
+    liked_reviews: pd.DataFrame
+    liked_lists: pd.DataFrame
     avg_rating: float
     total_reviews: int
     join_date: Optional[date]
@@ -93,6 +97,51 @@ def _file_info(path: Path, row_count: int) -> Dict[str, Any]:
         "sha256": file_sha256(path),
         "row_count": max(int(row_count), 0),
     }
+
+
+def _read_official_list_export(path: Path) -> Optional[Tuple[Dict[str, Any], pd.DataFrame]]:
+    """Split an official "Letterboxd list export v7" file, or None if plain.
+
+    Official per-list files carry a preamble: a version line, a one-row
+    metadata block (Date,Name,Tags,URL,Description), a blank line, then the
+    item rows (Position,Name,Year,URL,Description — Description is the item
+    note). Plain CSV list files (the scraper's flat format) pass through.
+    """
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            first_line = handle.readline()
+            if not first_line.casefold().startswith("letterboxd list export"):
+                return None
+            reader = csv.reader(handle)
+            metadata_rows: List[List[str]] = []
+            for row in reader:
+                if not any(cell.strip() for cell in row):
+                    break
+                metadata_rows.append(row)
+            remainder = handle.read()
+    except OSError as exc:
+        raise ValueError(f"Failed to read official list file {path.name}: {exc}") from exc
+
+    metadata: Dict[str, Any] = {}
+    if len(metadata_rows) >= 2:
+        header, values = metadata_rows[0], metadata_rows[1]
+        raw = {
+            header[index].strip(): values[index] if index < len(values) else ""
+            for index in range(len(header))
+        }
+        metadata = {
+            "Title": raw.get("Name", ""),
+            "Description": raw.get("Description", ""),
+            "URL": raw.get("URL", ""),
+            "Published Date": raw.get("Date", ""),
+            "Tags": raw.get("Tags", ""),
+        }
+    items = (
+        pd.read_csv(io.StringIO(remainder))
+        if remainder.strip()
+        else pd.DataFrame(columns=["Position", "Name", "Year", "URL", "Description"])
+    )
+    return metadata, items
 
 
 def _detect_source_kind(source_files: Dict[str, Dict[str, Any]]) -> str:
@@ -173,6 +222,21 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
             source_name="likes/films.csv",
         )
 
+    # Official exports also enumerate likes the member placed on other
+    # members' reviews and lists (Date + boxd.it URL rows).
+    liked_reviews = pd.DataFrame()
+    liked_lists = pd.DataFrame()
+    liked_reviews_path = resolved_profile_path / "likes" / "reviews.csv"
+    if liked_reviews_path.exists():
+        liked_reviews = read_source(
+            liked_reviews_path, "likes/reviews.csv", source_name="likes/reviews.csv"
+        )
+    liked_lists_path = resolved_profile_path / "likes" / "lists.csv"
+    if liked_lists_path.exists():
+        liked_lists = read_source(
+            liked_lists_path, "likes/lists.csv", source_name="likes/lists.csv"
+        )
+
     all_films = pd.DataFrame()
     for candidate in ["films.csv", "all_films.csv", "films_comprehensive.csv"]:
         candidate_path = resolved_profile_path / candidate
@@ -196,10 +260,26 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
             if not entry_path.is_file() or entry_path.suffix.casefold() != ".csv":
                 continue
             relative_name = f"lists/{entry_path.name}"
-            list_df = read_source(entry_path, relative_name, source_name=relative_name)
-            list_df["list_name"] = entry_path.stem
+            official = _read_official_list_export(entry_path)
+            if official is not None:
+                metadata_row, list_df = official
+                info = _file_info(entry_path, len(list_df))
+                info["name"] = relative_name
+                info["relative_path"] = relative_name
+                source_files[relative_name] = info
+                list_name = metadata_row.get("Title") or entry_path.stem
+                metadata_frame = pd.DataFrame([metadata_row])
+                list_metadata = (
+                    pd.concat([list_metadata, metadata_frame], ignore_index=True)
+                    if not list_metadata.empty
+                    else metadata_frame
+                )
+            else:
+                list_df = read_source(entry_path, relative_name, source_name=relative_name)
+                list_name = entry_path.stem
+            list_df["list_name"] = list_name
             list_df["source_filename"] = relative_name
-            list_df.attrs["list_name"] = entry_path.stem
+            list_df.attrs["list_name"] = list_name
             list_df.attrs["source_filename"] = relative_name
             lists.append(list_df)
 
@@ -279,6 +359,8 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
         all_films=all_films,
         following=loaded.get("following", pd.DataFrame()),
         followers=loaded.get("followers", pd.DataFrame()),
+        liked_reviews=liked_reviews,
+        liked_lists=liked_lists,
         avg_rating=avg_rating,
         total_reviews=len(reviews),
         join_date=_parse_join_date(profile_info),

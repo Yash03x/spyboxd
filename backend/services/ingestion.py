@@ -11,6 +11,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.models import (
+    MemberComment,
+    MemberContentLike,
     MovieList,
     MovieListItem,
     Profile,
@@ -901,6 +903,129 @@ def _upsert_follow_edges(
     return len(seen)
 
 
+def _upsert_member_content_likes(
+    *,
+    analyzer_profile,
+    profile_id: int,
+    sync: ProfileSync,
+    content_type: str,
+    frame_name: str,
+    authoritative: bool,
+    db: Session,
+) -> int:
+    """Reconcile the export-only liked-reviews/liked-lists surfaces.
+
+    Rows are (Date, Content) where Content is the boxd.it URL of the liked
+    item. URL-keyed snapshot semantics mirror the watchlist: authoritative
+    files soft-remove unliked rows, absent files preserve prior state.
+    """
+    existing = {
+        like.target_url: like
+        for like in (
+            db.query(MemberContentLike)
+            .filter(
+                MemberContentLike.profile_id == profile_id,
+                MemberContentLike.content_type == content_type,
+            )
+            .all()
+        )
+    }
+    seen = set()
+    for row in frame_records(getattr(analyzer_profile, frame_name, pd.DataFrame())):
+        target_url = clean_text(first_value(row, ("Content", "URL", "Link")), max_length=500)
+        if not target_url or target_url in seen:
+            continue
+        seen.add(target_url)
+        like = existing.get(target_url)
+        if like is None:
+            like = MemberContentLike(
+                profile_id=profile_id,
+                content_type=content_type,
+                target_url=target_url,
+                first_seen_profile_sync_id=sync.id,
+            )
+            db.add(like)
+            existing[target_url] = like
+        liked_date = parse_date(first_value(row, ("Date",)))
+        if liked_date is not None:
+            like.liked_date = liked_date
+        like.last_seen_profile_sync_id = sync.id
+        like.removed_at = None
+
+    if authoritative:
+        now = _utcnow()
+        for target_url, like in existing.items():
+            if target_url not in seen and like.removed_at is None:
+                like.removed_at = now
+    db.flush()
+    return len(seen)
+
+
+def _upsert_member_comments(
+    *,
+    analyzer_profile,
+    profile_id: int,
+    sync: ProfileSync,
+    authoritative: bool,
+    db: Session,
+) -> int:
+    """Persist the member's own comments from the export's comments.csv.
+
+    A member can comment repeatedly on one thread, so identity is a digest
+    over (target URL, date, comment text).
+    """
+    existing = {
+        comment.comment_key: comment
+        for comment in (
+            db.query(MemberComment)
+            .filter(MemberComment.profile_id == profile_id)
+            .all()
+        )
+    }
+    seen = set()
+    for row in frame_records(getattr(analyzer_profile, "comments", pd.DataFrame())):
+        target_url = clean_text(first_value(row, ("Content", "URL", "Link")), max_length=500)
+        comment_html = clean_text(first_value(row, ("Comment", "Comment Text")))
+        commented_date = parse_date(first_value(row, ("Date",)))
+        if not target_url and not comment_html:
+            continue
+        digest = hashlib.sha256(
+            "|".join(
+                (
+                    target_url or "",
+                    commented_date.isoformat() if commented_date else "",
+                    comment_html or "",
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        comment_key = f"comment:{digest}"
+        if comment_key in seen:
+            continue
+        seen.add(comment_key)
+        comment = existing.get(comment_key)
+        if comment is None:
+            comment = MemberComment(
+                profile_id=profile_id,
+                comment_key=comment_key,
+                target_url=target_url or "",
+                first_seen_profile_sync_id=sync.id,
+            )
+            db.add(comment)
+            existing[comment_key] = comment
+        comment.comment_html = comment_html
+        comment.commented_date = commented_date
+        comment.last_seen_profile_sync_id = sync.id
+        comment.removed_at = None
+
+    if authoritative:
+        now = _utcnow()
+        for comment_key, comment in existing.items():
+            if comment_key not in seen and comment.removed_at is None:
+                comment.removed_at = now
+    db.flush()
+    return len(seen)
+
+
 def _upsert_source_activities(
     *,
     analyzer_profile,
@@ -1277,6 +1402,11 @@ def _update_profile_metadata(profile: Profile, analyzer_profile, sync: ProfileSy
     badge_value = clean_text(first_value(info, ("Badge",)), max_length=20)
     if badge_value is not None:
         profile.member_badge = badge_value
+
+    # Pronouns only exist in official-export profile.csv.
+    pronoun_value = clean_text(first_value(info, ("Pronoun", "Pronouns")), max_length=50)
+    if pronoun_value is not None:
+        profile.pronoun = pronoun_value
     profile.metadata_synced_at = now
 
 
@@ -1296,6 +1426,8 @@ def _dataset_file_names(analyzer_profile, dataset_name: str) -> List[str]:
         "favorites": ["favorites.csv"],
         "following": ["following.csv"],
         "followers": ["followers.csv"],
+        "liked_reviews": ["likes/reviews.csv"],
+        "liked_lists": ["likes/lists.csv"],
     }
     if dataset_name == "list_items":
         return sorted(
@@ -1340,6 +1472,8 @@ def _upsert_sync_datasets(
         "favorites",
         "following",
         "followers",
+        "liked_reviews",
+        "liked_lists",
     ):
         filenames = _dataset_file_names(analyzer_profile, dataset_name)
         infos = [source_files[name] for name in filenames]
@@ -1734,6 +1868,35 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             db=db,
         )
 
+        liked_reviews_authoritative = _source_present(analyzer_profile, "likes/reviews.csv")
+        liked_lists_authoritative = _source_present(analyzer_profile, "likes/lists.csv")
+        comments_authoritative = _source_present(analyzer_profile, "comments.csv")
+        liked_reviews_count = _upsert_member_content_likes(
+            analyzer_profile=analyzer_profile,
+            profile_id=profile_id,
+            sync=sync,
+            content_type="review",
+            frame_name="liked_reviews",
+            authoritative=liked_reviews_authoritative,
+            db=db,
+        )
+        liked_lists_count = _upsert_member_content_likes(
+            analyzer_profile=analyzer_profile,
+            profile_id=profile_id,
+            sync=sync,
+            content_type="list",
+            frame_name="liked_lists",
+            authoritative=liked_lists_authoritative,
+            db=db,
+        )
+        comment_count = _upsert_member_comments(
+            analyzer_profile=analyzer_profile,
+            profile_id=profile_id,
+            sync=sync,
+            authoritative=comments_authoritative,
+            db=db,
+        )
+
         authoritative = {
             "profile": _source_present(analyzer_profile, "profile.csv"),
             "films": films_authoritative,
@@ -1743,7 +1906,9 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             "reviews": _source_present(analyzer_profile, "reviews.csv"),
             "likes": _source_present(analyzer_profile, "likes.csv", "likes/films.csv"),
             "watchlist": watchlist_authoritative,
-            "comments": _source_present(analyzer_profile, "comments.csv"),
+            "comments": comments_authoritative,
+            "liked_reviews": liked_reviews_authoritative,
+            "liked_lists": liked_lists_authoritative,
             "lists": list_metadata_authoritative,
             "list_items": list_items_authoritative,
             "favorites": favorites_authoritative,
@@ -1759,7 +1924,9 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             "reviews": review_count,
             "likes": len(getattr(analyzer_profile, "likes", pd.DataFrame())),
             "watchlist": watchlist_count,
-            "comments": 0,
+            "comments": comment_count,
+            "liked_reviews": liked_reviews_count,
+            "liked_lists": liked_lists_count,
             "lists": list_count,
             "list_items": list_item_count,
             "favorites": favorite_count,

@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_REVISION = "20260313_0001"
 FOUNDATION_REVISION = "20260728_0002"
 BACKFILL_REVISION = "20260728_0003"
-HEAD_REVISION = "20260731_0011"
+HEAD_REVISION = "20260801_0012"
 TEST_DATABASE_NAME_PATTERN = re.compile(r"(?:^|[_-])(?:ci|test|testing)(?:$|[_-])")
 TEST_SCHEMA_NAME_PATTERN = re.compile(r"^spyboxd_migration_test_[0-9a-f]{24}$")
 
@@ -104,7 +104,10 @@ class AdditiveMigrationContractTests(unittest.TestCase):
 
         self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
-            script.get_revision(HEAD_REVISION).down_revision, "20260731_0010"
+            script.get_revision(HEAD_REVISION).down_revision, "20260731_0011"
+        )
+        self.assertEqual(
+            script.get_revision("20260731_0011").down_revision, "20260731_0010"
         )
         self.assertEqual(
             script.get_revision("20260731_0010").down_revision, "20260730_0009"
@@ -148,6 +151,8 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "movie_list_items",
             "profile_favorite_movies",
             "profile_follow_edges",
+            "member_content_likes",
+            "member_comments",
             "profile_data_changes",
             "profile_source_activities",
             "movie_enrichments",
@@ -169,6 +174,21 @@ class AdditiveMigrationContractTests(unittest.TestCase):
                 "letterboxd_person_id",
                 "member_badge",
                 "reported_watchlist_count",
+            },
+            "member_content_likes": {
+                "profile_id",
+                "content_type",
+                "target_url",
+                "liked_date",
+                "removed_at",
+            },
+            "member_comments": {
+                "profile_id",
+                "comment_key",
+                "target_url",
+                "comment_html",
+                "commented_date",
+                "removed_at",
             },
             "profile_follow_edges": {
                 "profile_id",
@@ -278,6 +298,8 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "watchlist_items": {"unique_profile_watchlist_movie"},
             "movie_list_items": {"unique_movie_list_item"},
             "profile_follow_edges": {"unique_profile_follow_edge"},
+            "member_content_likes": {"unique_member_content_like"},
+            "member_comments": {"unique_member_comment"},
             "profile_data_changes": {"unique_profile_sync_change_key"},
             "profile_source_activities": {"unique_profile_source_activity"},
             "user_tracked_profiles": {"uq_user_tracked_profile"},
