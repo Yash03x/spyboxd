@@ -47,13 +47,19 @@ class WorkflowControlsTests(unittest.TestCase):
         self.assertIn("needs: frontend", ci)
         self.assertIn("Download the already-built frontend artifact", ci)
         self.assertIn("path: frontend/.next", ci)
-        self.assertIn("bash deploy/run-compose-smoke.sh", ci)
-        self.assertIn("deploy/docker-compose.ci.yml", ci)
-        self.assertIn(
-            '"${runtime_dir}/node" --test '
-            "frontend/scripts/run-production-auth-canary.test.mjs",
+        self.assertEqual(ci.count("name: frontend-next-${{ github.sha }}"), 3)
+        self.assertNotIn(
+            "frontend-next-${{ github.sha }}-${{ github.run_attempt }}",
             ci,
         )
+        self.assertIn("overwrite: true", ci)
+        self.assertIn("bash deploy/run-compose-smoke.sh", ci)
+        self.assertIn("deploy/docker-compose.ci.yml", ci)
+        install_index = ci.index("npm ci --no-audit --no-fund")
+        canary_test_index = ci.index(
+            "node --test scripts/run-production-auth-canary.test.mjs"
+        )
+        self.assertLess(install_index, canary_test_index)
         self.assertIn("--project-name", smoke)
         self.assertIn("build --pull api frontend", smoke)
         self.assertIn("docker build --check -f frontend/Dockerfile .", smoke)
@@ -143,9 +149,20 @@ class WorkflowControlsTests(unittest.TestCase):
         browser = read_repo_file("frontend/scripts/run-production-auth-canary.mjs")
 
         self.assertIn('"redirect_url": f"{app_origin}/"', guardian)
+        self.assertIn('"https://api.clerk.com/v1/testing_tokens"', guardian)
+        self.assertIn('"testing_token": testing_token', guardian)
         self.assertIn("return \"cleanup_failed\"", guardian)
+        self.assertIn("setupClerkTestingToken", browser)
+        self.assertIn("installClerkTestingToken", browser)
+        self.assertIn("::add-mask::${secret}", browser)
+        self.assertLess(
+            browser.index("maskSecret(testingToken);"),
+            browser.index("process.env.CLERK_TESTING_TOKEN = testingToken;"),
+        )
+        self.assertIn("__clerk_testing_token", browser)
         self.assertIn("clerk.session.getToken()", browser)
         self.assertIn("`${taskContract.appOrigin}/profiles`", browser)
+        self.assertNotIn("CLERK_SECRET_KEY: ${{", workflow)
         self.assertIn('"${guardian_status}" == cleanup_failed', workflow)
         self.assertLess(
             workflow.index('"${guardian_status}" == cleanup_failed'),

@@ -545,6 +545,34 @@ class ProductionCanaryTests(unittest.TestCase):
             "https://spyboxd.com/",
         )
 
+    def test_authenticated_canary_creates_bounded_production_testing_token(self):
+        response = auth_canary.HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "object": "testing_token",
+                    "token": f"testing-{'a' * 48}",
+                    "expires_at": 1_700_000_600_000,
+                }
+            ).encode("utf-8"),
+            {"Content-Type": "application/json"},
+        )
+        with (
+            mock.patch.object(auth_canary.time, "time", return_value=1_700_000_000),
+            mock.patch.object(
+                auth_canary, "_request", return_value=response
+            ) as request,
+        ):
+            token, expires_at = auth_canary._create_testing_token("sk_live_test")
+        self.assertEqual(token, f"testing-{'a' * 48}")
+        self.assertEqual(expires_at, 1_700_000_600)
+        self.assertEqual(
+            request.call_args.args[0],
+            "https://api.clerk.com/v1/testing_tokens",
+        )
+        self.assertEqual(request.call_args.kwargs["method"], "POST")
+        self.assertNotIn("payload", request.call_args.kwargs)
+
     def test_authenticated_browser_plan_assigns_sign_out_and_expiry_proofs(self):
         tasks = [
             {
@@ -566,6 +594,8 @@ class ProductionCanaryTests(unittest.TestCase):
             api_base="https://api.spyboxd.com",
             app_origin="https://spyboxd.com",
             task_origin="https://clerk.spyboxd.com",
+            testing_token=f"testing-{'a' * 48}",
+            testing_token_expires_at=int(auth_canary.time.time()) + 600,
             tasks=tasks,
         )
         self.assertEqual(plan["version"], auth_canary.BROWSER_PLAN_VERSION)
@@ -573,6 +603,7 @@ class ProductionCanaryTests(unittest.TestCase):
             plan["session_max_duration_seconds"],
             auth_canary.SESSION_MAX_DURATION_SECONDS,
         )
+        self.assertEqual(plan["testing_token"], f"testing-{'a' * 48}")
         self.assertEqual(
             [task["closure"] for task in plan["tasks"]],
             ["sign_out", "session_expiry"],
@@ -593,6 +624,8 @@ class ProductionCanaryTests(unittest.TestCase):
                 api_base="https://api.spyboxd.com",
                 app_origin="https://spyboxd.com",
                 task_origin="https://clerk.spyboxd.com",
+                testing_token=f"testing-{'a' * 48}",
+                testing_token_expires_at=int(auth_canary.time.time()) + 600,
                 tasks=[base, {**base, "user_id": "user_B123", "profile": "beta"}],
             )
         with self.assertRaisesRegex(auth_canary.AuthCanaryError, "task origins"):
@@ -600,6 +633,8 @@ class ProductionCanaryTests(unittest.TestCase):
                 api_base="https://api.spyboxd.com",
                 app_origin="https://spyboxd.com",
                 task_origin="https://clerk.spyboxd.com",
+                testing_token=f"testing-{'a' * 48}",
+                testing_token_expires_at=int(auth_canary.time.time()) + 600,
                 tasks=[
                     base,
                     {

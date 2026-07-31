@@ -10,8 +10,12 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const USER_ID = /^user_[A-Za-z0-9]+$/;
 const SESSION_ID = /^sess_[A-Za-z0-9]+$/;
 const PROFILE = /^[A-Za-z0-9_]{2,15}$/;
-const BROWSER_PLAN_VERSION = 2;
+const TESTING_TOKEN = /^[A-Za-z0-9._~-]{20,2048}$/;
+const BROWSER_PLAN_VERSION = 3;
 const EXPECTED_SESSION_MAX_DURATION_SECONDS = 120;
+const TESTING_TOKEN_MIN_REMAINING_SECONDS = 180;
+// Clerk issues these for one hour; permit only two minutes of host clock skew.
+const TESTING_TOKEN_MAX_REMAINING_SECONDS = 3720;
 const JWT_EXPIRY_GRACE_SECONDS = 5;
 const SESSION_EXPIRY_GRACE_SECONDS = 15;
 const MAX_EXPIRY_OVERHEAD_SECONDS = 30;
@@ -94,11 +98,15 @@ function bareHttpsOrigin(value, label) {
   return parsed.origin;
 }
 
-export function validateTasks(payload) {
+export function validateTasks(payload, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (
     !payload
     || payload.version !== BROWSER_PLAN_VERSION
     || payload.session_max_duration_seconds !== EXPECTED_SESSION_MAX_DURATION_SECONDS
+    || !TESTING_TOKEN.test(payload.testing_token ?? '')
+    || !Number.isSafeInteger(payload.testing_token_expires_at)
+    || payload.testing_token_expires_at - nowSeconds < TESTING_TOKEN_MIN_REMAINING_SECONDS
+    || payload.testing_token_expires_at - nowSeconds > TESTING_TOKEN_MAX_REMAINING_SECONDS
     || !Array.isArray(payload.tasks)
   ) {
     fail('authenticated canary task contract is invalid');
@@ -152,8 +160,106 @@ export function validateTasks(payload) {
   return {
     apiBase,
     appOrigin,
+    taskOrigin,
+    testingToken: payload.testing_token,
+    testingTokenExpiresAt: payload.testing_token_expires_at,
     sessionMaxDurationSeconds: payload.session_max_duration_seconds,
     tasks: payload.tasks,
+  };
+}
+
+export function registerGitHubSecretMask(secret) {
+  if (process.env.GITHUB_ACTIONS !== 'true' || !TESTING_TOKEN.test(secret ?? '')) {
+    fail('Clerk production Testing Token masking is unavailable');
+  }
+  process.stdout.write(`::add-mask::${secret}\n`);
+}
+
+function redactClerkDiagnostic(value, testingToken) {
+  if (typeof value === 'string') {
+    return value.replaceAll(testingToken, '[REDACTED_TESTING_TOKEN]');
+  }
+  if (value instanceof Error) {
+    const redacted = new Error(
+      value.message.replaceAll(testingToken, '[REDACTED_TESTING_TOKEN]'),
+    );
+    redacted.name = value.name;
+    return redacted;
+  }
+  try {
+    if (JSON.stringify(value)?.includes(testingToken)) {
+      return '[REDACTED_CLERK_DIAGNOSTIC]';
+    }
+  } catch {
+    return '[UNSERIALIZABLE_CLERK_DIAGNOSTIC]';
+  }
+  return value;
+}
+
+export async function installClerkTestingToken(
+  context,
+  taskUrl,
+  taskOrigin,
+  testingToken,
+  setupClerkTestingToken,
+  maskSecret = registerGitHubSecretMask,
+) {
+  if (
+    typeof setupClerkTestingToken !== 'function'
+    || typeof maskSecret !== 'function'
+    || !TESTING_TOKEN.test(testingToken ?? '')
+    || process.env.CLERK_TESTING_TOKEN !== undefined
+    || process.env.CLERK_TESTING_DEBUG !== undefined
+  ) {
+    fail('Clerk production Testing Token setup is invalid');
+  }
+  const parsedTask = new URL(taskUrl);
+  const parsedOrigin = new URL(taskOrigin);
+  if (parsedTask.origin !== parsedOrigin.origin || parsedOrigin.pathname !== '/') {
+    fail('Clerk production Testing Token targets an invalid origin');
+  }
+
+  maskSecret(testingToken);
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  console.warn = (...values) => originalWarn(
+    ...values.map((value) => redactClerkDiagnostic(value, testingToken)),
+  );
+  console.error = (...values) => originalError(
+    ...values.map((value) => redactClerkDiagnostic(value, testingToken)),
+  );
+  process.env.CLERK_TESTING_TOKEN = testingToken;
+  let installed = false;
+  try {
+    await setupClerkTestingToken({
+      context,
+      options: { frontendApiUrl: parsedOrigin.host },
+    });
+    // The official helper parses JSON FAPI responses. Agent Task consumption
+    // is a one-use document navigation, so handle that exact URL separately
+    // while still using the helper for every subsequent ClerkJS request.
+    await context.route(taskUrl, async (route) => {
+      const requestUrl = new URL(route.request().url());
+      requestUrl.searchParams.set('__clerk_testing_token', testingToken);
+      await route.continue({ url: requestUrl.toString() });
+    }, { times: 1 });
+    installed = true;
+  } finally {
+    if (!installed) {
+      delete process.env.CLERK_TESTING_TOKEN;
+      console.warn = originalWarn;
+      console.error = originalError;
+    }
+  }
+
+  let cleared = false;
+  return () => {
+    if (!cleared) {
+      cleared = true;
+      delete process.env.CLERK_TESTING_TOKEN;
+      console.warn = originalWarn;
+      console.error = originalError;
+    }
   };
 }
 
@@ -264,7 +370,28 @@ export async function applicationSessionToken(
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  fail('Clerk did not establish an application session in time');
+  const state = await page.evaluate(() => ({
+    clerkPresent: Boolean(globalThis.Clerk),
+    clerkLoaded: Boolean(globalThis.Clerk?.loaded),
+    sessionPresent: Boolean(globalThis.Clerk?.session),
+  })).catch(() => ({ clerkPresent: false, clerkLoaded: false, sessionPresent: false }));
+  let pageState = 'unexpected-origin';
+  try {
+    const current = new URL(page.url());
+    if (current.origin === appOrigin) {
+      pageState = current.pathname === '/' ? 'public-root' : 'other-app-path';
+    }
+  } catch {
+    pageState = 'invalid-location';
+  }
+  const clerkState = state.sessionPresent
+    ? 'session-present'
+    : state.clerkLoaded
+      ? 'loaded-without-session'
+      : state.clerkPresent
+        ? 'present-not-loaded'
+        : 'missing';
+  fail(`Clerk did not establish an application session in time (${pageState}; ${clerkState})`);
 }
 
 async function responseJson(context, apiBase, path, token, expectedStatus, label) {
@@ -484,7 +611,10 @@ async function main() {
   const { tasksPath } = argumentsFromCommandLine();
   const taskContract = validateTasks(await readBoundedJson(tasksPath, 'task file'));
 
-  const { chromium } = await import('playwright');
+  const [{ chromium }, { setupClerkTestingToken }] = await Promise.all([
+    import('playwright'),
+    import('@clerk/testing/playwright'),
+  ]);
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
@@ -495,8 +625,16 @@ async function main() {
         acceptDownloads: false,
         serviceWorkers: 'block',
       });
+      let clearTestingToken;
       let token;
       try {
+        clearTestingToken = await installClerkTestingToken(
+          context,
+          task.task_url,
+          taskContract.taskOrigin,
+          taskContract.testingToken,
+          setupClerkTestingToken,
+        );
         const page = await context.newPage();
         await page.goto(task.task_url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
         await page.waitForURL(
@@ -551,8 +689,12 @@ async function main() {
         }
       } finally {
         token = undefined;
-        await context.clearCookies();
-        await context.close();
+        try {
+          await context.clearCookies();
+          await context.close();
+        } finally {
+          clearTestingToken?.();
+        }
       }
     }
   } finally {
