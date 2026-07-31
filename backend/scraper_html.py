@@ -47,8 +47,11 @@ class ProfileInfo:
     total_films: int = 0
     total_reviews: int = 0
     total_lists: int = 0
-    following_count: int = 0
-    followers_count: int = 0
+    # None means the profile header did not expose a count (parse miss or
+    # markup drift) — distinct from a genuine 0, so downstream validation can
+    # tell "unknown" from "empty".
+    following_count: Optional[int] = None
+    followers_count: Optional[int] = None
     favorite_films: List[Dict] = None
 
     def __post_init__(self):
@@ -277,6 +280,14 @@ class EnhancedLetterboxdScraper:
             'tags_diary': ('no diary tags yet',),
             'tags_reviews': ('no review tags yet',),
             'tags_lists': ('no list tags yet',),
+            # People pages render these sentences (verified live) and omit
+            # every .person-summary row when the surface is empty.
+            'following': (
+                'is not following anyone',
+                'isn’t following anyone',
+                "isn't following anyone",
+            ),
+            'followers': ('has no followers', 'no followers yet'),
         }
         return any(phrase in text for phrase in phrases.get(dataset, ()))
 
@@ -352,6 +363,144 @@ class EnhancedLetterboxdScraper:
         return json.dumps(sorted(tags or []), ensure_ascii=False)
 
     @staticmethod
+    def _extract_person_rows(soup: BeautifulSoup) -> List[Dict]:
+        """Parse a following/followers page into person identity dicts.
+
+        People pages render one div.person-summary per member with the
+        username in the avatar/name hrefs, the display name as the name-link
+        text, and the avatar image inline.
+        """
+        main = soup.select_one('main') or soup
+        people = []
+        for summary in main.select('.person-summary'):
+            link = summary.select_one('a.avatar[href], h3 a.name[href], a[href]')
+            href = link.get('href', '') if link else ''
+            username_match = re.fullmatch(r'/([A-Za-z0-9_-]+)/', href or '')
+            if not username_match:
+                raise ScrapeValidationError(
+                    f"Recognized person row lacked a member URL (href={href!r})"
+                )
+            name_link = summary.select_one('h3 a.name, a.name')
+            avatar = summary.select_one('img')
+            avatar_url = ''
+            if avatar is not None:
+                avatar_url = avatar.get('src', '') or avatar.get('data-src', '')
+            people.append({
+                'username': username_match.group(1),
+                'display_name': name_link.get_text(' ', strip=True) if name_link else '',
+                'avatar_url': avatar_url,
+                'profile_url': urljoin('https://letterboxd.com/', href),
+            })
+        return people
+
+    @staticmethod
+    def _configured_social_cap() -> int:
+        """Guarded parse of SPYBOXD_MAX_FOLLOW_EDGES_PER_SURFACE (default 5000)."""
+        raw = os.environ.get('SPYBOXD_MAX_FOLLOW_EDGES_PER_SURFACE', '').strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            if raw:
+                print(
+                    "⚠ SPYBOXD_MAX_FOLLOW_EDGES_PER_SURFACE is not an integer "
+                    f"({raw!r}); using default 5000"
+                )
+            return 5000
+        return value if value > 0 else 5000
+
+    def _scrape_people(self, dataset: str) -> List[Dict]:
+        """Scrape one social surface (following/followers) with validation.
+
+        The profile header count acts as a pre-flight cap and a completeness
+        check: people pages hold 25 entries, so huge accounts are marked
+        unavailable rather than partially captured, and a paginated total
+        drifting far from the header count fails the scrape.
+        """
+        header_count = (
+            self.profile_info.following_count
+            if dataset == 'following'
+            else self.profile_info.followers_count
+        )
+        cap = self._configured_social_cap()
+        if header_count is not None and header_count > cap:
+            self.social_data[dataset] = []
+            self._mark_unavailable(
+                dataset, f"count {header_count} exceeds configured cap {cap}"
+            )
+            print(f"⚠ {dataset} count {header_count} exceeds cap {cap}; skipping surface")
+            return []
+
+        people = []
+        seen_usernames = set()
+        page_url = self.urls[dataset]
+        page_num = 1
+        while page_url:
+            response = self.fetch_with_retry(page_url, allow_private_forbidden=True)
+            if self._is_private_forbidden_response(response):
+                self.social_data[dataset] = []
+                self._mark_unavailable(dataset, 'forbidden/private')
+                print(f"⚠ {dataset} is private or forbidden; preserving prior imported state")
+                return []
+            response = self._require_response(response, dataset, page_url)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            rows = self._extract_person_rows(soup)
+            if not rows:
+                if page_num == 1 and self._declares_empty(soup, dataset):
+                    break
+                raise ScrapeValidationError(
+                    f"{dataset} page {page_num} returned HTML but no recognized person rows"
+                )
+            for row in rows:
+                key = row['username'].casefold()
+                if key in seen_usernames:
+                    continue
+                seen_usernames.add(key)
+                row['position'] = len(people) + 1
+                people.append(row)
+            # In-loop bound: the cap must hold even when the header count was
+            # unavailable, so a runaway surface cannot crawl thousands of
+            # pages only to be discarded afterwards.
+            if len(people) > cap:
+                self.social_data[dataset] = []
+                self._mark_unavailable(dataset, f"crawl exceeded configured cap {cap}")
+                print(f"⚠ {dataset} crawl exceeded cap {cap}; skipping surface")
+                return []
+            page_url = self._next_page_url(soup, page_url)
+            page_num += 1
+            if page_url:
+                time.sleep(1)  # Be respectful
+
+        if header_count is None:
+            # The header exposed no count (parse miss or markup drift): the
+            # crawl itself proved pagination-complete, so keep the data but
+            # note the missing cross-check rather than failing on a guess.
+            print(f"⚠ {dataset} header count unavailable; skipping count cross-check")
+        else:
+            # Counts drift while paginating; allow a small tolerance but treat
+            # a larger gap (including a silently truncated crawl) as unproven.
+            tolerance = max(2, (max(header_count, len(people)) + 99) // 100)
+            if abs(header_count - len(people)) > tolerance:
+                raise ScrapeValidationError(
+                    f"{dataset} header reported {header_count} members "
+                    f"but {len(people)} were captured"
+                )
+
+        self.social_data[dataset] = people
+        self._finish_dataset(dataset)
+        print(f"✓ Found {len(people)} {dataset}")
+        return people
+
+    def scrape_following(self) -> List[Dict]:
+        """Scrape the accounts this profile follows."""
+        print(f"👥 Scraping following for {self.username}...")
+        return self._scrape_people('following')
+
+    def scrape_followers(self) -> List[Dict]:
+        """Scrape the accounts following this profile."""
+        print(f"👥 Scraping followers for {self.username}...")
+        return self._scrape_people('followers')
+
+    @staticmethod
     def _extract_list_detail_metadata(soup: BeautifulSoup) -> Dict:
         """Ranked flag and publish/update timestamps only exist on list detail pages."""
         published = soup.select_one('p.list-date span.published time[datetime]')
@@ -418,22 +567,30 @@ class EnhancedLetterboxdScraper:
             if avatar:
                 self.profile_info.avatar_url = avatar.get('src', '') or avatar.get('data-src', '')
             
-            # Statistics from profile page
-            stats = soup.select(
-                f'a[href="/{self.username}/films/"], '
-                f'a[href="/{self.username}/following/"], '
-                f'a[href="/{self.username}/followers/"]'
-            )
-            for stat in stats:
+            # Statistics from profile page. Letterboxd serves mixed-case
+            # profile URLs but renders lowercase-canonical hrefs, so the
+            # comparison must be case-insensitive or a differently-cased
+            # username argument silently loses every count.
+            expected_targets = {
+                f'/{self.username.casefold()}/films/': 'films',
+                f'/{self.username.casefold()}/following/': 'following',
+                f'/{self.username.casefold()}/followers/': 'followers',
+            }
+            for stat in soup.select('a[href]'):
+                target = expected_targets.get(str(stat.get('href', '')).casefold())
+                if target is None:
+                    continue
                 stat_text = stat.get_text().strip()
-                href = stat.get('href', '')
                 numbers = re.findall(r'[\d,]+', stat_text)
-                if href == f'/{self.username}/films/' and 'film' in stat_text.casefold() and numbers:
-                    self.profile_info.total_films = int(numbers[0].replace(',', ''))
-                elif href == f'/{self.username}/following/' and numbers:
-                    self.profile_info.following_count = int(numbers[0].replace(',', ''))
-                elif href == f'/{self.username}/followers/' and numbers:
-                    self.profile_info.followers_count = int(numbers[0].replace(',', ''))
+                if not numbers:
+                    continue
+                value = int(numbers[0].replace(',', ''))
+                if target == 'films' and 'film' in stat_text.casefold():
+                    self.profile_info.total_films = value
+                elif target == 'following':
+                    self.profile_info.following_count = value
+                elif target == 'followers':
+                    self.profile_info.followers_count = value
             
             # Favorite films (top 4)
             favorite_root = soup.select_one('#favourites, #favorites, .profile-favorites, .profile-favourites')
@@ -1295,6 +1452,19 @@ class EnhancedLetterboxdScraper:
         } for position, item in enumerate(self.profile_info.favorite_films, start=1)]
         self._write_csv("favorites.csv", data, fieldnames)
 
+    def _save_people(self, dataset: str) -> None:
+        if dataset not in self.completed_datasets:
+            return
+        fieldnames = ['Position', 'Username', 'Display_Name', 'Avatar_URL', 'Profile_URL']
+        data = [{
+            'Position': person.get('position', ''),
+            'Username': person.get('username', ''),
+            'Display_Name': person.get('display_name', ''),
+            'Avatar_URL': person.get('avatar_url', ''),
+            'Profile_URL': person.get('profile_url', ''),
+        } for person in self.social_data.get(dataset, [])]
+        self._write_csv(f"{dataset}.csv", data, fieldnames)
+
     def _remove_stale_unavailable_files(self) -> None:
         """Remove only managed CSVs contradicted by the new manifest state."""
         dataset_files = {
@@ -1302,6 +1472,8 @@ class EnhancedLetterboxdScraper:
             'lists': ('lists.csv',),
             'list_items': ('list_items.csv',),
             'favorites': ('favorites.csv',),
+            'following': ('following.csv',),
+            'followers': ('followers.csv',),
         }
         output_root = Path(self.output_dir)
         for dataset_name in self.unavailable_datasets:
@@ -1424,6 +1596,8 @@ class EnhancedLetterboxdScraper:
         self._save_custom_lists()
         self._save_list_items()
         self._save_favorites()
+        self._save_people('following')
+        self._save_people('followers')
         rated_films_count = self._save_enriched_ratings()
         liked_films_count = self._save_likes()
         self._save_comprehensive_films()
@@ -1443,12 +1617,14 @@ class EnhancedLetterboxdScraper:
             'lists': len(self.lists_data),
             'list_items': len(self.list_items_data),
             'favorites': len(self.profile_info.favorite_films),
+            'following': len(self.social_data.get('following', [])),
+            'followers': len(self.social_data.get('followers', [])),
         }
         for dataset_name in self.unavailable_datasets:
             counts.pop(dataset_name, None)
 
         manifest = {
-            'schema_version': 2,
+            'schema_version': 3,
             'username': self.username,
             'source_kind': 'full_html_upload',
             'requested_datasets': sorted(self.requested_datasets),
@@ -1476,11 +1652,15 @@ class EnhancedLetterboxdScraper:
         
         self.requested_datasets = {
             'profile', 'favorites', 'films', 'diary', 'likes', 'reviews',
-            'watchlist', 'lists', 'list_items'
+            'watchlist', 'lists', 'list_items', 'following', 'followers'
         }
 
-        # Scrape all sections
+        # Scrape all sections. People pages come right after the profile so
+        # the header counts exist for their pre-flight cap, and because they
+        # are cheap and fail fast.
         self.scrape_profile_info()
+        self.scrape_following()
+        self.scrape_followers()
         self.scrape_all_films()  # Add this line to scrape films
         self.scrape_diary_entries()
         self.scrape_reviews()
