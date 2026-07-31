@@ -129,6 +129,12 @@ class Profile(Base):
         back_populates="fulfilled_profile",
         foreign_keys="ProfileAccessRequest.fulfilled_profile_id",
     )
+    follow_edges = relationship(
+        "ProfileFollowEdge",
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        foreign_keys="ProfileFollowEdge.profile_id",
+    )
 
     __table_args__ = (
         Index("uq_profiles_username_lower", func.lower(username), unique=True),
@@ -451,7 +457,7 @@ class ProfileDataChange(Base):
     __table_args__ = (
         UniqueConstraint("profile_sync_id", "change_key", name="unique_profile_sync_change_key"),
         CheckConstraint(
-            "entity_type IN ('film', 'watchlist', 'favorite', 'diary', 'review', 'list', 'list_item')",
+            "entity_type IN ('film', 'watchlist', 'favorite', 'diary', 'review', 'list', 'list_item', 'follow')",
             name="ck_profile_data_changes_entity_type",
         ),
         Index("ix_profile_data_changes_detected", "detected_at", "id"),
@@ -961,6 +967,80 @@ class ProfileFavoriteMovie(Base):
         UniqueConstraint("profile_id", "movie_id", name="unique_profile_favorite_movie"),
         CheckConstraint("position BETWEEN 1 AND 4", name="ck_profile_favorite_position"),
         Index("ix_profile_favorite_movies_movie", "movie_id", "profile_id"),
+    )
+
+
+class ProfileFollowEdge(Base):
+    """One observed social edge from a tracked profile's people pages.
+
+    Each row is an observation from the scanned profile's own
+    following/followers surface, not a canonical graph edge: its lifecycle
+    (authoritative removal, sync lineage) is owned by the sync of the profile
+    whose page produced it. Counterparts are username-keyed because most
+    followed accounts are never imported; ``counterpart_profile_id`` is
+    attached opportunistically when a canonical profile exists, mirroring how
+    ``profile_access_requests`` resolves usernames.
+    """
+
+    __tablename__ = "profile_follow_edges"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False)
+    direction = Column(String(10), nullable=False)  # 'following' | 'follower'
+    counterpart_username = Column(String(50), nullable=False)
+    counterpart_username_normalized = Column(String(50), nullable=False)
+    counterpart_display_name = Column(String(200), nullable=True)
+    counterpart_avatar_url = Column(String(500), nullable=True)
+    counterpart_profile_url = Column(String(500), nullable=True)
+    counterpart_profile_id = Column(
+        Integer, ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    # Source page order approximates recency; Letterboxd does not guarantee it.
+    position = Column(Integer, nullable=True)
+    first_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    last_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    removed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    profile = relationship("Profile", back_populates="follow_edges", foreign_keys=[profile_id])
+    counterpart_profile = relationship("Profile", foreign_keys=[counterpart_profile_id])
+
+    __table_args__ = (
+        # Global (not active-only) uniqueness so an unfollow soft-removes the
+        # row and a re-follow resurrects it, matching unique_profile_watchlist_movie.
+        UniqueConstraint(
+            "profile_id",
+            "direction",
+            "counterpart_username_normalized",
+            name="unique_profile_follow_edge",
+        ),
+        CheckConstraint(
+            "direction IN ('following', 'follower')",
+            name="ck_profile_follow_edges_direction",
+        ),
+        CheckConstraint(
+            "position IS NULL OR position > 0",
+            name="ck_profile_follow_edges_position_positive",
+        ),
+        CheckConstraint(
+            "counterpart_username_normalized = lower(counterpart_username_normalized)",
+            name="ck_profile_follow_edges_normalized_lower",
+        ),
+        Index("ix_profile_follow_edges_profile_removed", "profile_id", "removed_at"),
+        Index(
+            # Reverse lookups: which tracked profiles follow user X (active only).
+            "ix_profile_follow_edges_counterpart_active",
+            "counterpart_username_normalized",
+            "direction",
+            "profile_id",
+            postgresql_where=sql_text("removed_at IS NULL"),
+        ),
+        Index("ix_profile_follow_edges_counterpart_profile", "counterpart_profile_id"),
     )
 
 
