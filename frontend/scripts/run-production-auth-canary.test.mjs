@@ -4,16 +4,19 @@ import { setupClerkTestingToken as realSetupClerkTestingToken } from '@clerk/tes
 
 import {
   applicationSessionToken,
+  consumeSignInTicket,
   decodeSession,
   expiryProofDeadlineMilliseconds,
   installClerkTestingToken,
   isPrivateSignInRedirect,
+  openClerkCapabilityScope,
+  proveJwtExpiryClosure,
   proveSignOutClosure,
   validateTasks,
 } from './run-production-auth-canary.mjs';
 
 const APP_ORIGIN = 'https://spyboxd.com';
-const TASK_ORIGIN = 'https://clerk.spyboxd.com';
+const CLERK_FRONTEND_ORIGIN = 'https://clerk.spyboxd.com';
 
 function task(label, closure, userId, profile) {
   return {
@@ -21,22 +24,23 @@ function task(label, closure, userId, profile) {
     closure,
     user_id: userId,
     profile,
-    task_url: `${TASK_ORIGIN}/v1/agent-tasks/${label.toLowerCase()}-ticket`,
+    sign_in_token: `ticket-${label.toLowerCase()}-${label.toLowerCase().repeat(48)}`,
+    sign_in_token_expires_at: Math.floor(Date.now() / 1000) + 300,
   };
 }
 
 function plan() {
   return {
-    version: 3,
+    version: 4,
     api_base: 'https://api.spyboxd.com',
     app_origin: APP_ORIGIN,
-    task_origin: TASK_ORIGIN,
+    clerk_frontend_origin: CLERK_FRONTEND_ORIGIN,
     testing_token: `testing-${'a'.repeat(48)}`,
     testing_token_expires_at: Math.floor(Date.now() / 1000) + 600,
-    session_max_duration_seconds: 120,
+    session_token_max_lifetime_seconds: 90,
     tasks: [
       task('A', 'sign_out', 'user_A123', 'alpha'),
-      task('B', 'session_expiry', 'user_B123', 'beta'),
+      task('B', 'jwt_expiry', 'user_B123', 'beta'),
     ],
   };
 }
@@ -48,87 +52,87 @@ function token(payload) {
   return `${encodedHeader}.${encodedPayload}.${'s'.repeat(96)}`;
 }
 
-test('browser plan requires distinct sign-out and natural-expiry closures', () => {
+test('browser plan requires distinct sign-out and captured-JWT-expiry closures', () => {
   const contract = validateTasks(plan());
-  assert.equal(contract.sessionMaxDurationSeconds, 120);
-  assert.deepEqual(contract.tasks.map((item) => item.closure), ['sign_out', 'session_expiry']);
+  assert.equal(contract.sessionTokenMaxLifetimeSeconds, 90);
+  assert.deepEqual(contract.tasks.map((item) => item.closure), ['sign_out', 'jwt_expiry']);
 
   const duplicated = plan();
   duplicated.tasks[1].closure = 'sign_out';
-  assert.throws(() => validateTasks(duplicated), /not isolated identities/);
+  assert.throws(() => validateTasks(duplicated), /not isolated/);
 
   const wrongDuration = plan();
-  wrongDuration.session_max_duration_seconds = 1800;
-  assert.throws(() => validateTasks(wrongDuration), /task contract is invalid/);
+  wrongDuration.session_token_max_lifetime_seconds = 1800;
+  assert.throws(() => validateTasks(wrongDuration), /browser plan is invalid/);
 
   const expiredTestingToken = plan();
   expiredTestingToken.testing_token_expires_at = Math.floor(Date.now() / 1000) + 30;
-  assert.throws(() => validateTasks(expiredTestingToken), /task contract is invalid/);
+  assert.throws(() => validateTasks(expiredTestingToken), /browser plan is invalid/);
+
+  const expiringTicket = plan();
+  expiringTicket.tasks[1].sign_in_token_expires_at = Math.floor(Date.now() / 1000) + 30;
+  assert.throws(() => validateTasks(expiringTicket), /identity is invalid/);
+
+  const duplicateTicket = plan();
+  duplicateTicket.tasks[1].sign_in_token = duplicateTicket.tasks[0].sign_in_token;
+  assert.throws(() => validateTasks(duplicateTicket), /not isolated/);
+
+  const undocumentedTestingTokenLifetime = plan();
+  undocumentedTestingTokenLifetime.testing_token_expires_at += 86_400;
+  assert.doesNotThrow(() => validateTasks(undocumentedTestingTokenLifetime));
 });
 
-test('Clerk Testing Token is installed before one-use task navigation and cleared', async () => {
+test('Clerk Testing Token and one-use ticket are masked before helper setup', async () => {
   const events = [];
   const diagnostics = [];
-  let taskHandler;
-  const context = {
-    async route(url, handler, options) {
-      events.push(['route', url, options]);
-      taskHandler = handler;
-    },
-  };
+  const context = {};
   const testingToken = `testing-${'b'.repeat(48)}`;
-  const taskUrl = `${TASK_ORIGIN}/v1/agent-tasks/a-ticket`;
+  const signInToken = `ticket-${'d'.repeat(48)}`;
   const originalWarn = console.warn;
   const originalError = console.error;
   console.warn = (...values) => diagnostics.push(values.map(String).join(' '));
   console.error = (...values) => diagnostics.push(values.map(String).join(' '));
-  let clear;
+  let capabilityScope;
   try {
-    clear = await installClerkTestingToken(
+    capabilityScope = openClerkCapabilityScope(
+      testingToken,
+      [signInToken],
+      (secret) => events.push(['mask', secret]),
+    );
+    await installClerkTestingToken(
       context,
-      taskUrl,
-      TASK_ORIGIN,
+      CLERK_FRONTEND_ORIGIN,
       testingToken,
       async (options) => {
         assert.equal(options.context, context);
         assert.deepEqual(options.options, { frontendApiUrl: 'clerk.spyboxd.com' });
         assert.equal(process.env.CLERK_TESTING_TOKEN, testingToken);
         console.warn(`Clerk retry URL contained ${testingToken}`);
-        console.error(new Error(`Clerk route failed with ${testingToken}`));
+        console.error(new Error(`Clerk route failed with ${signInToken}`));
         events.push(['setup']);
       },
-      (secret) => events.push(['mask', secret]),
     );
     assert.deepEqual(events, [
       ['mask', testingToken],
+      ['mask', signInToken],
       ['setup'],
-      ['route', taskUrl, { times: 1 }],
     ]);
-
-    let continuedUrl;
-    await taskHandler({
-      request: () => ({ url: () => taskUrl }),
-      continue: async ({ url }) => { continuedUrl = new URL(url); },
-    });
-    assert.equal(continuedUrl.origin, TASK_ORIGIN);
-    assert.equal(continuedUrl.pathname, '/v1/agent-tasks/a-ticket');
-    assert.equal(continuedUrl.searchParams.get('__clerk_testing_token'), testingToken);
   } finally {
-    clear?.();
+    capabilityScope?.close();
     console.warn = originalWarn;
     console.error = originalError;
   }
   assert.equal(process.env.CLERK_TESTING_TOKEN, undefined);
   assert.equal(diagnostics.some((line) => line.includes(testingToken)), false);
+  assert.equal(diagnostics.some((line) => line.includes(signInToken)), false);
   assert.equal(
-    diagnostics.filter((line) => line.includes('[REDACTED_TESTING_TOKEN]')).length,
+    diagnostics.filter((line) => line.includes('[REDACTED_CLERK_CAPABILITY]')).length,
     2,
   );
 });
 
 test('real Clerk helper failure diagnostics cannot expose the production Testing Token', async () => {
   const testingToken = `testing-${'c'.repeat(48)}`;
-  const taskUrl = `${TASK_ORIGIN}/v1/agent-tasks/a-ticket`;
   const handlers = [];
   const context = {
     async route(matcher, handler) {
@@ -143,21 +147,24 @@ test('real Clerk helper failure diagnostics cannot expose the production Testing
     callback();
     return 0;
   };
-  let clear;
+  let capabilityScope;
   try {
-    clear = await installClerkTestingToken(
-      context,
-      taskUrl,
-      TASK_ORIGIN,
+    capabilityScope = openClerkCapabilityScope(
       testingToken,
-      realSetupClerkTestingToken,
+      [],
       () => {},
     );
-    assert.equal(handlers.length, 2);
+    await installClerkTestingToken(
+      context,
+      CLERK_FRONTEND_ORIGIN,
+      testingToken,
+      realSetupClerkTestingToken,
+    );
+    assert.equal(handlers.length, 1);
     const fapiHandler = handlers[0].handler;
     let fetches = 0;
     await fapiHandler({
-      request: () => ({ url: () => `${TASK_ORIGIN}/v1/client` }),
+      request: () => ({ url: () => `${CLERK_FRONTEND_ORIGIN}/v1/client` }),
       fetch: async ({ url }) => {
         fetches += 1;
         throw new Error(`simulated FAPI failure for ${url}`);
@@ -166,14 +173,62 @@ test('real Clerk helper failure diagnostics cannot expose the production Testing
     });
     assert.equal(fetches, 4);
   } finally {
-    clear?.();
+    capabilityScope?.close();
     console.warn = originalWarn;
     globalThis.setTimeout = originalSetTimeout;
   }
   assert.equal(process.env.CLERK_TESTING_TOKEN, undefined);
   assert.equal(diagnostics.length, 1);
   assert.equal(diagnostics[0].includes(testingToken), false);
-  assert.match(diagnostics[0], /REDACTED_TESTING_TOKEN/);
+  assert.match(diagnostics[0], /REDACTED_CLERK_CAPABILITY/);
+});
+
+test('Sign-in ticket uses ClerkJS ticket strategy and activates the session', async () => {
+  const events = [];
+  const signInToken = `ticket-${'e'.repeat(48)}`;
+  const originalClerk = globalThis.Clerk;
+  const page = {
+    async waitForFunction() { events.push('clerk-loaded'); },
+    async evaluate(callback, ticketValue) {
+      assert.deepEqual(ticketValue, {
+        ticket: signInToken,
+        timeoutMilliseconds: 45_000,
+      });
+      globalThis.Clerk = {
+        loaded: true,
+        client: {
+          signIn: {
+            async create(input) {
+              assert.deepEqual(input, { strategy: 'ticket', ticket: signInToken });
+              events.push('ticket-consumed');
+              return { status: 'complete', createdSessionId: 'sess_A123' };
+            },
+          },
+        },
+        async setActive(input) {
+          assert.deepEqual(input, { session: 'sess_A123' });
+          events.push('session-activated');
+        },
+      };
+      try {
+        return await callback(ticketValue);
+      } finally {
+        if (originalClerk === undefined) delete globalThis.Clerk;
+        else globalThis.Clerk = originalClerk;
+      }
+    },
+  };
+  await consumeSignInTicket(
+    page,
+    signInToken,
+    (secret) => events.push(`masked:${secret === signInToken}`),
+  );
+  assert.deepEqual(events, [
+    'masked:true',
+    'clerk-loaded',
+    'ticket-consumed',
+    'session-activated',
+  ]);
 });
 
 test('session token contract requires a future expiry and session identity', () => {
@@ -240,16 +295,58 @@ test('application session handoff prefers Clerk SDK token with a cookie fallback
   ), cookieToken);
 });
 
-test('expiry proof deadline covers both JWT and Agent Task session expiry', () => {
-  const sessionStartedAt = 1_000_000;
+test('expiry proof deadline covers only the captured JWT within a strict bound', () => {
+  const tokenCapturedAt = 1_000_000;
   assert.equal(
-    expiryProofDeadlineMilliseconds(sessionStartedAt, 1_060, 120),
-    1_135_000,
+    expiryProofDeadlineMilliseconds(tokenCapturedAt, 1_060, 90),
+    1_065_000,
   );
   assert.throws(
-    () => expiryProofDeadlineMilliseconds(sessionStartedAt, 1_200, 120),
-    /JWT expiry exceeds the bounded Agent Task session/,
+    () => expiryProofDeadlineMilliseconds(tokenCapturedAt, 1_200, 90),
+    /JWT expiry exceeds the canary wait bound/,
   );
+});
+
+test('JWT closure proves the fixed bearer expired without claiming browser sign-out', async () => {
+  const now = Date.now();
+  const expiry = Math.floor(now / 1000) + 60;
+  const events = [];
+  const page = {
+    async waitForTimeout(milliseconds) {
+      assert.ok(milliseconds > 0 && milliseconds <= 120_000);
+      events.push('waited-for-jwt-expiry');
+    },
+  };
+  const context = {
+    request: {
+      async get(url, options) {
+        assert.equal(url, 'https://api.spyboxd.com/api/me');
+        assert.equal(options.headers.Authorization, 'Bearer captured-jwt');
+        events.push('expired-bearer-rejected');
+        return {
+          status: () => 401,
+          body: async () => Buffer.from(JSON.stringify({
+            detail: 'Token has expired',
+          })),
+        };
+      },
+    },
+  };
+
+  await proveJwtExpiryClosure(
+    page,
+    context,
+    'https://api.spyboxd.com',
+    'canary B',
+    'captured-jwt',
+    now,
+    expiry,
+    90,
+  );
+  assert.deepEqual(events, [
+    'waited-for-jwt-expiry',
+    'expired-bearer-rejected',
+  ]);
 });
 
 test('private redirect proof remains exact and same-origin', () => {
