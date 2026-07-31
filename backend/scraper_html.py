@@ -101,7 +101,9 @@ class EnhancedLetterboxdScraper:
             'lists': f"https://letterboxd.com/{username}/lists/",
             'following': f"https://letterboxd.com/{username}/following/",
             'followers': f"https://letterboxd.com/{username}/followers/",
-            'stats': f"https://letterboxd.com/{username}/films/stats/",
+            # NOTE: /films/stats/ is a 404; the live stats page is /stats/.
+            'stats': f"https://letterboxd.com/{username}/stats/",
+            'tags': f"https://letterboxd.com/{username}/tags/",
         }
         
         # Letterboxd currently challenges ordinary requests/cloudscraper on paginated
@@ -269,6 +271,12 @@ class EnhancedLetterboxdScraper:
                 'hasn\u2019t selected any favourite films',
                 "hasn't selected any favourite films",
             ),
+            # Tag index pages render "No <kind> tags yet" and omit the
+            # ul.js-tags-section entirely when a kind has no tags.
+            'tags_films': ('no film tags yet',),
+            'tags_diary': ('no diary tags yet',),
+            'tags_reviews': ('no review tags yet',),
+            'tags_lists': ('no list tags yet',),
         }
         return any(phrase in text for phrase in phrases.get(dataset, ()))
 
@@ -316,6 +324,47 @@ class EnhancedLetterboxdScraper:
             return False
         cell_classes = set(rewatch_cell.get('class', []))
         return 'icon-status-on' in cell_classes or 'icon-status-off' not in cell_classes
+
+    @staticmethod
+    def _extract_viewing_id(element) -> str:
+        """Numeric viewing id from data-object-id="viewing:<id>" or data-viewing-id."""
+        if element is None:
+            return ''
+        direct = str(element.get('data-viewing-id', '') or '').strip()
+        if direct:
+            return direct
+        match = re.search(r'viewing:(\d+)', str(element.get('data-object-id', '') or ''))
+        return match.group(1) if match else ''
+
+    @staticmethod
+    def _extract_review_rewatch(review_elem) -> bool:
+        """Review listings mark rewatches only via the attribution context text."""
+        if review_elem is None:
+            return False
+        context = review_elem.select_one('span.attribution-detail a.context, a.context')
+        if context is None:
+            return False
+        return context.get_text(' ', strip=True).casefold().startswith('rewatched')
+
+    @staticmethod
+    def _serialize_tags(tags) -> str:
+        """Tags travel as a JSON array so tags containing delimiters survive CSV."""
+        return json.dumps(sorted(tags or []), ensure_ascii=False)
+
+    @staticmethod
+    def _extract_list_detail_metadata(soup: BeautifulSoup) -> Dict:
+        """Ranked flag and publish/update timestamps only exist on list detail pages."""
+        published = soup.select_one('p.list-date span.published time[datetime]')
+        updated = soup.select_one('p.list-date span.updated time[datetime]')
+        is_ranked = soup.select_one(
+            'li.posteritem.numbered-list-item, p.list-number, '
+            'article.list-detailed-entry span.position'
+        ) is not None
+        return {
+            'is_ranked': is_ranked,
+            'published_date': published.get('datetime', '') if published else '',
+            'updated_date': updated.get('datetime', '') if updated else '',
+        }
 
     @staticmethod
     def _extract_display_name(soup: BeautifulSoup) -> str:
@@ -661,6 +710,8 @@ class EnhancedLetterboxdScraper:
                         'review_date': review_date,
                         'review_likes': review_likes,
                         'contains_spoilers': contains_spoilers,
+                        'is_rewatch': self._extract_review_rewatch(review_elem),
+                        'viewing_id': self._extract_viewing_id(review_elem),
                         'film_url': identity['film_url'],
                         'film_id': identity['film_id'],
                         'slug': identity['slug'],
@@ -816,11 +867,225 @@ class EnhancedLetterboxdScraper:
             raise ScrapeValidationError("Custom lists resolved to zero without an explicit empty state")
         self.lists_data = lists
         self.list_items_data = self._scrape_list_memberships(lists)
-        self._finish_dataset('lists')
+        if 'lists' in self.unavailable_datasets:
+            # A private list detail aborted the membership crawl; preserve
+            # prior imported state instead of saving partial metadata.
+            self.lists_data = []
+        else:
+            self._finish_dataset('lists')
         if 'list_items' not in self.unavailable_datasets:
             self._finish_dataset('list_items')
         print(f"✓ Found {len(lists)} custom lists")
         return lists
+
+    @staticmethod
+    def _extract_tag_entries(soup: BeautifulSoup) -> List[Dict]:
+        """Parse a /tags/<kind>/ index into [{'name', 'slug', 'count'}].
+
+        A count of exactly 1 renders as an empty span.detail.-has-no-count;
+        abbreviated counts (e.g. "2.1K") disable the exact-count validation.
+        """
+        entries = []
+        for item in soup.select('ul.js-tags-section li.hoverable'):
+            link = item.select_one('a[href*="/tag/"]')
+            if link is None:
+                raise ScrapeValidationError("Recognized tag item lacked a tag link")
+            slug_match = re.search(r'/tag/([^/]+)/', link.get('href', ''))
+            name = (link.get('title') or link.get_text(' ', strip=True) or '').strip()
+            if not slug_match or not name:
+                raise ScrapeValidationError("Recognized tag link lacked slug or name")
+            detail = item.select_one('span.detail')
+            count_text = detail.get_text(strip=True).replace(',', '') if detail else ''
+            if not count_text:
+                count = 1
+            elif count_text.isdigit():
+                count = int(count_text)
+            else:
+                count = None  # abbreviated ("2.1K"); skip exact validation
+            entries.append({'name': name, 'slug': slug_match.group(1), 'count': count})
+        return entries
+
+    def _extract_tagged_keys(self, soup: BeautifulSoup, kind: str) -> List:
+        """Matching keys for one per-tag page: film identity, viewing id, or list path."""
+        main = soup.select_one('main') or soup
+        if kind == 'films':
+            keys = []
+            for poster in self._lazy_posters(main):
+                identity = self._poster_identity(poster)
+                if not identity['film_id'] and not identity['slug']:
+                    raise ScrapeValidationError("Tagged film poster lacked id and slug")
+                keys.append((identity['film_id'], identity['slug']))
+            return keys
+        if kind == 'diary':
+            rows = main.select('tr.diary-entry-row[data-viewing-id], tbody tr[data-viewing-id]')
+            return [self._extract_viewing_id(row) for row in rows]
+        if kind == 'reviews':
+            articles = [
+                article for article in main.select('article')
+                if self._extract_viewing_id(article)
+            ]
+            return [self._extract_viewing_id(article) for article in articles]
+        if kind == 'lists':
+            keys = []
+            for summary in main.select('article.list-summary'):
+                link = summary.select_one('h2.name a, h2 a')
+                if link is None or not link.get('href'):
+                    raise ScrapeValidationError("Tagged list summary lacked a list link")
+                keys.append(self._normalize_list_path(link['href']))
+            return keys
+        raise ValueError(f"Unknown tag kind: {kind}")
+
+    @staticmethod
+    def _normalize_list_path(url: str) -> str:
+        path = urlparse(urljoin('https://letterboxd.com/', url or '')).path
+        return path if path.endswith('/') else f"{path}/"
+
+    def scrape_tags(self) -> Dict[str, Dict]:
+        """Crawl the public tags surfaces and attach tags to already-scraped rows.
+
+        Letterboxd never renders tags on the diary table or review listings; the
+        only complete public surfaces are /<user>/tags/<kind>/ indexes plus the
+        per-tag pages, whose markup matches surfaces we already parse (LazyPoster
+        grid, diary rows with data-viewing-id, review articles with
+        data-object-id="viewing:<id>", list summaries). Tags ride existing CSVs
+        as an authoritative Tags column, so an unproven crawl must fail the
+        scrape rather than silently emit an authoritative-empty column.
+        """
+        print(f"🏷️  Scraping tags for {self.username}...")
+
+        kinds = ['films', 'diary', 'reviews']
+        if 'lists' not in self.unavailable_datasets:
+            kinds.append('lists')
+
+        index: Dict[str, List[Dict]] = {}
+        for kind in kinds:
+            # Tag indexes paginate at 120 tags per page with the standard
+            # next link; only page 1 renders the empty-state copy.
+            page_url = urljoin(self.urls['tags'], f'{kind}/')
+            entries: List[Dict] = []
+            first_page_soup = None
+            while page_url:
+                response = self._require_response(
+                    self.fetch_with_retry(page_url), f'tags {kind} index', page_url
+                )
+                soup = BeautifulSoup(response.content, 'html.parser')
+                if first_page_soup is None:
+                    first_page_soup = soup
+                page_entries = self._extract_tag_entries(soup)
+                if not page_entries and entries:
+                    raise ScrapeValidationError(
+                        f"Tags index for {kind} paginated to a page with no recognized tags"
+                    )
+                entries.extend(page_entries)
+                page_url = self._next_page_url(soup, page_url)
+                time.sleep(1)
+            if not entries and not self._declares_empty(first_page_soup, f'tags_{kind}'):
+                raise ScrapeValidationError(
+                    f"Tags index for {kind} returned no recognized tags or explicit empty state"
+                )
+            index[kind] = entries
+
+        collected_tags = {kind: {} for kind in kinds}
+        for kind in kinds:
+            for entry in index[kind]:
+                name, slug, expected = entry['name'], entry['slug'], entry['count']
+                page_url = f"https://letterboxd.com/{self.username}/tag/{slug}/{kind}/"
+                collected = 0
+                page_num = 1
+                while page_url:
+                    response = self._require_response(
+                        self.fetch_with_retry(page_url), f'tag {name!r} {kind}', page_url
+                    )
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    keys = self._extract_tagged_keys(soup, kind)
+                    if not keys:
+                        raise ScrapeValidationError(
+                            f"Tag {name!r} {kind} page {page_num} returned no recognized entries"
+                        )
+                    for key in keys:
+                        collected_tags[kind].setdefault(key, set()).add(name)
+                    collected += len(keys)
+                    page_url = self._next_page_url(soup, page_url)
+                    page_num += 1
+                    time.sleep(1)
+                if expected is not None and collected != expected:
+                    raise ScrapeValidationError(
+                        f"Tag {name!r} {kind} reported {expected} entries "
+                        f"but {collected} were captured"
+                    )
+
+        self._attach_tags(
+            collected_tags.get('films', {}),
+            collected_tags.get('diary', {}),
+            collected_tags.get('reviews', {}),
+            collected_tags.get('lists', {}),
+        )
+        print(
+            "✓ Attached tags to "
+            f"{len(collected_tags.get('films', {}))} films, "
+            f"{len(collected_tags.get('diary', {}))} diary entries, "
+            f"{len(collected_tags.get('reviews', {}))} reviews, "
+            f"{len(collected_tags.get('lists', {}))} lists"
+        )
+        return collected_tags
+
+    def _attach_tags(self, film_tags, diary_tags, review_tags, list_tags) -> None:
+        """Attach crawled tags onto scraped rows; every tagged key must resolve."""
+        by_film_id = {}
+        by_slug = {}
+        for film in self.films_data:
+            if film.get('film_id'):
+                by_film_id[str(film['film_id'])] = film
+            if film.get('slug'):
+                by_slug[film['slug']] = film
+        for (film_id, slug), tags in film_tags.items():
+            film = by_film_id.get(str(film_id)) if film_id else None
+            if film is None and slug:
+                film = by_slug.get(slug)
+            if film is None:
+                raise ScrapeValidationError(
+                    f"Tagged film (id={film_id!r}, slug={slug!r}) not found in scraped films"
+                )
+            film['tags'] = sorted(set(film.get('tags', [])) | tags)
+
+        by_viewing = {
+            str(entry.get('source_entry_id', '')): entry
+            for entry in self.diary_entries
+            if entry.get('source_entry_id')
+        }
+        for viewing_id, tags in diary_tags.items():
+            entry = by_viewing.get(str(viewing_id))
+            if entry is None:
+                raise ScrapeValidationError(
+                    f"Tagged diary viewing {viewing_id!r} not found in scraped diary"
+                )
+            entry['tags'] = sorted(set(entry.get('tags', [])) | tags)
+
+        by_review_viewing = {
+            str(review.get('viewing_id', '')): review
+            for review in self.reviews_data
+            if review.get('viewing_id')
+        }
+        for viewing_id, tags in review_tags.items():
+            review = by_review_viewing.get(str(viewing_id))
+            if review is None:
+                raise ScrapeValidationError(
+                    f"Tagged review viewing {viewing_id!r} not found in scraped reviews"
+                )
+            review['tags'] = sorted(set(review.get('tags', [])) | tags)
+
+        by_list_path = {
+            self._normalize_list_path(list_data.get('url', '')): list_data
+            for list_data in self.lists_data
+            if list_data.get('url')
+        }
+        for list_path, tags in list_tags.items():
+            list_data = by_list_path.get(list_path)
+            if list_data is None:
+                raise ScrapeValidationError(
+                    f"Tagged list {list_path!r} not found in scraped lists"
+                )
+            list_data['tags'] = sorted(set(list_data.get('tags', [])) | tags)
 
     def _scrape_list_memberships(self, lists: List[Dict]) -> List[Dict]:
         """Fetch every public list page and retain ordered canonical film identity."""
@@ -836,15 +1101,19 @@ class EnhancedLetterboxdScraper:
             while page_url:
                 response = self.fetch_with_retry(page_url, allow_private_forbidden=True)
                 if self._is_private_forbidden_response(response):
-                    self._mark_unavailable(
-                        'list_items',
-                        f"forbidden/private list: {list_data.get('title', '')}",
-                    )
+                    # An unfetched detail page also means unknown Ranked/Published
+                    # metadata for the remaining lists, so the whole lists surface
+                    # must be preserved rather than saved with defaulted values.
+                    reason = f"forbidden/private list: {list_data.get('title', '')}"
+                    self._mark_unavailable('lists', reason)
+                    self._mark_unavailable('list_items', reason)
                     return []
                 response = self._require_response(
                     response, f"list {list_data.get('title', '')}", page_url
                 )
                 soup = BeautifulSoup(response.content, 'html.parser')
+                if page_num == 1:
+                    list_data.update(self._extract_list_detail_metadata(soup))
                 main = soup.select_one('main') or soup
                 posters = main.select(
                     'ul.poster-list div.react-component[data-component-class="LazyPoster"], '
@@ -924,12 +1193,13 @@ class EnhancedLetterboxdScraper:
             return
         fieldnames = [
             'Name', 'Year', 'Watched Date', 'Rating', 'Is_Rewatch', 'Is_Liked',
-            'Has_Review', 'Film_ID', 'Slug', 'Diary_Entry_ID', 'Film_URL'
+            'Has_Review', 'Tags', 'Film_ID', 'Slug', 'Diary_Entry_ID', 'Film_URL'
         ]
         data = [{
             'Name': entry['title'], 'Year': entry['year'], 'Watched Date': entry['watch_date'],
             'Rating': entry['rating'], 'Is_Rewatch': 'Yes' if entry['is_rewatch'] else 'No',
             'Is_Liked': 'Yes' if entry['is_liked'] else 'No', 'Has_Review': 'Yes' if entry['has_review'] else 'No',
+            'Tags': self._serialize_tags(entry.get('tags')),
             'Film_ID': entry.get('film_id', ''), 'Slug': entry.get('slug', ''),
             'Diary_Entry_ID': entry.get('source_entry_id', ''),
             'Film_URL': entry['film_url']
@@ -942,13 +1212,15 @@ class EnhancedLetterboxdScraper:
             return
         fieldnames = [
             'Name', 'Year', 'Rating', 'Review', 'Review_Date', 'Review_Likes',
-            'Contains_Spoilers', 'Film_ID', 'Slug', 'Film_URL'
+            'Contains_Spoilers', 'Rewatch', 'Tags', 'Film_ID', 'Slug', 'Film_URL'
         ]
         data = [{
             'Name': review['title'], 'Year': review['year'], 'Rating': review['rating'],
             'Review': review['review_text'], 'Review_Date': review['review_date'],
             'Review_Likes': review['review_likes'],
             'Contains_Spoilers': 'Yes' if review.get('contains_spoilers', False) else 'No',
+            'Rewatch': 'Yes' if review.get('is_rewatch', False) else 'No',
+            'Tags': self._serialize_tags(review.get('tags')),
             'Film_ID': review.get('film_id', ''),
             'Slug': review.get('slug', ''), 'Film_URL': review['film_url']
         } for review in self.reviews_data]
@@ -970,10 +1242,19 @@ class EnhancedLetterboxdScraper:
         """Saves custom lists."""
         if 'lists' not in self.completed_datasets:
             return
-        fieldnames = ['Title', 'Description', 'Film_Count', 'URL']
+        # Updated_Date is captured in _extract_list_detail_metadata but not yet
+        # emitted: movie_lists has no updated-date column, and an unconsumed
+        # CSV column would misrepresent the import contract.
+        fieldnames = [
+            'Title', 'Description', 'Film_Count', 'URL',
+            'Ranked', 'Published_Date', 'Tags'
+        ]
         data = [{
             'Title': li['title'], 'Description': li['description'],
-            'Film_Count': li['film_count'], 'URL': li['url']
+            'Film_Count': li['film_count'], 'URL': li['url'],
+            'Ranked': 'Yes' if li.get('is_ranked', False) else 'No',
+            'Published_Date': li.get('published_date', ''),
+            'Tags': self._serialize_tags(li.get('tags')),
         } for li in self.lists_data]
         self._write_csv("lists.csv", data, fieldnames)
 
@@ -1119,7 +1400,7 @@ class EnhancedLetterboxdScraper:
             return
         fieldnames = [
             'Title', 'Year', 'Rating', 'Film_ID', 'Slug', 'Poster_URL',
-            'Film_URL', 'Has_Review', 'Is_Liked', 'Movie_ID'
+            'Film_URL', 'Has_Review', 'Is_Liked', 'Tags', 'Movie_ID'
         ]
         data = [{
             'Title': film.get('title', ''), 'Year': film.get('year', ''), 'Rating': film.get('rating', ''),
@@ -1127,6 +1408,7 @@ class EnhancedLetterboxdScraper:
             'Poster_URL': film.get('poster_url', ''), 'Film_URL': film.get('film_url', ''),
             'Has_Review': 'Yes' if film.get('has_review') else 'No',
             'Is_Liked': 'Yes' if film.get('is_liked') else 'No',
+            'Tags': self._serialize_tags(film.get('tags')),
             'Movie_ID': film.get('movie_id', '')
         } for film in self.films_data]
         self._write_csv("films_comprehensive.csv", data, fieldnames)
@@ -1204,6 +1486,9 @@ class EnhancedLetterboxdScraper:
         self.scrape_reviews()
         self.scrape_watchlist()
         self.scrape_custom_lists()
+        # Tags ride the films/diary/reviews/lists CSVs as an authoritative
+        # column, so the crawl runs after those surfaces are proven complete.
+        self.scrape_tags()
 
         # These source-of-truth counts are only known after their complete surfaces
         # have passed pagination and parse validation.

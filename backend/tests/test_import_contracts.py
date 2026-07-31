@@ -11,13 +11,14 @@ from types import SimpleNamespace
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from scraper_html import EnhancedLetterboxdScraper
+from scraper_html import EnhancedLetterboxdScraper, ScrapeValidationError
 from database.models import Movie
 from services.import_contracts import (
     MovieIdentity,
     diary_event_key,
     movie_identity_from_row,
     parse_boolean,
+    parse_tags,
 )
 from services.profile_loader import load_profile_data, validate_import_bundle
 from services.movie_resolver import MovieResolver
@@ -696,6 +697,438 @@ class CoverageUnavailableTests(unittest.TestCase):
         self.assertTrue(coverage["is_partial"])
         self.assertEqual(coverage["unavailable_datasets"]["watchlist"], "forbidden/private")
         self.assertTrue(any("prior imported state was preserved" in item for item in coverage["limitations"]))
+
+
+class TagScrapingTests(unittest.TestCase):
+    """Public tags-surface crawl: index parsing, per-tag matching, CSV contract."""
+
+    TAG_INDEX_MARKUP = """
+        <main>
+          <ul class="js-tags-section tags tags-columns" data-check-action="/ajax/tag/check/films/">
+            <li class="hoverable">
+              <a href="/viewer/tag/mood-eerie/films/" title="mood, eerie">mood, eerie</a>
+              <span class="detail -has-count"> 2 </span>
+            </li>
+            <li class="hoverable">
+              <a href="/viewer/tag/profile/films/" title="profile">profile</a>
+              <span class="detail -has-no-count"> </span>
+            </li>
+            <li class="hoverable">
+              <a href="/viewer/tag/marathon/films/" title="marathon">marathon</a>
+              <span class="detail -has-count"> 2.1K </span>
+            </li>
+            <li style="visibility:hidden"></li>
+          </ul>
+        </main>
+    """
+
+    @staticmethod
+    def _tags_scraper() -> EnhancedLetterboxdScraper:
+        scraper = EnhancedLetterboxdScraper.__new__(EnhancedLetterboxdScraper)
+        scraper.username = "viewer"
+        scraper.urls = {"tags": "https://letterboxd.com/viewer/tags/"}
+        scraper.completed_datasets = set()
+        scraper.unavailable_datasets = {}
+        scraper.films_data = []
+        scraper.diary_entries = []
+        scraper.reviews_data = []
+        scraper.lists_data = []
+        return scraper
+
+    def test_tag_index_parses_counts_including_singletons_and_abbreviations(self) -> None:
+        soup = BeautifulSoup(self.TAG_INDEX_MARKUP, "html.parser")
+
+        entries = EnhancedLetterboxdScraper._extract_tag_entries(soup)
+
+        self.assertEqual(
+            entries,
+            [
+                {"name": "mood, eerie", "slug": "mood-eerie", "count": 2},
+                {"name": "profile", "slug": "profile", "count": 1},
+                {"name": "marathon", "slug": "marathon", "count": None},
+            ],
+        )
+
+    def test_tagless_kind_declares_empty_without_tags_section(self) -> None:
+        soup = BeautifulSoup(
+            "<main><section><p>No film tags yet</p></section></main>", "html.parser"
+        )
+        scraper = self._tags_scraper()
+
+        self.assertEqual(EnhancedLetterboxdScraper._extract_tag_entries(soup), [])
+        self.assertTrue(scraper._declares_empty(soup, "tags_films"))
+        self.assertFalse(scraper._declares_empty(soup, "tags_diary"))
+
+    def test_scrape_tags_attaches_across_surfaces_and_survives_csv_round_trip(self) -> None:
+        scraper = self._tags_scraper()
+        scraper.films_data = [
+            {"title": "Challengers", "year": 2024, "film_id": "842301", "slug": "challengers"},
+            {"title": "Heat", "year": 1995, "film_id": "51818", "slug": "heat-1995"},
+        ]
+        scraper.diary_entries = [
+            {"title": "Challengers", "source_entry_id": "459597569", "is_rewatch": False,
+             "is_liked": False, "has_review": True, "watch_date": "2026-07-01",
+             "rating": 4.0, "year": 2024, "film_id": "842301", "slug": "challengers",
+             "film_url": "/film/challengers/"},
+        ]
+        scraper.reviews_data = [
+            {"title": "Challengers", "viewing_id": "459597569", "year": 2024,
+             "rating": 4.0, "review_text": "x", "review_date": "2026-07-01",
+             "review_likes": 0, "contains_spoilers": False, "is_rewatch": True,
+             "film_id": "842301", "slug": "challengers", "film_url": "/film/challengers/"},
+        ]
+        scraper.lists_data = [
+            {"title": "Best", "description": "", "film_count": 1, "url": "/viewer/list/best/"},
+        ]
+
+        index_films = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/mood-eerie/films/" title="mood, eerie">mood, eerie</a>
+                <span class="detail -has-no-count"></span></li>
+            </ul></main>
+        """
+        empty_diary = "<main><p>No diary tags yet</p></main>"
+        index_reviews = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/mood-eerie/reviews/" title="mood, eerie">mood, eerie</a>
+                <span class="detail -has-no-count"></span></li>
+            </ul></main>
+        """
+        index_lists = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/favorites/lists/" title="favorites">favorites</a>
+                <span class="detail -has-no-count"></span></li>
+            </ul></main>
+        """
+        tag_films_page = """
+            <main><ul class="poster-list">
+              <li><div class="react-component" data-component-class="LazyPoster"
+                   data-item-name="Challengers (2024)" data-item-slug="challengers"
+                   data-item-link="/film/challengers/"
+                   data-postered-identifier='{"uid":"film:842301"}'></div></li>
+            </ul></main>
+        """
+        tag_reviews_page = """
+            <main>
+              <article class="production-viewing" data-object-id="viewing:459597569"
+                       data-object-name="review"></article>
+            </main>
+        """
+        tag_lists_page = """
+            <main>
+              <article class="list-summary js-list-summary">
+                <h2 class="name prettify"><a href="/viewer/list/best/">Best</a></h2>
+              </article>
+            </main>
+        """
+        pages = {
+            "https://letterboxd.com/viewer/tags/films/": index_films,
+            "https://letterboxd.com/viewer/tags/diary/": empty_diary,
+            "https://letterboxd.com/viewer/tags/reviews/": index_reviews,
+            "https://letterboxd.com/viewer/tags/lists/": index_lists,
+            "https://letterboxd.com/viewer/tag/mood-eerie/films/": tag_films_page,
+            "https://letterboxd.com/viewer/tag/mood-eerie/reviews/": tag_reviews_page,
+            "https://letterboxd.com/viewer/tag/favorites/lists/": tag_lists_page,
+        }
+        scraper.fetch_with_retry = Mock(
+            side_effect=lambda url, **kwargs: SimpleNamespace(content=pages[url].encode("utf-8"))
+        )
+
+        with patch("scraper_html.time.sleep"):
+            scraper.scrape_tags()
+
+        self.assertEqual(scraper.films_data[0]["tags"], ["mood, eerie"])
+        self.assertNotIn("tags", scraper.films_data[1])
+        self.assertNotIn("tags", scraper.diary_entries[0])
+        self.assertEqual(scraper.reviews_data[0]["tags"], ["mood, eerie"])
+        self.assertEqual(scraper.lists_data[0]["tags"], ["favorites"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper.output_dir = temp_dir
+            scraper.completed_datasets = {"films", "reviews", "lists"}
+            scraper._save_comprehensive_films()
+            scraper._save_reviews()
+            scraper._save_custom_lists()
+            films_csv = pd.read_csv(Path(temp_dir) / "films_comprehensive.csv", keep_default_na=False)
+            reviews_csv = pd.read_csv(Path(temp_dir) / "reviews.csv", keep_default_na=False)
+            lists_csv = pd.read_csv(Path(temp_dir) / "lists.csv", keep_default_na=False)
+
+        # A tag containing a comma must survive the CSV round trip through the
+        # same parser ingestion uses; delimiter-splitting would corrupt it.
+        self.assertEqual(parse_tags(films_csv.loc[0, "Tags"]), ["mood, eerie"])
+        self.assertEqual(parse_tags(films_csv.loc[1, "Tags"]), [])
+        self.assertEqual(parse_tags(reviews_csv.loc[0, "Tags"]), ["mood, eerie"])
+        self.assertEqual(reviews_csv.loc[0, "Rewatch"], "Yes")
+        self.assertEqual(parse_tags(lists_csv.loc[0, "Tags"]), ["favorites"])
+
+    def test_tags_index_pagination_collects_all_pages(self) -> None:
+        # Live tag indexes paginate at 120 tags per page; tags on page 2+ must
+        # not be silently dropped (they would authoritatively erase DB tags).
+        scraper = self._tags_scraper()
+        scraper.films_data = [
+            {"title": "Alpha", "year": 2020, "film_id": "1", "slug": "alpha"},
+            {"title": "Beta", "year": 2021, "film_id": "2", "slug": "beta"},
+        ]
+        index_page_1 = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/one/films/" title="one">one</a>
+                <span class="detail -has-no-count"></span></li>
+            </ul>
+            <div class="pagination"><a class="next" href="/viewer/tags/films/page/2/">Next</a></div>
+            </main>
+        """
+        index_page_2 = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/two/films/" title="two">two</a>
+                <span class="detail -has-no-count"></span></li>
+            </ul></main>
+        """
+        def film_page(film_id, slug, name):
+            return f"""
+                <main><ul class="poster-list">
+                  <li><div class="react-component" data-component-class="LazyPoster"
+                       data-item-name="{name}" data-item-slug="{slug}"
+                       data-item-link="/film/{slug}/"
+                       data-postered-identifier='{{"uid":"film:{film_id}"}}'></div></li>
+                </ul></main>
+            """
+        pages = {
+            "https://letterboxd.com/viewer/tags/films/": index_page_1,
+            "https://letterboxd.com/viewer/tags/films/page/2/": index_page_2,
+            "https://letterboxd.com/viewer/tags/diary/": "<main><p>No diary tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/reviews/": "<main><p>No review tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/lists/": "<main><p>No list tags yet</p></main>",
+            "https://letterboxd.com/viewer/tag/one/films/": film_page("1", "alpha", "Alpha (2020)"),
+            "https://letterboxd.com/viewer/tag/two/films/": film_page("2", "beta", "Beta (2021)"),
+        }
+        scraper.fetch_with_retry = Mock(
+            side_effect=lambda url, **kwargs: SimpleNamespace(content=pages[url].encode("utf-8"))
+        )
+
+        with patch("scraper_html.time.sleep"):
+            scraper.scrape_tags()
+
+        self.assertEqual(scraper.films_data[0]["tags"], ["one"])
+        self.assertEqual(scraper.films_data[1]["tags"], ["two"])
+
+    def test_per_tag_pagination_and_slug_fallback_matching(self) -> None:
+        scraper = self._tags_scraper()
+        scraper.films_data = [
+            {"title": "Alpha", "year": 2020, "film_id": "1", "slug": "alpha"},
+            {"title": "Beta", "year": 2021, "film_id": "2", "slug": "beta"},
+        ]
+        index_films = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/marathon/films/" title="marathon">marathon</a>
+                <span class="detail -has-count">2</span></li>
+            </ul></main>
+        """
+        tag_page_1 = """
+            <main><ul class="poster-list">
+              <li><div class="react-component" data-component-class="LazyPoster"
+                   data-item-name="Alpha (2020)" data-item-slug="alpha"
+                   data-item-link="/film/alpha/"
+                   data-postered-identifier='{"uid":"film:1"}'></div></li>
+            </ul>
+            <div class="pagination"><a class="next" href="/viewer/tag/marathon/films/page/2/">Next</a></div>
+            </main>
+        """
+        # Page 2's poster carries no numeric id anywhere: slug matching must apply.
+        tag_page_2 = """
+            <main><ul class="poster-list">
+              <li><div class="react-component" data-component-class="LazyPoster"
+                   data-item-name="Beta (2021)" data-item-slug="beta"
+                   data-item-link="/film/beta/"></div></li>
+            </ul></main>
+        """
+        pages = {
+            "https://letterboxd.com/viewer/tags/films/": index_films,
+            "https://letterboxd.com/viewer/tags/diary/": "<main><p>No diary tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/reviews/": "<main><p>No review tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/lists/": "<main><p>No list tags yet</p></main>",
+            "https://letterboxd.com/viewer/tag/marathon/films/": tag_page_1,
+            "https://letterboxd.com/viewer/tag/marathon/films/page/2/": tag_page_2,
+        }
+        scraper.fetch_with_retry = Mock(
+            side_effect=lambda url, **kwargs: SimpleNamespace(content=pages[url].encode("utf-8"))
+        )
+
+        with patch("scraper_html.time.sleep"):
+            scraper.scrape_tags()
+
+        self.assertEqual(scraper.films_data[0]["tags"], ["marathon"])
+        self.assertEqual(scraper.films_data[1]["tags"], ["marathon"])
+
+    def test_per_tag_diary_pages_attach_by_viewing_id(self) -> None:
+        scraper = self._tags_scraper()
+        scraper.diary_entries = [
+            {"title": "Alpha", "source_entry_id": "77"},
+            {"title": "Beta", "source_entry_id": "88"},
+        ]
+        index_diary = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/cinema/diary/" title="cinema">cinema</a>
+                <span class="detail -has-count">2</span></li>
+            </ul></main>
+        """
+        tag_diary_page = """
+            <main><table class="diary-table"><tbody>
+              <tr class="diary-entry-row" data-viewing-id="77"></tr>
+              <tr class="diary-entry-row" data-viewing-id="88"></tr>
+            </tbody></table></main>
+        """
+        pages = {
+            "https://letterboxd.com/viewer/tags/films/": "<main><p>No film tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/diary/": index_diary,
+            "https://letterboxd.com/viewer/tags/reviews/": "<main><p>No review tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/lists/": "<main><p>No list tags yet</p></main>",
+            "https://letterboxd.com/viewer/tag/cinema/diary/": tag_diary_page,
+        }
+        scraper.fetch_with_retry = Mock(
+            side_effect=lambda url, **kwargs: SimpleNamespace(content=pages[url].encode("utf-8"))
+        )
+
+        with patch("scraper_html.time.sleep"):
+            scraper.scrape_tags()
+
+        self.assertEqual(scraper.diary_entries[0]["tags"], ["cinema"])
+        self.assertEqual(scraper.diary_entries[1]["tags"], ["cinema"])
+
+    def test_parse_tags_json_arrays_keep_sentinel_like_tag_names(self) -> None:
+        # A tag literally named "null"/"nan" is real user text when it arrives
+        # via the structured JSON path; only delimiter-split cells treat those
+        # strings as missing values.
+        self.assertEqual(parse_tags('["null", "nan", "NULL"]'), ["null", "nan"])
+        self.assertEqual(parse_tags(["None"]), ["None"])
+        self.assertEqual(parse_tags("nan, horror"), ["horror"])
+        self.assertEqual(parse_tags("[]"), [])
+
+    def test_forbidden_list_detail_marks_lists_surface_unavailable(self) -> None:
+        scraper = self._tags_scraper()
+        forbidden = SimpleNamespace(
+            status_code=403,
+            text="Letterboxd - Forbidden: the page you are attempting to access is classified. "
+                 "You do not have the correct clearance.",
+        )
+        scraper.fetch_with_retry = Mock(return_value=forbidden)
+
+        result = scraper._scrape_list_memberships(
+            [{"title": "Secret", "url": "/viewer/list/secret/", "film_count": 3}]
+        )
+
+        self.assertEqual(result, [])
+        self.assertIn("lists", scraper.unavailable_datasets)
+        self.assertIn("list_items", scraper.unavailable_datasets)
+
+    def test_scrape_tags_count_mismatch_fails_closed(self) -> None:
+        scraper = self._tags_scraper()
+        scraper.films_data = [
+            {"title": "Challengers", "year": 2024, "film_id": "842301", "slug": "challengers"},
+        ]
+        index_films = """
+            <main><ul class="js-tags-section">
+              <li class="hoverable"><a href="/viewer/tag/watched-twice/films/" title="watched-twice">watched-twice</a>
+                <span class="detail -has-count">2</span></li>
+            </ul></main>
+        """
+        tag_films_page = """
+            <main><ul class="poster-list">
+              <li><div class="react-component" data-component-class="LazyPoster"
+                   data-item-name="Challengers (2024)" data-item-slug="challengers"
+                   data-item-link="/film/challengers/"
+                   data-postered-identifier='{"uid":"film:842301"}'></div></li>
+            </ul></main>
+        """
+        pages = {
+            "https://letterboxd.com/viewer/tags/films/": index_films,
+            "https://letterboxd.com/viewer/tags/diary/": "<main><p>No diary tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/reviews/": "<main><p>No review tags yet</p></main>",
+            "https://letterboxd.com/viewer/tags/lists/": "<main><p>No list tags yet</p></main>",
+            "https://letterboxd.com/viewer/tag/watched-twice/films/": tag_films_page,
+        }
+        scraper.fetch_with_retry = Mock(
+            side_effect=lambda url, **kwargs: SimpleNamespace(content=pages[url].encode("utf-8"))
+        )
+
+        with patch("scraper_html.time.sleep"):
+            with self.assertRaisesRegex(ScrapeValidationError, "reported 2 entries"):
+                scraper.scrape_tags()
+
+    def test_attach_tags_rejects_unknown_viewing_and_list(self) -> None:
+        scraper = self._tags_scraper()
+
+        with self.assertRaisesRegex(ScrapeValidationError, "not found in scraped diary"):
+            scraper._attach_tags({}, {"999": {"tag"}}, {}, {})
+        with self.assertRaisesRegex(ScrapeValidationError, "not found in scraped lists"):
+            scraper._attach_tags({}, {}, {}, {"/viewer/list/gone/": {"tag"}})
+
+    def test_review_listing_rewatch_and_viewing_id_extraction(self) -> None:
+        article = BeautifulSoup(
+            """
+            <article class="production-viewing" data-object-id="viewing:1421719449">
+              <span class="attribution-detail">
+                <a href="/viewer/film/elysium-2013/" class="context"> Rewatched </a>
+                <span class="date"><time class="timestamp" datetime="2026-07-29">29 Jul 2026</time></span>
+              </span>
+            </article>
+            """,
+            "html.parser",
+        ).article
+        watched = BeautifulSoup(
+            '<article><a class="context"> Watched </a></article>', "html.parser"
+        ).article
+
+        self.assertEqual(EnhancedLetterboxdScraper._extract_viewing_id(article), "1421719449")
+        self.assertTrue(EnhancedLetterboxdScraper._extract_review_rewatch(article))
+        self.assertFalse(EnhancedLetterboxdScraper._extract_review_rewatch(watched))
+        self.assertEqual(EnhancedLetterboxdScraper._extract_viewing_id(watched), "")
+
+    def test_list_detail_metadata_extraction(self) -> None:
+        ranked = BeautifulSoup(
+            """
+            <main>
+              <p class="list-date">
+                <span class="published is-updated">Published
+                  <time datetime="2026-01-11T07:15:06.720Z" class="timeago"></time></span>
+                <span class="updated">Updated
+                  <time datetime="2026-07-25T14:25:26.004Z" class="timeago"></time></span>
+              </p>
+              <ul class="poster-list -grid">
+                <li class="posteritem numbered-list-item" data-owner-rating="10">
+                  <p class="list-number">1</p>
+                </li>
+              </ul>
+            </main>
+            """,
+            "html.parser",
+        )
+        unranked = BeautifulSoup(
+            """
+            <main>
+              <p class="list-date"><span class="published">Published
+                <time datetime="2024-02-01T00:00:00Z" class="timeago"></time></span></p>
+              <ul class="poster-list"><li class="posteritem"></li></ul>
+            </main>
+            """,
+            "html.parser",
+        )
+
+        ranked_meta = EnhancedLetterboxdScraper._extract_list_detail_metadata(ranked)
+        unranked_meta = EnhancedLetterboxdScraper._extract_list_detail_metadata(unranked)
+
+        self.assertEqual(
+            ranked_meta,
+            {
+                "is_ranked": True,
+                "published_date": "2026-01-11T07:15:06.720Z",
+                "updated_date": "2026-07-25T14:25:26.004Z",
+            },
+        )
+        self.assertEqual(
+            unranked_meta,
+            {"is_ranked": False, "published_date": "2024-02-01T00:00:00Z", "updated_date": ""},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

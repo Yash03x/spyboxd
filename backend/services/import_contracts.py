@@ -85,26 +85,36 @@ def parse_date(value: Any) -> Optional[date]:
 def parse_tags(value: Any) -> List[str]:
     if is_missing(value):
         return []
-    if isinstance(value, (list, tuple, set)):
+    # Structured inputs (lists and JSON arrays) carry literal user text: a tag
+    # genuinely named "nan"/"none"/"null" must survive. The missing-value
+    # sentinels only apply to the legacy delimiter-split path, where such
+    # strings indicate empty spreadsheet cells.
+    literal_elements = isinstance(value, (list, tuple, set))
+    if literal_elements:
         raw_values = value
     else:
         raw = str(value).strip()
+        decoded = None
         if raw.startswith("["):
             try:
                 decoded = json.loads(raw)
             except (TypeError, ValueError, json.JSONDecodeError):
                 decoded = None
-            if isinstance(decoded, list):
-                raw_values = decoded
-            else:
-                raw_values = re.split(r"\s*[,;|]\s*", raw)
+        if isinstance(decoded, list):
+            raw_values = decoded
+            literal_elements = True
         else:
             raw_values = re.split(r"\s*[,;|]\s*", raw)
 
     tags: List[str] = []
     seen = set()
     for candidate in raw_values:
-        tag = clean_text(candidate, max_length=100)
+        if literal_elements:
+            if candidate is None or (isinstance(candidate, float) and math.isnan(candidate)):
+                continue
+            tag = str(candidate).strip()[:100] or None
+        else:
+            tag = clean_text(candidate, max_length=100)
         if not tag:
             continue
         key = tag.casefold()
