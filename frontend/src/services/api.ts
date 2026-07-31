@@ -319,6 +319,8 @@ export interface TopMovie {
 export interface ActivityData {
   month: string;
   movies_watched: number;
+  // Optional: cached snapshots produced before this field existed omit it.
+  unique_movies?: number | null;
   average_rating: number | null;
   is_partial: boolean;
 }
