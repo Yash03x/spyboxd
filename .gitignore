@@ -8,6 +8,9 @@ dist/
 build/
 .venv/
 .env
+.env.*
+!.env.example
+*.env
 venv/
 env/
 !deploy/env/
@@ -28,6 +31,9 @@ data/backups/
 
 # Frontend
 frontend/node_modules/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 frontend/.env.local
 frontend/.env.production.local
 frontend/build/
