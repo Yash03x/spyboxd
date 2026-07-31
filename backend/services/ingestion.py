@@ -1636,6 +1636,29 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
 
         following_authoritative = _source_present(analyzer_profile, "following.csv")
         followers_authoritative = _source_present(analyzer_profile, "followers.csv")
+        # The change feed's first-import silence is per profile, but the
+        # social surfaces can arrive later than the profile itself (the
+        # capture shipped after many profiles were imported). A surface's own
+        # first observation is a baseline too: emitting an event per
+        # pre-existing edge would present the whole graph as new activity.
+        following_had_history = (
+            db.query(ProfileFollowEdge.id)
+            .filter(
+                ProfileFollowEdge.profile_id == profile_id,
+                ProfileFollowEdge.direction == "following",
+            )
+            .first()
+            is not None
+        )
+        followers_had_history = (
+            db.query(ProfileFollowEdge.id)
+            .filter(
+                ProfileFollowEdge.profile_id == profile_id,
+                ProfileFollowEdge.direction == "follower",
+            )
+            .first()
+            is not None
+        )
         counterpart_ids = _resolve_counterpart_profile_ids(analyzer_profile, db)
         following_count = _upsert_follow_edges(
             analyzer_profile=analyzer_profile,
@@ -1709,13 +1732,16 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
         _update_profile_metadata(profile, analyzer_profile, sync, now)
 
         after_state = capture_profile_state(db, profile_id)
+        change_authoritative = dict(authoritative)
+        change_authoritative["following"] = following_authoritative and following_had_history
+        change_authoritative["followers"] = followers_authoritative and followers_had_history
         change_count = record_profile_changes(
             db,
             profile_id=profile_id,
             profile_sync=sync,
             before=before_state,
             after=after_state,
-            authoritative=authoritative,
+            authoritative=change_authoritative,
             has_baseline=has_change_baseline,
         )
         imported_counts["changes"] = change_count

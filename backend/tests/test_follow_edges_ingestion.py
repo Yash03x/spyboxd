@@ -267,6 +267,37 @@ def test_unfollow_soft_removes_and_emits_events_and_refollow_resurrects(tmp_path
     assert ("follow_added", "user:maaxmc") in change_types
 
 
+def test_first_social_sync_on_existing_profile_is_baseline_silent(tmp_path: Path, database: Session) -> None:
+    # The profile exists with sync history long before the social capture
+    # ships: its first social surface must not flood the feed with every
+    # pre-existing relationship as if it were new activity.
+    _import(tmp_path, "pre_social", database, following=[], followers=[], with_social=False)
+    _import(
+        tmp_path, "first_social", database,
+        following=[_person(1, "vaultedapathy"), _person(2, "maaxmc")],
+        followers=[_person(1, "bratpack")],
+    )
+
+    assert len(_active_edges(database, "following")) == 2
+    assert database.query(ProfileDataChange).filter(
+        ProfileDataChange.entity_type == "follow"
+    ).count() == 0
+
+    # The NEXT social sync is a delta against a real baseline and must emit.
+    _import(
+        tmp_path, "delta", database,
+        following=[_person(1, "vaultedapathy")],
+        followers=[_person(1, "bratpack"), _person(2, "newfriend")],
+    )
+    changes = {
+        (change.change_type, change.entity_key)
+        for change in database.query(ProfileDataChange).filter(
+            ProfileDataChange.entity_type == "follow"
+        )
+    }
+    assert changes == {("follow_removed", "user:maaxmc"), ("follower_gained", "user:newfriend")}
+
+
 def test_v2_bundle_preserves_prior_edges(tmp_path: Path, database: Session) -> None:
     _import(
         tmp_path, "social", database,
