@@ -892,13 +892,23 @@ def _upsert_lists(
         if row is not None:
             movie_list.description = clean_text(first_value(row, ("Description", "Notes")))
             movie_list.movie_count = parse_integer(first_value(row, ("Film_Count", "Film Count", "Count")), minimum=0) or 0
-            movie_list.is_ranked = parse_boolean(first_value(row, ("Ranked", "Is_Ranked", "Is Ranked")))
+            # Ranked/published/tags mirror the is_public presence guard below:
+            # a metadata row from a source that does not carry these columns
+            # (pre-upgrade scraper bundles, official exports) must preserve
+            # previously imported values instead of resetting to defaults.
+            ranked_value = first_value(row, ("Ranked", "Is_Ranked", "Is Ranked"))
+            if ranked_value is not None:
+                movie_list.is_ranked = parse_boolean(ranked_value)
             if first_value(row, ("Private", "Is_Private")) is not None:
                 movie_list.is_public = not parse_boolean(first_value(row, ("Private", "Is_Private")))
             elif first_value(row, ("Public", "Is_Public")) is not None:
                 movie_list.is_public = parse_boolean(first_value(row, ("Public", "Is_Public")), default=True)
-            movie_list.published_date = parse_date(first_value(row, ("Published Date", "Published_Date", "Date")))
-            movie_list.tags = parse_tags(first_value(row, ("Tags", "List_Tags", "List Tags")))
+            published_value = first_value(row, ("Published Date", "Published_Date", "Date"))
+            if published_value is not None:
+                movie_list.published_date = parse_date(published_value)
+            tags_value = first_value(row, ("Tags", "List_Tags", "List Tags"))
+            if tags_value is not None:
+                movie_list.tags = parse_tags(tags_value)
         seen_list_ids.add(movie_list.id)
         return movie_list
 
