@@ -23,6 +23,7 @@ from urllib.parse import unquote, urlsplit
 
 RESTORE_DATABASE_ENV_FILE = Path("/etc/spyboxd/restore-drill.env")
 ALLOWED_DATABASE_ENV_FILES = {RESTORE_DATABASE_ENV_FILE}
+POSTGRES_INSTALL_ROOT = Path("/usr/lib/postgresql")
 RELEASE_LOCK = Path("/opt/spyboxd/.release.lock")
 SHARED_DIR = Path("/opt/spyboxd/shared")
 BACKUP_DIR = SHARED_DIR / "backups" / "postgresql"
@@ -179,7 +180,7 @@ def production_lock():
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(RELEASE_LOCK, flags, 0o640)
+        descriptor = os.open(RELEASE_LOCK, flags, 0o600)
     except OSError as exc:
         raise DrillError("the production release lock is unavailable") from exc
     try:
@@ -307,22 +308,41 @@ def command_environment(
 
 
 def trusted_postgres_executable(name: str) -> str:
-    candidate = shutil.which(name)
-    if not candidate:
-        fail(f"{name} must be installed on the production VPS")
+    if name not in {"pg_dump", "pg_restore"}:
+        fail("only the required PostgreSQL archive tools may be resolved")
     try:
-        resolved = Path(candidate).resolve(strict=True)
-        executable_info = resolved.stat(follow_symlinks=False)
+        version_directories = sorted(
+            (
+                path
+                for path in POSTGRES_INSTALL_ROOT.iterdir()
+                if path.name.isdigit() and path.is_dir() and not path.is_symlink()
+            ),
+            key=lambda path: int(path.name),
+            reverse=True,
+        )
     except OSError as exc:
-        raise DrillError(f"cannot inspect the {name} executable") from exc
-    if (
-        not stat.S_ISREG(executable_info.st_mode)
-        or executable_info.st_uid != 0
-        or stat.S_IMODE(executable_info.st_mode) & 0o022
-        or not os.access(resolved, os.X_OK)
-    ):
-        fail(f"{name} must resolve to a root-owned, non-writable executable")
-    return str(resolved)
+        raise DrillError("the trusted PostgreSQL installation is unavailable") from exc
+
+    for version_directory in version_directories:
+        candidate = version_directory / "bin" / name
+        try:
+            executable_info = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise DrillError(f"cannot inspect the {name} executable") from exc
+        if (
+            stat.S_ISREG(executable_info.st_mode)
+            and executable_info.st_uid == 0
+            and not stat.S_IMODE(executable_info.st_mode) & 0o022
+            and os.access(candidate, os.X_OK)
+        ):
+            return str(candidate)
+        fail(f"{name} must be a root-owned, non-writable system executable")
+    fail(
+        f"{name} must be installed under "
+        "/usr/lib/postgresql/<major>/bin on the production VPS"
+    )
 
 
 def run_command(

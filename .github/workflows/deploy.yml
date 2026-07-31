@@ -74,7 +74,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: spyboxd-release-${{ env.RELEASE_SHA }}
-          path: transfer
+          path: ${{ runner.temp }}/spyboxd-transfer
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -83,7 +83,7 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          artifact_dir="${GITHUB_WORKSPACE}/transfer"
+          artifact_dir="${RUNNER_TEMP}/spyboxd-transfer"
           bundle_name="spyboxd-release-${RELEASE_SHA}.tar.gz"
           checksum_name="${bundle_name}.sha256"
           bundle_path="${artifact_dir}/${bundle_name}"
@@ -107,7 +107,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          bundle_path="${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz"
+          bundle_path="${RUNNER_TEMP}/spyboxd-transfer/spyboxd-release-${RELEASE_SHA}.tar.gz"
           gh attestation verify "${bundle_path}" \
             --repo "${GITHUB_REPOSITORY}" \
             --signer-workflow "github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml" \
@@ -144,8 +144,8 @@ jobs:
       - name: Copy both exact release files over the pinned connection
         run: |
           deploy/production-ssh.sh copy \
-            "${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz" \
-            "${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz.sha256" \
+            "${RUNNER_TEMP}/spyboxd-transfer/spyboxd-release-${RELEASE_SHA}.tar.gz" \
+            "${RUNNER_TEMP}/spyboxd-transfer/spyboxd-release-${RELEASE_SHA}.tar.gz.sha256" \
             spyboxd-production:/tmp/
 
       - name: Snapshot the exact pre-activation target

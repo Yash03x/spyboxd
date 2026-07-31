@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -444,11 +445,12 @@ class ProductionCanaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "canary.env"
             path.write_text("SPYBOXD_CANARY_USER_A_ID=user_A123\n", encoding="utf-8")
-            os.chmod(path, 0o604)
-            with self.assertRaisesRegex(
-                auth_canary.AuthCanaryError, "world-accessible"
-            ):
-                auth_canary._read_secure_env(path)
+            unsafe_metadata = mock.Mock(st_mode=stat.S_IFREG | 0o604)
+            with mock.patch.object(Path, "lstat", return_value=unsafe_metadata):
+                with self.assertRaisesRegex(
+                    auth_canary.AuthCanaryError, "world-accessible"
+                ):
+                    auth_canary._read_secure_env(path)
 
 
 if __name__ == "__main__":

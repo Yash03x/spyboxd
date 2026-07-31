@@ -18,6 +18,32 @@ SPEC.loader.exec_module(restore_drill)
 
 
 class DatabaseUrlTests(unittest.TestCase):
+    def test_postgres_tools_use_the_versioned_root_owned_installation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            install_root = Path(temporary_directory)
+            expected = install_root / "16" / "bin" / "pg_dump"
+            older = install_root / "15" / "bin" / "pg_dump"
+            for candidate in (expected, older):
+                candidate.parent.mkdir(parents=True)
+                candidate.write_text("#!/bin/sh\n", encoding="utf-8")
+                candidate.chmod(0o755)
+
+            trusted_metadata = mock.Mock(st_mode=0o100755, st_uid=0)
+            with (
+                mock.patch.object(
+                    restore_drill, "POSTGRES_INSTALL_ROOT", install_root
+                ),
+                mock.patch.object(
+                    restore_drill.Path,
+                    "lstat",
+                    return_value=trusted_metadata,
+                ),
+            ):
+                self.assertEqual(
+                    restore_drill.trusted_postgres_executable("pg_dump"),
+                    str(expected),
+                )
+
     def test_parses_local_sqlalchemy_postgres_url_without_exposing_password(
         self,
     ) -> None:

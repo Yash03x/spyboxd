@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { lstat, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
 const MAX_FILE_BYTES = 64 * 1024;
@@ -22,14 +23,45 @@ function argumentsFromCommandLine() {
 }
 
 async function readBoundedJson(path, label) {
-  const metadata = await lstat(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_FILE_BYTES) {
-    fail(`${label} must be a small regular file`);
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    fail(`${label} must be a safe regular file`);
   }
   try {
-    return JSON.parse(await readFile(path, 'utf8'));
-  } catch {
-    fail(`${label} is not valid JSON`);
+    const metadata = await handle.stat();
+    if (
+      !metadata.isFile()
+      || metadata.size > MAX_FILE_BYTES
+      || metadata.uid !== process.geteuid()
+      || (metadata.mode & 0o077) !== 0
+    ) {
+      fail(`${label} must be a private, small regular file`);
+    }
+
+    const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.length - offset,
+        offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > MAX_FILE_BYTES) {
+      fail(`${label} grew beyond its size limit`);
+    }
+    try {
+      return JSON.parse(buffer.subarray(0, offset).toString('utf8'));
+    } catch {
+      fail(`${label} is not valid JSON`);
+    }
+  } finally {
+    await handle.close();
   }
 }
 
