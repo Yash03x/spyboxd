@@ -9,10 +9,20 @@ import zipfile
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
+
+
+def load_local_environment(env_file: Path = REPO_ROOT / ".env") -> None:
+    """Load ignored local credentials without overriding the caller's shell."""
+    load_dotenv(env_file, override=False)
+
+
+load_local_environment()
+
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
