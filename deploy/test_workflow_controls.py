@@ -148,21 +148,47 @@ class WorkflowControlsTests(unittest.TestCase):
         guardian = read_repo_file("deploy/run-production-auth-canary.py")
         browser = read_repo_file("frontend/scripts/run-production-auth-canary.mjs")
 
-        self.assertIn('"redirect_url": f"{app_origin}/"', guardian)
+        self.assertIn('"https://api.clerk.com/v1/sign_in_tokens"', guardian)
+        self.assertIn(
+            '"expires_in_seconds": SIGN_IN_TOKEN_DURATION_SECONDS', guardian
+        )
         self.assertIn('"https://api.clerk.com/v1/testing_tokens"', guardian)
         self.assertIn('"testing_token": testing_token', guardian)
         self.assertIn("return \"cleanup_failed\"", guardian)
         self.assertIn("setupClerkTestingToken", browser)
         self.assertIn("installClerkTestingToken", browser)
         self.assertIn("::add-mask::${secret}", browser)
+        self.assertIn("clerk.client.signIn.create", browser)
+        self.assertIn("strategy: 'ticket'", browser)
+        self.assertIn("await clerk.setActive", browser)
         self.assertLess(
-            browser.index("maskSecret(testingToken);"),
+            browser.index("openClerkCapabilityScope(testingToken, signInTokens)"),
+            browser.index("await installClerkTestingToken("),
+        )
+        self.assertLess(
+            browser.index("await consumeSignInTicket("),
+            browser.index("await Promise.all(runtimes.map"),
+        )
+        self.assertLess(
+            browser.index("add(testingToken);"),
             browser.index("process.env.CLERK_TESTING_TOKEN = testingToken;"),
         )
-        self.assertIn("__clerk_testing_token", browser)
+        self.assertNotIn("__clerk_testing_token", browser)
+        self.assertNotIn("task_url", browser)
         self.assertIn("clerk.session.getToken()", browser)
         self.assertIn("`${taskContract.appOrigin}/profiles`", browser)
         self.assertNotIn("CLERK_SECRET_KEY: ${{", workflow)
+        self.assertIn('chmod 0600 "${plan_file}"', workflow)
+        self.assertIn('shred --force --iterations=1 --zero --remove -- "${path}"', workflow)
+        self.assertIn("timeout --signal=TERM --kill-after=15s 12m", workflow)
+        self.assertIn("--plan \"${plan_file}\"", workflow)
+        self.assertIn("if (( browser_status == 0 ));", workflow)
+        self.assertIn("signal_guardian passed", workflow)
+        self.assertIn("--browser-passed", workflow)
+        self.assertIn("signal_guardian failed", workflow)
+        self.assertIn('>/dev/null 2>&1 || true', workflow)
+        self.assertEqual(workflow.count('--expected-revision "${EXPECTED_REVISION}"'), 2)
+        self.assertEqual(workflow.count('[[ "${EXPECTED_REVISION}" == "${GITHUB_SHA}" ]]'), 2)
         self.assertIn('"${guardian_status}" == cleanup_failed', workflow)
         self.assertLess(
             workflow.index('"${guardian_status}" == cleanup_failed'),
