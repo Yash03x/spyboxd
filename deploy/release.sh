@@ -304,8 +304,14 @@ refresh_and_require_deploy_tip() {
     deploy_tip="$(git --git-dir="${REPOSITORY_DIR}" rev-parse --verify "${DEPLOY_REF}^{commit}" 2>/dev/null || true)"
     [[ -n "${deploy_tip}" ]] \
         || fail "deployment ref ${DEPLOY_REF} does not exist after fetch"
-    [[ "${deploy_tip}" == "${RELEASE_SHA}" ]] \
-        || fail "deployment ref ${DEPLOY_REF} is now ${deploy_tip}; refusing stale release ${RELEASE_SHA}"
+    if [[ "${deploy_tip}" != "${RELEASE_SHA}" ]]; then
+        # Being superseded mid-flight is a yield, not a failure: nothing that
+        # ran so far mutated the active release (migrations are additive-only
+        # when the pre-activation recheck fires), and the newer deploy owns
+        # production from here. Exit 75 so the workflow records a clean skip.
+        log "deployment ref ${DEPLOY_REF} is now ${deploy_tip}; yielding superseded release ${RELEASE_SHA} to the newer deploy" >&2
+        exit 75
+    fi
 }
 
 refresh_and_require_deploy_tip

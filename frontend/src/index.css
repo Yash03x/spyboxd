@@ -80,6 +80,13 @@
            transition-all duration-500;
   }
 
+  /* Dense insight-workspace panels share the cinema card language without
+     the hover lift of card-cinema. */
+  .panel-insight {
+    @apply rounded-2xl border border-cinema-400/20 bg-gradient-to-br
+           from-cinema-500/10 to-cinema-600/5;
+  }
+
   /* Stable treatment for tall, non-interactive analysis panels. */
   .analysis-panel {
     @apply rounded-2xl border border-cinema-400/20 bg-gradient-to-br

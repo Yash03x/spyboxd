@@ -129,7 +129,7 @@ export default function TasteTimelinePanel({ data, coverage }: {
   return (
     <div className="space-y-4">
       <CoverageBanner coverage={data.coverage} />
-      <section className="grid overflow-hidden rounded-xl border border-white/12 bg-white/[0.025] sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid overflow-hidden panel-insight sm:grid-cols-2 xl:grid-cols-4">
         {[
           { label: 'Observed years', value: data.summary.years, detail: data.summary.first_year && data.summary.last_year ? `${data.summary.first_year}–${data.summary.last_year}` : 'No dated range' },
           { label: 'Date coverage', value: percent(data.summary.date_coverage_ratio), detail: `${data.summary.dated_watch_events.toLocaleString()} dated events` },
@@ -148,7 +148,7 @@ export default function TasteTimelinePanel({ data, coverage }: {
         <Info className="mt-0.5 h-4 w-4 shrink-0" /> Only observed, dated watch events are placed on the timeline. {data.summary.undated_known_watches.toLocaleString()} known watches without dates remain excluded.
       </p>
 
-      <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+      <section className="panel-insight p-4">
         <div className="mb-4 flex justify-end">
           <div className="flex rounded-lg border border-white/10 bg-black/15 p-1" aria-label="Timeline detail">
             {(['yearly', 'seasonal'] as TimelineGrain[]).map((value) => (
@@ -163,7 +163,7 @@ export default function TasteTimelinePanel({ data, coverage }: {
 
       {periods.length > 0 && (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_22rem]">
-          <section className="overflow-hidden rounded-xl border border-white/12 bg-white/[0.02]">
+          <section className="overflow-hidden panel-insight">
             <div className="border-b border-white/10 px-4 py-3">
               <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><CalendarRange className="h-4 w-4 text-cinema-400" /> Period details</h3>
             </div>
@@ -182,7 +182,7 @@ export default function TasteTimelinePanel({ data, coverage }: {
             </div>
           </section>
 
-          <aside className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+          <aside className="panel-insight p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Dna className="h-4 w-4 text-cinema-400" /> {selectedPeriod?.label ?? 'Period'} signals</h3>
             <p className="mt-1 text-xs text-white/40">Most observed metadata traits in this period.</p>
             <div className="mt-4 space-y-2.5">
