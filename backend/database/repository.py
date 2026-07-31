@@ -30,7 +30,7 @@ def _format_month_bucket(year: int, month: int) -> str:
 
 RATING_MIN = 0.0
 RATING_MAX = 5.0
-DASHBOARD_SNAPSHOT_FORMAT_VERSION = 2
+DASHBOARD_SNAPSHOT_FORMAT_VERSION = 3
 DASHBOARD_ACTIVITY_MONTHS = 12
 
 
@@ -845,6 +845,7 @@ class RatingRepository:
             year_bucket.label("year"),
             month_bucket.label("month"),
             func.count(WatchEvent.id).label("watch_count"),
+            func.count(func.distinct(WatchEvent.movie_id)).label("unique_movie_count"),
             func.avg(valid_rating).label("avg_rating"),
         ).filter(
             WatchEvent.watched_date >= window_start,
@@ -865,9 +866,10 @@ class RatingRepository:
         activity_by_month = {
             _format_month_bucket(year, month): {
                 "movies_watched": int(watch_count),
+                "unique_movies": int(unique_movie_count),
                 "average_rating": _safe_round(avg_rating, 2),
             }
-            for year, month, watch_count, avg_rating in results
+            for year, month, watch_count, unique_movie_count, avg_rating in results
         }
 
         activity = []
@@ -880,6 +882,9 @@ class RatingRepository:
                     "month": month_key,
                     "movies_watched": (
                         monthly_values["movies_watched"] if monthly_values else 0
+                    ),
+                    "unique_movies": (
+                        monthly_values["unique_movies"] if monthly_values else 0
                     ),
                     "average_rating": (
                         monthly_values["average_rating"] if monthly_values else None

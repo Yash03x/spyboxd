@@ -18,6 +18,7 @@ def test_public_dashboard_payload_strictly_removes_identity_and_title_fields():
         "top_rated_movies": [{"title": "Private Film Sentinel"}],
         "rating_distribution": {"4.0": 250, sentinel: 1},
         "activity_data": [
+            # A legacy cached point without unique_movies must sanitize to 0.
             {
                 "month": "2026-06",
                 "movies_watched": 0,
@@ -27,6 +28,7 @@ def test_public_dashboard_payload_strictly_removes_identity_and_title_fields():
             {
                 "month": "2026-07",
                 "movies_watched": 80,
+                "unique_movies": 64,
                 "average_rating": 3.8,
                 "is_partial": True,
             },
@@ -82,12 +84,14 @@ def test_public_dashboard_payload_strictly_removes_identity_and_title_fields():
         {
             "month": "2026-06",
             "movies_watched": 0,
+            "unique_movies": 0,
             "average_rating": None,
             "is_partial": False,
         },
         {
             "month": "2026-07",
             "movies_watched": 80,
+            "unique_movies": 64,
             "average_rating": 3.8,
             "is_partial": True,
         },

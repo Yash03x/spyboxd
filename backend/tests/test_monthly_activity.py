@@ -127,7 +127,8 @@ def _seed_monthly_activity(database) -> tuple[Profile, Profile]:
     alpha = _profile(1, "alpha")
     beta = _profile(2, "beta")
     film = _movie(1, "Repeat Film")
-    database.add_all([alpha, beta, film])
+    second_film = _movie(2, "Second Film")
+    database.add_all([alpha, beta, film, second_film])
     database.add_all(
         [
             # A rolling 365-day query incorrectly exposed this as a tiny Jul 2025 bucket.
@@ -161,10 +162,12 @@ def _seed_monthly_activity(database) -> tuple[Profile, Profile]:
                 watched_date=date(2025, 9, 2),
                 rating=2.0,
             ),
+            # A different film in the same month separates the unique-film grain
+            # from the watch-event grain.
             _watch_event(
                 5,
                 profile_id=alpha.id,
-                movie_id=film.id,
+                movie_id=second_film.id,
                 watched_date=date(2025, 9, 3),
                 rating=4.0,
             ),
@@ -221,13 +224,18 @@ def test_global_monthly_activity_uses_exact_calendar_window_and_event_grain(data
 
     by_month = {point["month"]: point for point in activity}
     assert by_month["2025-08"]["movies_watched"] == 2
+    # Two diary entries for the same film stay one unique film.
+    assert by_month["2025-08"]["unique_movies"] == 1
     assert by_month["2025-08"]["average_rating"] == 4.0
     assert by_month["2025-09"]["movies_watched"] == 2
+    assert by_month["2025-09"]["unique_movies"] == 2
     assert by_month["2025-09"]["average_rating"] == 3.0
     assert by_month["2025-10"]["movies_watched"] == 0
+    assert by_month["2025-10"]["unique_movies"] == 0
     assert by_month["2025-10"]["average_rating"] is None
     assert by_month["2026-06"]["movies_watched"] == 0
     assert by_month["2026-07"]["movies_watched"] == 1
+    assert by_month["2026-07"]["unique_movies"] == 1
     assert by_month["2026-07"]["average_rating"] == 3.5
 
 
@@ -257,6 +265,7 @@ def test_first_day_of_month_marks_an_empty_current_bucket_as_partial(database):
     assert activity[-1] == {
         "month": "2026-07",
         "movies_watched": 0,
+        "unique_movies": 0,
         "average_rating": None,
         "is_partial": True,
     }
