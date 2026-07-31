@@ -2,15 +2,16 @@
 set -Eeuo pipefail
 
 usage() {
-    printf 'Usage: %s <full-40-character-git-sha> <wheelhouse-directory> <output-directory>\n' "$0" >&2
+    printf 'Usage: %s <full-40-character-git-sha> <wheelhouse-directory> <node-runtime-directory> <output-directory>\n' "$0" >&2
     exit 64
 }
 
-[[ $# -eq 3 ]] || usage
+[[ $# -eq 4 ]] || usage
 
 readonly RELEASE_SHA="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 readonly WHEELHOUSE_DIR="$2"
-readonly OUTPUT_DIR="$3"
+readonly NODE_RUNTIME_DIR="$3"
+readonly OUTPUT_DIR="$4"
 readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly ARTIFACT_NAME="spyboxd-release-${RELEASE_SHA}.tar.gz"
 readonly RELEASE_MANIFEST_NAME=".spyboxd-release-manifest.json"
@@ -64,6 +65,27 @@ unexpected_wheelhouse_entry="$(
     printf 'Wheelhouse contains a non-wheel or non-regular entry\n' >&2
     exit 1
 }
+[[ -d "${NODE_RUNTIME_DIR}" && ! -L "${NODE_RUNTIME_DIR}" ]] \
+    && [[ -x "${NODE_RUNTIME_DIR}/node" && ! -L "${NODE_RUNTIME_DIR}/node" ]] \
+    && [[ -f "${NODE_RUNTIME_DIR}/LICENSE.nodejs" && ! -L "${NODE_RUNTIME_DIR}/LICENSE.nodejs" ]] || {
+    printf 'Pinned Node runtime directory is incomplete or unsafe: %s\n' "${NODE_RUNTIME_DIR}" >&2
+    exit 1
+}
+bundled_node_version="$("${NODE_RUNTIME_DIR}/node" --version)"
+build_node_version="$(node --version)"
+[[ "${bundled_node_version}" == "${build_node_version}" ]] \
+    && [[ "${bundled_node_version}" =~ ^v24\.[0-9]+\.[0-9]+$ ]] || {
+    printf 'Pinned Node runtime must exactly match the Node 24 build runtime\n' >&2
+    exit 1
+}
+unexpected_runtime_entry="$(
+    find "${NODE_RUNTIME_DIR}" -mindepth 1 -maxdepth 1 \
+        ! -name node ! -name LICENSE.nodejs -print -quit
+)"
+[[ -z "${unexpected_runtime_entry}" ]] || {
+    printf 'Pinned Node runtime directory contains an unexpected entry\n' >&2
+    exit 1
+}
 [[ -d "${REPO_ROOT}/frontend/.next" && ! -L "${REPO_ROOT}/frontend/.next" ]] \
     && [[ -f "${REPO_ROOT}/frontend/.next/BUILD_ID" ]] \
     && [[ ! -L "${REPO_ROOT}/frontend/.next/BUILD_ID" ]] || {
@@ -109,6 +131,11 @@ rm -rf -- "${STAGING_DIR}/app/frontend/.next" "${STAGING_DIR}/app/frontend/node_
 cp -a -- "${REPO_ROOT}/frontend/.next" "${STAGING_DIR}/app/frontend/.next"
 cp -a -- "${REPO_ROOT}/frontend/node_modules" "${STAGING_DIR}/app/frontend/node_modules"
 rm -rf -- "${STAGING_DIR}/app/frontend/.next/cache"
+mkdir -m 0750 -- "${STAGING_DIR}/app/frontend/.runtime"
+install -m 0750 -- "${NODE_RUNTIME_DIR}/node" "${STAGING_DIR}/app/frontend/.runtime/node"
+install -m 0640 -- \
+    "${NODE_RUNTIME_DIR}/LICENSE.nodejs" \
+    "${STAGING_DIR}/app/frontend/.runtime/LICENSE.nodejs"
 
 mkdir -m 0750 -- "${STAGING_DIR}/app/.release-wheelhouse"
 cp -a -- "${WHEELHOUSE_DIR}/." "${STAGING_DIR}/app/.release-wheelhouse/"
@@ -116,7 +143,11 @@ rm -f -- \
     "${STAGING_DIR}/app/REVISION" \
     "${STAGING_DIR}/app/${RELEASE_MANIFEST_NAME}"
 printf '%s\n' "${RELEASE_SHA}" >"${STAGING_DIR}/app/REVISION"
-python3 - "${STAGING_DIR}/app/${RELEASE_MANIFEST_NAME}" "${RELEASE_SHA}" <<'PY'
+python3 - \
+    "${STAGING_DIR}/app/${RELEASE_MANIFEST_NAME}" \
+    "${RELEASE_SHA}" \
+    "${STAGING_DIR}/app/frontend/.runtime/node" <<'PY'
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -127,6 +158,7 @@ import sys
 
 manifest_path = Path(sys.argv[1])
 revision = sys.argv[2]
+runtime_node_path = Path(sys.argv[3])
 public_keys = (
     "NEXT_PUBLIC_API_BASE_URL",
     "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
@@ -147,7 +179,7 @@ if invalid:
     )
 
 node_version = subprocess.check_output(
-    ["node", "--version"],
+    [runtime_node_path, "--version"],
     text=True,
 ).strip().removeprefix("v")
 node_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", node_version)
@@ -158,7 +190,7 @@ machine_aliases = {"amd64": "x86_64", "arm64": "aarch64"}
 machine = platform.machine().strip().lower()
 libc_family = (platform.libc_ver()[0] or "unknown").strip().lower()
 manifest = {
-    "format_version": 1,
+    "format_version": 2,
     "revision": revision,
     "frontend_public_environment": public_environment,
     "build_runtime": {
@@ -168,6 +200,7 @@ manifest = {
         "python_major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
         "node_version": node_version,
         "node_major": int(node_match.group(1)),
+        "node_sha256": hashlib.sha256(runtime_node_path.read_bytes()).hexdigest(),
     },
 }
 manifest_path.write_text(

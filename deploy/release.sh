@@ -10,6 +10,7 @@ readonly CURRENT_LINK="${SPYBOXD_CURRENT_LINK:-${APP_ROOT}/current}"
 readonly API_ENV_FILE="${SPYBOXD_API_ENV_FILE:-/etc/spyboxd/api.env}"
 readonly FRONTEND_ENV_FILE="${SPYBOXD_FRONTEND_ENV_FILE:-/etc/spyboxd/frontend.env}"
 readonly RSS_ENV_FILE="${SPYBOXD_RSS_ENV_FILE:-/etc/spyboxd/rss.env}"
+readonly FRONTEND_RUNTIME_PROOF_FILE="/var/cache/spyboxd-frontend/runtime-proof.json"
 readonly DEPLOY_REF="${SPYBOXD_DEPLOY_REF:-refs/remotes/origin/main}"
 readonly RUNTIME_USER="${SPYBOXD_RUNTIME_USER:-spyboxd}"
 readonly RELEASE_RETENTION="${SPYBOXD_RELEASE_RETENTION:-5}"
@@ -18,6 +19,7 @@ readonly RELEASE_MANIFEST_NAME=".spyboxd-release-manifest.json"
 readonly MAX_BUNDLE_MEMBERS="${SPYBOXD_MAX_BUNDLE_MEMBERS:-150000}"
 readonly MAX_BUNDLE_UNCOMPRESSED_BYTES="${SPYBOXD_MAX_BUNDLE_UNCOMPRESSED_BYTES:-4294967296}"
 readonly SERVICES=(spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service)
+SOURCE_NPM_CLI=""
 
 TEMP_RELEASE=""
 ACTIVATION_LINK=""
@@ -76,9 +78,18 @@ if [[ -n "${CLERK_BRIDGE_EDGE}" ]]; then
         || fail "SPYBOXD_CLERK_BRIDGE_EDGE must identify a real source-to-target transition"
 fi
 
-for command_name in git tar python3 node npm curl readlink basename flock stat sudo seq getent grep ufw find sort touch sha256sum mktemp timeout; do
+for command_name in git tar python3 curl readlink basename flock stat sudo seq getent grep ufw find sort touch sha256sum mktemp timeout uname; do
     command -v "${command_name}" >/dev/null 2>&1 || fail "required command is missing: ${command_name}"
 done
+[[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] \
+    || fail "production releases require the verified Linux x86_64 runtime target"
+if [[ -z "${RELEASE_BUNDLE}" ]]; then
+    command -v npm >/dev/null 2>&1 \
+        || fail "source-based release requires the npm CLI"
+    SOURCE_NPM_CLI="$(readlink -f "$(command -v npm)")"
+    [[ -f "${SOURCE_NPM_CLI}" && ! -L "${SOURCE_NPM_CLI}" ]] \
+        || fail "source-based release could not resolve a regular npm CLI entrypoint"
+fi
 
 if [[ -n "${RELEASE_BUNDLE}" ]]; then
     expected_bundle_name="spyboxd-release-${RELEASE_SHA}.tar.gz"
@@ -117,8 +128,6 @@ fi
 
 python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' \
     || fail "Python 3.12 or newer is required"
-node -e 'const [major,minor]=process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && minor >= 9) ? 0 : 1)' \
-    || fail "Node.js 20.9 or newer is required"
 python3 - <<'PY' || fail "localhost must resolve exclusively to loopback addresses"
 import ipaddress
 import socket
@@ -177,12 +186,25 @@ frontend_exec_start="$(
 if [[ "${frontend_exec_start}" != *"--hostname localhost --port 3000"* ]]; then
     fail "spyboxd-frontend.service must be the versioned loopback-only unit from deploy/systemd"
 fi
+if [[ "${frontend_exec_start}" == *"frontend/.runtime/node"* ]]; then
+    [[ "${frontend_exec_start}" == *"--require /opt/spyboxd/current/frontend/scripts/runtime-proof.cjs"* ]] \
+        || fail "the direct frontend unit must preload the bundled runtime proof"
+    log "The installed frontend unit directly launches the release-bundled Node runtime"
+elif [[ "${frontend_exec_start}" == *"/usr/bin/npm run start -- --hostname localhost --port 3000"* ]]; then
+    log "WARNING: the installed frontend unit uses the bounded npm transition; the activated process must still resolve to the release-bundled Node runtime"
+else
+    fail "spyboxd-frontend.service has an unsupported production launcher"
+fi
 frontend_environment="$(
     sudo -n systemctl show spyboxd-frontend.service --property=Environment --value 2>/dev/null \
         || true
 )"
 if [[ "${frontend_environment}" != *"NODE_OPTIONS=--dns-result-order=ipv4first"* ]]; then
     fail "spyboxd-frontend.service must prefer IPv4 localhost for Clerk/Next proxy compatibility"
+fi
+if [[ "${frontend_exec_start}" == *"frontend/.runtime/node"* ]] \
+    && [[ "${frontend_environment}" != *"SPYBOXD_RUNTIME_PROOF_FILE=${FRONTEND_RUNTIME_PROOF_FILE}"* ]]; then
+    fail "the direct frontend unit must write its proof inside the private systemd cache"
 fi
 if grep -Eq '(^|[[:space:]])SPYBOXD_E2E_AUTH_BYPASS=([^[:space:]]+)' \
     <<<"${frontend_environment}"; then
@@ -296,7 +318,19 @@ if [[ -d "${FINAL_RELEASE}" ]]; then
         && [[ -f "${FINAL_RELEASE}/.revision-health-v1" ]] \
         && [[ -x "${FINAL_RELEASE}/.venv/bin/uvicorn" ]] \
         && [[ -f "${FINAL_RELEASE}/frontend/.next/BUILD_ID" ]] \
-        && [[ -f "${FINAL_RELEASE}/frontend/node_modules/next/dist/bin/next" ]]; then
+        && [[ -f "${FINAL_RELEASE}/frontend/node_modules/next/dist/bin/next" ]] \
+        && [[ -x "${FINAL_RELEASE}/frontend/.runtime/node" ]] \
+        && [[ ! -L "${FINAL_RELEASE}/frontend/.runtime/node" ]] \
+        && [[ -f "${FINAL_RELEASE}/frontend/.runtime/LICENSE.nodejs" ]] \
+        && [[ ! -L "${FINAL_RELEASE}/frontend/.runtime/LICENSE.nodejs" ]] \
+        && [[ -f "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}" ]] \
+        && [[ ! -L "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}" ]] \
+        && [[ -f "${FINAL_RELEASE}/deploy/check-runtime-health.py" ]] \
+        && [[ ! -L "${FINAL_RELEASE}/deploy/check-runtime-health.py" ]] \
+        && [[ -f "${FINAL_RELEASE}/deploy/check-frontend-runtime.py" ]] \
+        && [[ ! -L "${FINAL_RELEASE}/deploy/check-frontend-runtime.py" ]] \
+        && [[ -f "${FINAL_RELEASE}/frontend/scripts/runtime-proof.cjs" ]] \
+        && [[ ! -L "${FINAL_RELEASE}/frontend/scripts/runtime-proof.cjs" ]]; then
         release_is_complete=true
         log "Reusing completed release ${FINAL_RELEASE}"
     else
@@ -378,7 +412,7 @@ with tarfile.open(bundle_path, mode="r:gz") as archive:
         manifest = json.load(manifest_file)
     except (UnicodeError, ValueError) as exc:
         raise SystemExit("release bundle manifest is invalid") from exc
-    if not isinstance(manifest, dict) or manifest.get("format_version") != 1:
+    if not isinstance(manifest, dict) or manifest.get("format_version") != 2:
         raise SystemExit("release bundle manifest format is unsupported")
     if manifest.get("revision") != expected_revision:
         raise SystemExit("release bundle manifest revision does not match requested release")
@@ -423,6 +457,10 @@ if [[ "${release_is_complete}" != true ]]; then
         log "Exporting source"
         git --git-dir="${REPOSITORY_DIR}" archive --format=tar "${RELEASE_SHA}" | tar -xf - -C "${TEMP_RELEASE}"
 
+        log "Fetching the pinned self-contained Node.js runtime"
+        "${TEMP_RELEASE}/deploy/fetch-node-runtime.sh" \
+            "${TEMP_RELEASE}/frontend/.runtime"
+
         log "Installing Python dependencies"
         python3 -m venv "${TEMP_RELEASE}/.venv"
         "${TEMP_RELEASE}/.venv/bin/python" -m pip install --disable-pip-version-check --quiet --require-hashes -r "${TEMP_RELEASE}/requirements.lock"
@@ -430,8 +468,13 @@ if [[ "${release_is_complete}" != true ]]; then
         log "Installing and building frontend dependencies"
         (
             cd "${TEMP_RELEASE}/frontend"
-            npm ci --no-audit --no-fund --quiet
-            "${TEMP_RELEASE}/.venv/bin/python" - "${FRONTEND_ENV_FILE}" npm run build <<'PY'
+            export PATH="${TEMP_RELEASE}/frontend/.runtime:${PATH}"
+            "${TEMP_RELEASE}/frontend/.runtime/node" "${SOURCE_NPM_CLI}" \
+                ci --no-audit --no-fund --quiet
+            "${TEMP_RELEASE}/.venv/bin/python" - \
+                "${FRONTEND_ENV_FILE}" \
+                "${TEMP_RELEASE}/frontend/.runtime/node" \
+                "${SOURCE_NPM_CLI}" run build <<'PY'
 import os
 import sys
 
@@ -452,19 +495,17 @@ if missing or placeholders:
     raise SystemExit(f"invalid frontend environment values in {env_file}: {details}")
 os.execvpe(command[0], command, os.environ | values)
 PY
-            npm prune --omit=dev --no-audit --no-fund --quiet
+            "${TEMP_RELEASE}/frontend/.runtime/node" "${SOURCE_NPM_CLI}" \
+                prune --omit=dev --no-audit --no-fund --quiet
         )
-    fi
-fi
 
-if [[ -n "${RELEASE_BUNDLE}" ]]; then
-    readonly release_manifest="${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}"
-    [[ -f "${release_manifest}" && ! -L "${release_manifest}" ]] \
-        || fail "release bundle manifest is missing or unsafe after extraction"
-    "${FINAL_RELEASE}/.venv/bin/python" - \
-        "${release_manifest}" \
-        "${FRONTEND_ENV_FILE}" \
-        "${RELEASE_SHA}" <<'PY'
+        log "Recording the source-built release runtime identity"
+        "${TEMP_RELEASE}/.venv/bin/python" - \
+            "${TEMP_RELEASE}/${RELEASE_MANIFEST_NAME}" \
+            "${FRONTEND_ENV_FILE}" \
+            "${RELEASE_SHA}" \
+            "${TEMP_RELEASE}/frontend/.runtime/node" <<'PY'
+import hashlib
 import json
 from pathlib import Path
 import platform
@@ -474,7 +515,92 @@ import sys
 
 from dotenv import dotenv_values
 
-manifest_path, frontend_env_path, expected_revision = sys.argv[1:]
+manifest_path, frontend_env_path, revision, runtime_node_path_raw = sys.argv[1:]
+runtime_node_path = Path(runtime_node_path_raw)
+public_keys = (
+    "NEXT_PUBLIC_API_BASE_URL",
+    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+    "NEXT_PUBLIC_CLERK_SIGN_IN_URL",
+    "NEXT_PUBLIC_CLERK_SIGN_UP_URL",
+    "NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL",
+    "NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL",
+)
+values = {
+    key: str(value).strip()
+    for key, value in dotenv_values(frontend_env_path).items()
+    if value is not None
+}
+invalid = [
+    key
+    for key in public_keys
+    if not values.get(key) or "REPLACE_WITH" in values.get(key, "")
+]
+if invalid:
+    raise SystemExit(
+        "production frontend environment is missing public build values: "
+        + ", ".join(invalid)
+    )
+node_version = subprocess.check_output(
+    [runtime_node_path, "--version"],
+    text=True,
+).strip().removeprefix("v")
+node_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", node_version)
+if node_match is None or int(node_match.group(1)) != 24:
+    raise SystemExit("source release runtime must be Node.js 24")
+machine_aliases = {"amd64": "x86_64", "arm64": "aarch64"}
+machine = platform.machine().strip().lower()
+manifest = {
+    "format_version": 2,
+    "revision": revision,
+    "frontend_public_environment": {key: values[key] for key in public_keys},
+    "build_runtime": {
+        "operating_system": platform.system().strip().lower(),
+        "machine": machine_aliases.get(machine, machine),
+        "libc_family": (platform.libc_ver()[0] or "unknown").strip().lower(),
+        "python_major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "node_version": node_version,
+        "node_major": int(node_match.group(1)),
+        "node_sha256": hashlib.sha256(runtime_node_path.read_bytes()).hexdigest(),
+    },
+}
+Path(manifest_path).write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+    fi
+fi
+
+readonly runtime_node="${FINAL_RELEASE}/frontend/.runtime/node"
+readonly runtime_node_license="${FINAL_RELEASE}/frontend/.runtime/LICENSE.nodejs"
+[[ -x "${runtime_node}" && ! -L "${runtime_node}" ]] \
+    || fail "release is missing its executable self-contained Node.js runtime"
+[[ -f "${runtime_node_license}" && ! -L "${runtime_node_license}" ]] \
+    || fail "release is missing the Node.js license"
+"${runtime_node}" -e \
+    'const [major]=process.versions.node.split(".").map(Number); process.exit(major === 24 ? 0 : 1)' \
+    || fail "release runtime must be Node.js 24 LTS"
+
+readonly release_manifest="${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}"
+[[ -f "${release_manifest}" && ! -L "${release_manifest}" ]] \
+    || fail "release manifest is missing or unsafe"
+"${FINAL_RELEASE}/.venv/bin/python" - \
+    "${release_manifest}" \
+    "${FRONTEND_ENV_FILE}" \
+    "${RELEASE_SHA}" \
+    "${runtime_node}" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import platform
+import re
+import subprocess
+import sys
+
+from dotenv import dotenv_values
+
+manifest_path, frontend_env_path, expected_revision, runtime_node_path_raw = sys.argv[1:]
+runtime_node_path = Path(runtime_node_path_raw)
 try:
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
 except (OSError, UnicodeError, ValueError) as exc:
@@ -488,7 +614,7 @@ public_keys = (
     "NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL",
     "NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL",
 )
-if manifest.get("format_version") != 1 or manifest.get("revision") != expected_revision:
+if manifest.get("format_version") != 2 or manifest.get("revision") != expected_revision:
     raise SystemExit("release manifest identity does not match the requested release")
 
 build_public_environment = manifest.get("frontend_public_environment")
@@ -528,11 +654,15 @@ required_runtime_keys = {
     "python_major_minor",
     "node_version",
     "node_major",
+    "node_sha256",
 }
 if not isinstance(build_runtime, dict) or set(build_runtime) != required_runtime_keys:
     raise SystemExit("release manifest contains invalid build runtime metadata")
 
-node_version = subprocess.check_output(["node", "--version"], text=True).strip().removeprefix("v")
+node_version = subprocess.check_output(
+    [runtime_node_path, "--version"],
+    text=True,
+).strip().removeprefix("v")
 node_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", node_version)
 build_node_version = str(build_runtime.get("node_version") or "")
 build_node_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", build_node_version)
@@ -547,6 +677,7 @@ current_runtime = {
     "libc_family": (platform.libc_ver()[0] or "unknown").strip().lower(),
     "python_major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
     "node_major": int(node_match.group(1)),
+    "node_sha256": hashlib.sha256(runtime_node_path.read_bytes()).hexdigest(),
 }
 runtime_mismatches = [
     key
@@ -555,13 +686,14 @@ runtime_mismatches = [
 ]
 if int(build_runtime.get("node_major", -1)) != int(build_node_match.group(1)):
     runtime_mismatches.append("node_version")
+if node_version != build_node_version:
+    runtime_mismatches.append("node_version")
 if runtime_mismatches:
     raise SystemExit(
         "CI build runtime is incompatible with production: "
         + ", ".join(sorted(set(runtime_mismatches)))
     )
 PY
-fi
 
 if [[ "${release_is_complete}" != true ]]; then
     [[ -f "${TEMP_RELEASE}/frontend/.next/BUILD_ID" ]] || fail "frontend build did not create .next/BUILD_ID"
@@ -581,18 +713,19 @@ fi
 readonly clerk_validator="${FINAL_RELEASE}/deploy/validate-clerk-production.py"
 [[ -f "${clerk_validator}" && ! -L "${clerk_validator}" ]] \
     || fail "release is missing the production Clerk configuration validator"
+readonly health_validator="${FINAL_RELEASE}/deploy/check-runtime-health.py"
+[[ -f "${health_validator}" && ! -L "${health_validator}" ]] \
+    || fail "release is missing the runtime health validator"
+readonly frontend_runtime_validator="${FINAL_RELEASE}/deploy/check-frontend-runtime.py"
+[[ -f "${frontend_runtime_validator}" && ! -L "${frontend_runtime_validator}" ]] \
+    || fail "release is missing the frontend runtime proof validator"
 clerk_validation_args=(
     runtime
     --frontend-env "${FRONTEND_ENV_FILE}"
     --api-env "${API_ENV_FILE}"
     --verify-remote
+    --manifest "${release_manifest}"
 )
-if [[ -f "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}" ]] \
-    && [[ ! -L "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}" ]]; then
-    clerk_validation_args+=(
-        --manifest "${FINAL_RELEASE}/${RELEASE_MANIFEST_NAME}"
-    )
-fi
 "${FINAL_RELEASE}/.venv/bin/python" \
     "${clerk_validator}" \
     "${clerk_validation_args[@]}"
@@ -629,6 +762,33 @@ if [[ -n "${old_release}" ]]; then
     previous_manifest="${old_release}/${RELEASE_MANIFEST_NAME}"
     [[ -f "${previous_manifest}" && ! -L "${previous_manifest}" ]] \
         || fail "current release has no immutable Clerk-compatible release manifest"
+    previous_manifest_format="$("${FINAL_RELEASE}/.venv/bin/python" - \
+        "${previous_manifest}" "${old_revision}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path, expected_revision = sys.argv[1:]
+try:
+    manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+if (
+    not isinstance(manifest, dict)
+    or manifest.get("format_version") not in {1, 2}
+    or manifest.get("revision") != expected_revision
+):
+    raise SystemExit(1)
+print(manifest["format_version"])
+PY
+)" || fail "current release manifest identity is invalid"
+    if [[ "${previous_manifest_format}" == 2 ]]; then
+        [[ -x "${old_release}/frontend/.runtime/node" ]] \
+            && [[ ! -L "${old_release}/frontend/.runtime/node" ]] \
+            && [[ -f "${old_release}/frontend/.runtime/LICENSE.nodejs" ]] \
+            && [[ ! -L "${old_release}/frontend/.runtime/LICENSE.nodejs" ]] \
+            || fail "runtime-aware rollback release is missing its self-contained Node.js runtime"
+    fi
     if [[ -n "${CLERK_BRIDGE_EDGE}" ]]; then
         [[ "${old_revision}" == "${bridge_from_revision}" ]] \
             || fail "SPYBOXD_CLERK_BRIDGE_EDGE does not identify the active source release"
@@ -789,16 +949,48 @@ if expected_revision and payload.get("revision") != expected_revision:
     return 1
 }
 
+wait_for_validated_json() {
+    local name="$1" url="$2" kind="$3" expected_revision="${4:-}" response attempt
+    local -a validator_args=("${kind}")
+    if [[ -n "${expected_revision}" ]]; then
+        validator_args+=(--revision "${expected_revision}")
+    fi
+    for attempt in $(seq 1 12); do
+        if response="$(curl --silent --show-error --fail --max-time 5 "${url}" 2>/dev/null)" \
+            && printf '%s' "${response}" \
+                | python3 "${health_validator}" "${validator_args[@]}" >/dev/null; then
+            log "${name} is ready"
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 check_readiness() {
-    wait_for_http "API revision ${RELEASE_SHA}" "http://127.0.0.1:8000/ready" ready "${RELEASE_SHA}" \
+    wait_for_validated_json "API revision ${RELEASE_SHA}" "http://127.0.0.1:8000/ready" ready "${RELEASE_SHA}" \
+        && wait_for_validated_json "database-backed dashboard" "http://127.0.0.1:8000/api/public/dashboard" dashboard \
         && wait_for_http "frontend sign-in" "http://127.0.0.1:3000/sign-in" \
-        && wait_for_http "public API revision ${RELEASE_SHA}" "https://api.spyboxd.com/ready" ready "${RELEASE_SHA}" \
+        && wait_for_validated_json "public API revision ${RELEASE_SHA}" "https://api.spyboxd.com/ready" ready "${RELEASE_SHA}" \
+        && wait_for_validated_json "public database-backed dashboard" "https://api.spyboxd.com/api/public/dashboard" dashboard \
         && wait_for_http "public frontend sign-in" "https://spyboxd.com/sign-in"
+}
+
+require_bundled_frontend_process() {
+    "${FINAL_RELEASE}/.venv/bin/python" "${frontend_runtime_validator}" \
+        --proof "${FRONTEND_RUNTIME_PROOF_FILE}" \
+        --revision "${RELEASE_SHA}" \
+        --node "${runtime_node}" \
+        --next-entrypoint "${FINAL_RELEASE}/frontend/node_modules/next/dist/bin/next" \
+        --runtime-uid "${runtime_uid}" \
+        --runtime-gid "${runtime_gid}" \
+        --control-group /system.slice/spyboxd-frontend.service
 }
 
 check_rollback_liveness() {
     if [[ -f "${old_release}/.revision-health-v1" ]]; then
         wait_for_http "rolled-back API" "http://127.0.0.1:8000/health" ok "${old_revision}" \
+            && wait_for_validated_json "rolled-back database-backed dashboard" "http://127.0.0.1:8000/api/public/dashboard" dashboard \
             && wait_for_http "rolled-back frontend" "http://127.0.0.1:3000/sign-in"
         return
     fi
@@ -807,6 +999,7 @@ check_rollback_liveness() {
     # SHA. This one-time transition still has an exact, validated symlink target
     # plus successful local liveness after systemd restarts both services.
     wait_for_http "rolled-back legacy API" "http://127.0.0.1:8000/health" ok \
+        && wait_for_validated_json "rolled-back legacy database-backed dashboard" "http://127.0.0.1:8000/api/public/dashboard" dashboard \
         && wait_for_http "rolled-back legacy frontend" "http://127.0.0.1:3000/sign-in"
 }
 
@@ -875,12 +1068,12 @@ prune_old_releases() {
 }
 
 observe_rss_health() {
-    local status_code
-    status_code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 http://127.0.0.1:8000/health/rss 2>/dev/null || true)"
-    if [[ "${status_code}" == 200 ]]; then
-        log "RSS operational health endpoint responded successfully"
+    local response
+    if response="$(curl --silent --show-error --fail --max-time 5 http://127.0.0.1:8000/health/rss 2>/dev/null)" \
+        && printf '%s' "${response}" | python3 "${health_validator}" rss >/dev/null; then
+        log "RSS operational health is healthy"
     else
-        log "WARNING: RSS operational health is observational and currently returned HTTP ${status_code:-unavailable}" >&2
+        log "WARNING: RSS operational health is degraded; deployment remains active because RSS health is observational" >&2
     fi
 }
 
@@ -889,7 +1082,7 @@ refresh_and_require_deploy_tip
 log "Activating ${FINAL_RELEASE}"
 activate_release "${FINAL_RELEASE}"
 
-if restart_services && check_readiness; then
+if restart_services && check_readiness && require_bundled_frontend_process; then
     observe_rss_health
     record_successful_activation
     prune_old_releases || log "WARNING: release retention cleanup was incomplete" >&2

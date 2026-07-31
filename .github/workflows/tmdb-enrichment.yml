@@ -2,7 +2,7 @@ name: TMDB Cache Enrichment
 
 on:
   schedule:
-    - cron: "17 4 * * *"
+    - cron: "17 */6 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -17,12 +17,17 @@ jobs:
   enrich:
     name: Enrich stale movie metadata
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 50
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment:
       name: production
       url: https://spyboxd.com
     steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
       - name: Check out production SSH helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,7 +45,7 @@ jobs:
 
       - name: Run the active release's bounded cache-aware enrichment
         run: |
-          timeout --signal=TERM --kill-after=15s 45m \
+          timeout --signal=TERM --kill-after=15s 8m \
             deploy/production-ssh.sh run sh -s <<'REMOTE'
           set -eu
 
@@ -89,6 +94,11 @@ jobs:
 
           environment = os.environ.copy()
           environment.update(values)
+          # Each committed batch is resumable. Keeping this run small caps the
+          # time it can occupy the shared production deployment queue while
+          # still processing roughly the prior daily volume across four runs.
+          environment["TMDB_ENRICHMENT_LIMIT"] = "50"
+          environment["TMDB_ENRICHMENT_BATCH_SIZE"] = "10"
           os.execve(runner_path, [str(runner_path)], environment)
           PY
           REMOTE

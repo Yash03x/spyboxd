@@ -1,0 +1,112 @@
+name: PostgreSQL Restore Drill
+
+on:
+  schedule:
+    - cron: "43 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spyboxd-production-deploy
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  restore-drill:
+    name: Prove an isolated on-host restore
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      vars.PRODUCTION_RESTORE_DRILL_ENABLED == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment:
+      name: production
+      url: https://spyboxd.com
+    env:
+      DRILL_SCRIPT_SHA: ${{ github.sha }}
+
+    steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Check out exact restore-drill helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.DRILL_SCRIPT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Test restore-drill safety helpers before loading SSH credentials
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest -v deploy/test_postgres_restore_drill.py
+
+      - name: Establish one pinned IPv4 production SSH connection
+        env:
+          SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: deploy/production-ssh.sh open
+
+      - name: Create and prove a recoverable backup entirely on the VPS
+        run: |
+          set -Eeuo pipefail
+          [[ "${DRILL_SCRIPT_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          timeout --signal=TERM --kill-after=2m 65m \
+            deploy/production-ssh.sh run sh -s -- "${DRILL_SCRIPT_SHA}" <<'REMOTE'
+          set -eu
+          drill_script_sha="$1"
+          case "${drill_script_sha}" in
+            *[!0-9a-f]*|'') echo 'Invalid restore-drill script SHA.' >&2; exit 64 ;;
+          esac
+          [ "${#drill_script_sha}" -eq 40 ] || exit 64
+
+          repository_git() {
+            git --git-dir=/opt/spyboxd/repository "$@"
+          }
+          repository_git rev-parse --is-bare-repository >/dev/null
+          timeout --signal=TERM --kill-after=15s 2m \
+            git --git-dir=/opt/spyboxd/repository fetch \
+              --quiet --force --prune origin \
+              '+refs/heads/main:refs/remotes/origin/main'
+          resolved_script_sha="$(
+            repository_git rev-parse --verify "${drill_script_sha}^{commit}"
+          )"
+          [ "${resolved_script_sha}" = "${drill_script_sha}" ]
+          repository_git merge-base --is-ancestor \
+            "${drill_script_sha}" refs/remotes/origin/main
+
+          drill_runner="$(mktemp /tmp/spyboxd-postgres-restore-drill.XXXXXX)"
+          cleanup_runner() {
+            rm -f -- "${drill_runner}"
+          }
+          trap cleanup_runner EXIT HUP INT TERM
+          repository_git show \
+            "${drill_script_sha}:deploy/postgres_restore_drill.py" \
+            >"${drill_runner}"
+          chmod 0700 "${drill_runner}"
+
+          current_link=/opt/spyboxd/current
+          python_path="${current_link}/.venv/bin/python"
+          database_env_file=/etc/spyboxd/restore-drill.env
+          [ -L "${current_link}" ]
+          [ -x "${python_path}" ]
+          [ -f "${database_env_file}" ] && [ ! -L "${database_env_file}" ] \
+            && [ -r "${database_env_file}" ]
+
+          SPYBOXD_BACKUP_RETENTION=3 \
+            SPYBOXD_DATABASE_ENV_FILE="${database_env_file}" \
+            "${python_path}" "${drill_runner}"
+          REMOTE
+
+      - name: Close production SSH and securely remove local key material
+        if: always()
+        run: |
+          if [[ -x deploy/production-ssh.sh ]]; then
+            deploy/production-ssh.sh close
+          fi

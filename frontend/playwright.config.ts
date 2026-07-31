@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const isCI = Boolean(process.env.CI);
+// CI downloads the frontend gate's exact .next output; direct invocations still build it.
+const reuseCiBuild = process.env.PLAYWRIGHT_REUSE_BUILD === '1';
 const localBaseUrl = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
 const baseURL = isCI ? 'http://localhost:3100' : localBaseUrl;
 const testClerkKey = 'Y2xlcmsuZXhhbXBsZS50ZXN0JA==';
+const artifactRoot = process.env.RUNNER_TEMP ?? tmpdir();
 
 export default defineConfig({
   testDir: './e2e',
@@ -16,7 +19,7 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 8_000 },
   reporter: isCI ? 'github' : 'list',
-  outputDir: join(tmpdir(), 'spyboxd-playwright-results'),
+  outputDir: join(artifactRoot, 'spyboxd-playwright-results'),
   use: {
     baseURL,
     screenshot: 'only-on-failure',
@@ -25,7 +28,7 @@ export default defineConfig({
   },
   webServer: {
     command: isCI
-      ? 'npm run build && npm run start -- --hostname localhost --port 3100'
+      ? `${reuseCiBuild ? '' : 'npm run build && '}npm run start -- --hostname localhost --port 3100`
       : 'npm run dev -- --hostname localhost --port 3000',
     url: baseURL,
     reuseExistingServer: !isCI,

@@ -1,12 +1,14 @@
 name: Deploy Production
 
-on:
+on: # zizmor: ignore[dangerous-triggers] Only trusted main push artifacts pass repository, SHA, and provenance checks before secrets load.
   workflow_run:
     workflows: [Production CI]
+    branches: [main]
     types: [completed]
 
 permissions:
   actions: read
+  attestations: read
   contents: read
 
 concurrency:
@@ -22,7 +24,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment:
       name: production
@@ -35,6 +37,11 @@ jobs:
       CLERK_BRIDGE_EDGE: ${{ vars.PRODUCTION_CLERK_BRIDGE_EDGE }}
 
     steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
       - name: Reject a stale deployable CI result before loading SSH credentials
         env:
           GH_TOKEN: ${{ github.token }}
@@ -94,6 +101,19 @@ jobs:
             cd "${artifact_dir}"
             sha256sum --check --strict "${checksum_name}"
           )
+
+      - name: Verify GitHub artifact provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          bundle_path="${GITHUB_WORKSPACE}/transfer/spyboxd-release-${RELEASE_SHA}.tar.gz"
+          gh attestation verify "${bundle_path}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "${RELEASE_SHA}" \
+            --deny-self-hosted-runners
 
       - name: Establish one pinned IPv4 production SSH connection
         id: production_ssh
@@ -408,17 +428,111 @@ jobs:
           ' "${expected_revision}"
           }
 
+          check_json_ready() {
+            expected_revision="$1"
+            python3 -c '
+          import json
+          import sys
+
+          expected_revision = sys.argv[1]
+          try:
+              payload = json.load(sys.stdin)
+          except (TypeError, ValueError):
+              raise SystemExit(1)
+          checks = payload.get("checks")
+          if (
+              payload.get("status") != "ready"
+              or payload.get("revision") != expected_revision
+              or not isinstance(checks, dict)
+              or checks.get("database") != "ok"
+              or checks.get("schema") != "current"
+          ):
+              raise SystemExit(1)
+          ' "${expected_revision}"
+          }
+
+          check_json_dashboard() {
+            python3 -c '
+          import json
+          import sys
+
+          try:
+              payload = json.load(sys.stdin)
+          except (TypeError, ValueError):
+              raise SystemExit(1)
+          required = {
+              "activity_data",
+              "data_health",
+              "rating_distribution",
+              "signal_counts",
+              "system_stats",
+              "timestamp",
+          }
+          if not isinstance(payload, dict) or not required.issubset(payload):
+              raise SystemExit(1)
+          stats = payload.get("system_stats")
+          required_stats = {
+              "global_avg_rating",
+              "total_movies_tracked",
+              "total_profiles",
+              "total_reviews",
+          }
+          if not isinstance(stats, dict) or not required_stats.issubset(stats):
+              raise SystemExit(1)
+          if any(
+              isinstance(stats[key], bool)
+              or not isinstance(stats[key], (int, float))
+              or stats[key] < 0
+              for key in required_stats
+          ):
+              raise SystemExit(1)
+          '
+          }
+
           check_release_health() {
             expected_revision="$1"
             for attempt in $(seq 1 12); do
               if local_api="$(curl --silent --show-error --fail --max-time 5 \
                     http://127.0.0.1:8000/health 2>/dev/null)" \
                   && printf '%s' "${local_api}" | check_json_health "${expected_revision}" \
+                  && local_dashboard="$(curl --silent --show-error --fail --max-time 5 \
+                    http://127.0.0.1:8000/api/public/dashboard 2>/dev/null)" \
+                  && printf '%s' "${local_dashboard}" | check_json_dashboard \
                   && curl --silent --show-error --fail --max-time 5 \
                     --output /dev/null http://127.0.0.1:3000/sign-in 2>/dev/null \
                   && public_api="$(curl --silent --show-error --fail --max-time 5 \
                     https://api.spyboxd.com/health 2>/dev/null)" \
                   && printf '%s' "${public_api}" | check_json_health "${expected_revision}" \
+                  && public_dashboard="$(curl --silent --show-error --fail --max-time 5 \
+                    https://api.spyboxd.com/api/public/dashboard 2>/dev/null)" \
+                  && printf '%s' "${public_dashboard}" | check_json_dashboard \
+                  && curl --silent --show-error --fail --max-time 5 \
+                    --output /dev/null https://spyboxd.com/sign-in 2>/dev/null
+              then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+
+          check_release_readiness() {
+            expected_revision="$1"
+            for attempt in $(seq 1 12); do
+              if local_api="$(curl --silent --show-error --fail --max-time 5 \
+                    http://127.0.0.1:8000/ready 2>/dev/null)" \
+                  && printf '%s' "${local_api}" | check_json_ready "${expected_revision}" \
+                  && local_dashboard="$(curl --silent --show-error --fail --max-time 5 \
+                    http://127.0.0.1:8000/api/public/dashboard 2>/dev/null)" \
+                  && printf '%s' "${local_dashboard}" | check_json_dashboard \
+                  && curl --silent --show-error --fail --max-time 5 \
+                    --output /dev/null http://127.0.0.1:3000/sign-in 2>/dev/null \
+                  && public_api="$(curl --silent --show-error --fail --max-time 5 \
+                    https://api.spyboxd.com/ready 2>/dev/null)" \
+                  && printf '%s' "${public_api}" | check_json_ready "${expected_revision}" \
+                  && public_dashboard="$(curl --silent --show-error --fail --max-time 5 \
+                    https://api.spyboxd.com/api/public/dashboard 2>/dev/null)" \
+                  && printf '%s' "${public_dashboard}" | check_json_dashboard \
                   && curl --silent --show-error --fail --max-time 5 \
                     --output /dev/null https://spyboxd.com/sign-in 2>/dev/null
               then
@@ -447,7 +561,11 @@ jobs:
                 [ -x "${expected_target}/.venv/bin/uvicorn" ]
                 [ -f "${expected_target}/frontend/.next/BUILD_ID" ]
                 [ -f "${expected_target}/frontend/node_modules/next/dist/bin/next" ]
-                if check_release_health "${release_sha}"; then
+                [ -x "${expected_target}/frontend/.runtime/node" ] \
+                  && [ ! -L "${expected_target}/frontend/.runtime/node" ]
+                [ -f "${expected_target}/frontend/.runtime/LICENSE.nodejs" ] \
+                  && [ ! -L "${expected_target}/frontend/.runtime/LICENSE.nodejs" ]
+                if check_release_readiness "${release_sha}"; then
                   validate_state_dir
                   touch "${expected_target}/.activated-at"
                   write_state_revision active "${release_sha}"
@@ -538,6 +656,10 @@ jobs:
                 [ -x "${expected_target}/.venv/bin/uvicorn" ]
                 [ -f "${expected_target}/frontend/.next/BUILD_ID" ]
                 [ -f "${expected_target}/frontend/node_modules/next/dist/bin/next" ]
+                [ -x "${expected_target}/frontend/.runtime/node" ] \
+                  && [ ! -L "${expected_target}/frontend/.runtime/node" ]
+                [ -f "${expected_target}/frontend/.runtime/LICENSE.nodejs" ] \
+                  && [ ! -L "${expected_target}/frontend/.runtime/LICENSE.nodejs" ]
               fi
             fi
             rollback_link="${app_root}/.current-reconcile.$$"
@@ -571,7 +693,7 @@ jobs:
               trap - EXIT
               if timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl restart \
                     spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service \
-                  && check_release_health "${release_sha}"; then
+                  && check_release_readiness "${release_sha}"; then
                 echo 'Legacy recovery failed; restored the healthy attempted release.' >&2
               else
                 echo 'Legacy recovery and attempted-release restoration are unhealthy.' >&2
@@ -599,7 +721,7 @@ jobs:
                 echo 'A same-revision retry no longer matches its pre-activation state.' >&2
                 exit 1
               }
-            if check_release_health "${release_sha}"; then
+            if check_release_readiness "${release_sha}"; then
               echo 'The failed same-revision retry left the already-active release healthy.'
               exit 0
             fi
@@ -650,13 +772,25 @@ jobs:
           if [ "${active_marker}" = "${release_sha}" ] \
               && [ "${active_target}" = "${expected_target}" ]; then
             rollback_runner="$(mktemp /tmp/spyboxd-reconcile.XXXXXX)"
-            trap 'rm -f -- "${rollback_runner}"' EXIT
+            clerk_validator="$(mktemp /tmp/spyboxd-clerk-validator.XXXXXX)"
+            health_validator="$(mktemp /tmp/spyboxd-health-validator.XXXXXX)"
+            trap 'rm -f -- "${rollback_runner}" "${clerk_validator}" "${health_validator}"' EXIT
             repository_git show "${release_sha}:deploy/rollback.sh" >"${rollback_runner}"
+            repository_git show \
+              "${release_sha}:deploy/validate-clerk-production.py" \
+              >"${clerk_validator}"
+            repository_git show \
+              "${release_sha}:deploy/check-runtime-health.py" \
+              >"${health_validator}"
             chmod 0700 "${rollback_runner}"
+            chmod 0600 "${clerk_validator}"
+            chmod 0600 "${health_validator}"
             # rollback.sh owns the same deployment lock for its full transaction.
             flock -u 9
             exec 9>&-
             SPYBOXD_EXPECTED_CURRENT_REVISION="${release_sha}" \
+              SPYBOXD_CLERK_VALIDATOR="${clerk_validator}" \
+              SPYBOXD_HEALTH_VALIDATOR="${health_validator}" \
               "${rollback_runner}" "${previous_target}"
             exit 0
           fi
@@ -683,6 +817,10 @@ jobs:
             [ -x "${expected_target}/.venv/bin/uvicorn" ]
             [ -f "${expected_target}/frontend/.next/BUILD_ID" ]
             [ -f "${expected_target}/frontend/node_modules/next/dist/bin/next" ]
+            [ -x "${expected_target}/frontend/.runtime/node" ] \
+              && [ ! -L "${expected_target}/frontend/.runtime/node" ]
+            [ -f "${expected_target}/frontend/.runtime/LICENSE.nodejs" ] \
+              && [ ! -L "${expected_target}/frontend/.runtime/LICENSE.nodejs" ]
           fi
 
           rollback_link="${app_root}/.current-reconcile.$$"
@@ -709,7 +847,7 @@ jobs:
               trap - EXIT
               if timeout --signal=TERM --kill-after=15s 4m sudo -n systemctl restart \
                     spyboxd-api.service spyboxd-rss.service spyboxd-frontend.service \
-                  && check_release_health "${release_sha}"; then
+                  && check_release_readiness "${release_sha}"; then
                 echo 'Previous-release recovery failed; restored the healthy attempted release.' >&2
               else
                 echo 'Previous-release recovery and attempted-release restoration are unhealthy.' >&2
@@ -741,9 +879,9 @@ jobs:
             if response="$(curl --silent --show-error --fail --max-time 10 \
                 --header 'Cache-Control: no-cache' \
                 https://api.spyboxd.com/ready 2>/dev/null)" \
-                && jq --exit-status --arg expected_revision "${RELEASE_SHA}" \
-                  '.status == "ready" and .revision == $expected_revision' \
-                  <<<"${response}" >/dev/null
+                && printf '%s' "${response}" \
+                  | python3 deploy/check-runtime-health.py ready \
+                      --revision "${RELEASE_SHA}" >/dev/null
             then
               api_ready=true
               break
@@ -779,11 +917,8 @@ jobs:
           public_dashboard="$(curl --silent --show-error --fail --max-time 10 \
             --header 'Cache-Control: no-cache' \
             https://api.spyboxd.com/api/public/dashboard)"
-          jq --exit-status '
-            (keys | sort) == (["activity_data", "data_health", "rating_distribution", "signal_counts", "system_stats", "timestamp"] | sort)
-            and (.system_stats | keys | sort) == (["global_avg_rating", "total_movies_tracked", "total_profiles", "total_reviews"] | sort)
-            and (.signal_counts | keys | sort) == (["one_day_gap_events", "one_day_gap_pair_hits", "profiles_analyzed", "profiles_with_diary_dates", "same_day_events", "same_day_pair_hits", "shared_titles"] | sort)
-          ' <<<"${public_dashboard}" >/dev/null
+          printf '%s' "${public_dashboard}" \
+            | python3 deploy/check-runtime-health.py dashboard >/dev/null
 
           read -r private_status private_redirect < <(
             curl --silent --show-error --output /dev/null \
@@ -806,25 +941,51 @@ jobs:
             https://api.spyboxd.com/public/profile/privacy-check 2>/dev/null || true)"
           [[ "${protected_profile_status}" == 401 ]]
 
+      - name: Observe production RSS ingestion health without automatic rollback
+        run: |
+          set -Eeuo pipefail
+          for _ in {1..3}; do
+            if rss_health="$(curl --silent --show-error --fail --max-time 10 \
+                  --header 'Cache-Control: no-cache' \
+                  https://api.spyboxd.com/health/rss 2>/dev/null)" \
+                && printf '%s' "${rss_health}" \
+                  | python3 deploy/check-runtime-health.py rss >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Production remained active, but RSS ingestion health requires attention.' >&2
+          exit 1
+
       - name: Roll back externally unhealthy activation
         if: always() && steps.activate.outcome == 'success' && steps.external_smoke.outcome == 'failure'
         env:
           CLERK_BRIDGE_MODE: ${{ steps.pre_activation.outputs.clerk_bridge }}
+          PREVIOUS_TARGET: ${{ steps.pre_activation.outputs.target }}
         run: |
           timeout --signal=TERM --kill-after=2m 24m \
             deploy/production-ssh.sh run sh -s -- \
-              "${RELEASE_SHA}" "${CLERK_BRIDGE_MODE}" <<'REMOTE'
+              "${RELEASE_SHA}" \
+              "${CLERK_BRIDGE_MODE}" \
+              "${PREVIOUS_TARGET}" <<'REMOTE'
             set -eu
             RELEASE_SHA="$1"
             CLERK_BRIDGE_MODE="$2"
+            PREVIOUS_TARGET="$3"
 
             case "${RELEASE_SHA}" in
               *[!0-9a-f]*|'') exit 64 ;;
             esac
             [ "${#RELEASE_SHA}" -eq 40 ] || exit 64
             case "${CLERK_BRIDGE_MODE}" in true|false) ;; *) exit 64 ;; esac
+            case "${PREVIOUS_TARGET}" in
+              legacy|none) ;;
+              *[!0-9a-f]*|'') exit 64 ;;
+              *) [ "${#PREVIOUS_TARGET}" -eq 40 ] || exit 64 ;;
+            esac
 
-            if [ "${CLERK_BRIDGE_MODE}" = true ]; then
+            if [ "${CLERK_BRIDGE_MODE}" = true ] \
+                || [ "${PREVIOUS_TARGET}" = none ]; then
               app_root=/opt/spyboxd
               current_link="${app_root}/current"
               expected_target="${app_root}/releases/${RELEASE_SHA}"
@@ -864,7 +1025,11 @@ jobs:
                   exit 1
                 }
               rm -f -- "${current_link}" "${state_dir}/active" "${state_dir}/previous"
-              echo 'Stopped the externally unhealthy Clerk bridge; no incompatible rollback was activated.'
+              if [ "${CLERK_BRIDGE_MODE}" = true ]; then
+                echo 'Stopped the externally unhealthy Clerk bridge; no incompatible rollback was activated.'
+              else
+                echo 'Stopped the externally unhealthy first activation; no prior release existed to restore.'
+              fi
               exit 0
             fi
 
@@ -895,10 +1060,22 @@ jobs:
             repository_git merge-base --is-ancestor "${RELEASE_SHA}" refs/remotes/origin/main
 
             rollback_runner="$(mktemp /tmp/spyboxd-rollback.XXXXXX)"
-            trap 'rm -f -- "${rollback_runner}"' EXIT
+            clerk_validator="$(mktemp /tmp/spyboxd-clerk-validator.XXXXXX)"
+            health_validator="$(mktemp /tmp/spyboxd-health-validator.XXXXXX)"
+            trap 'rm -f -- "${rollback_runner}" "${clerk_validator}" "${health_validator}"' EXIT
             repository_git show "${RELEASE_SHA}:deploy/rollback.sh" >"${rollback_runner}"
+            repository_git show \
+              "${RELEASE_SHA}:deploy/validate-clerk-production.py" \
+              >"${clerk_validator}"
+            repository_git show \
+              "${RELEASE_SHA}:deploy/check-runtime-health.py" \
+              >"${health_validator}"
             chmod 0700 "${rollback_runner}"
-            "${rollback_runner}" previous
+            chmod 0600 "${clerk_validator}"
+            chmod 0600 "${health_validator}"
+            SPYBOXD_CLERK_VALIDATOR="${clerk_validator}" \
+              SPYBOXD_HEALTH_VALIDATOR="${health_validator}" \
+              "${rollback_runner}" previous
           REMOTE
 
       - name: Clean exact remote artifact paths

@@ -539,6 +539,20 @@ class ClerkProductionValidatorTests(unittest.TestCase):
             workflow,
         )
 
+    def test_external_failure_stops_a_first_activation_without_a_rollback(self) -> None:
+        workflow = (SCRIPT.parents[1] / ".github/workflows/deploy.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "PREVIOUS_TARGET: ${{ steps.pre_activation.outputs.target }}", workflow
+        )
+        self.assertIn('[ "${PREVIOUS_TARGET}" = none ]', workflow)
+        self.assertIn(
+            "Stopped the externally unhealthy first activation; no prior release existed to restore.",
+            workflow,
+        )
+
     def test_runtime_rejects_development_key_previous_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             frontend, api, manifest, _ = self.write_runtime_files(Path(directory))

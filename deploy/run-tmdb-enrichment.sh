@@ -13,7 +13,7 @@ bounded_positive_integer() {
     printf '%s\n' "${value}"
 }
 
-LIMIT="$(bounded_positive_integer TMDB_ENRICHMENT_LIMIT "${TMDB_ENRICHMENT_LIMIT:-200}" 500)"
+LIMIT="$(bounded_positive_integer TMDB_ENRICHMENT_LIMIT "${TMDB_ENRICHMENT_LIMIT:-50}" 100)"
 BATCH_SIZE="$(bounded_positive_integer TMDB_ENRICHMENT_BATCH_SIZE "${TMDB_ENRICHMENT_BATCH_SIZE:-10}" 100)"
 CACHE_DAYS="$(bounded_positive_integer TMDB_CACHE_DAYS "${TMDB_CACHE_DAYS:-30}" 365)"
 REGION="$(printf '%s' "${TMDB_DEFAULT_REGION:-DE}" | tr '[:lower:]' '[:upper:]')"
