@@ -110,6 +110,7 @@ def _write_bundle(root: Path, *, with_tags: bool) -> None:
     diary_row = {
         "Name": "Challengers",
         "Year": 2024,
+        "Date": "2026-07-05",
         "Watched Date": "2026-07-01",
         "Rating": 4.0,
         "Is_Rewatch": "No",
@@ -121,7 +122,7 @@ def _write_bundle(root: Path, *, with_tags: bool) -> None:
         "Film_URL": "https://letterboxd.com/film/challengers/",
     }
     diary_columns = [
-        "Name", "Year", "Watched Date", "Rating", "Is_Rewatch", "Is_Liked",
+        "Name", "Year", "Date", "Watched Date", "Rating", "Is_Rewatch", "Is_Liked",
         "Has_Review", "Film_ID", "Slug", "Diary_Entry_ID", "Film_URL",
     ]
     if with_tags:
@@ -160,9 +161,10 @@ def _write_bundle(root: Path, *, with_tags: bool) -> None:
         list_row.update({
             "Ranked": "Yes",
             "Published_Date": "2026-01-11T07:15:06.720Z",
+            "Updated_Date": "2026-07-25T14:25:26.004Z",
             "Tags": LIST_TAGS,
         })
-        list_columns += ["Ranked", "Published_Date", "Tags"]
+        list_columns += ["Ranked", "Published_Date", "Updated_Date", "Tags"]
 
     _write_frame(
         root / "profile.csv",
@@ -175,10 +177,14 @@ def _write_bundle(root: Path, *, with_tags: bool) -> None:
             "Total_Lists": 1,
             "Following_Count": 1,
             "Followers_Count": 2,
+            "Person_ID": 26275117 if with_tags else None,
+            "Badge": "Patron" if with_tags else None,
+            "Watchlist_Count": 88 if with_tags else None,
         }],
         [
             "Username", "Display_Name", "Join_Date", "Total_Films",
             "Total_Reviews", "Total_Lists", "Following_Count", "Followers_Count",
+            "Person_ID", "Badge", "Watchlist_Count",
         ],
     )
     _write_frame(root / "films_comprehensive.csv", [film], film_columns)
@@ -255,12 +261,17 @@ def test_tagged_scraper_bundle_flows_into_all_tag_columns(tmp_path: Path, databa
     _import_bundle(tmp_path, "bundle", database, with_tags=True)
 
     rating = database.query(Rating).one()
-    # Legacy payloads union tags across every contributing frame (films + diary).
-    assert sorted(rating.tags or []) == ["comma, tag", "mood: eerie", "rewatch club"]
+    # Legacy payloads union tags across every contributing frame
+    # (films + diary + reviews).
+    assert sorted(rating.tags or []) == [
+        "comma, tag", "mood: eerie", "rewatch club", "spoiler-review",
+    ]
 
     profile_film = database.query(ProfileFilm).one()
-    # Film-level and diary tags are unioned on the current-state row.
-    assert set(profile_film.tags or []) == {"comma, tag", "mood: eerie", "rewatch club"}
+    # Film-level, diary, and review tags are unioned on the current-state row.
+    assert set(profile_film.tags or []) == {
+        "comma, tag", "mood: eerie", "rewatch club", "spoiler-review",
+    }
 
     event = database.query(WatchEvent).one()
     assert event.tags == ["rewatch club"]
@@ -273,7 +284,16 @@ def test_tagged_scraper_bundle_flows_into_all_tag_columns(tmp_path: Path, databa
     movie_list = database.query(MovieList).one()
     assert movie_list.is_ranked is True
     assert movie_list.published_date == date(2026, 1, 11)
+    assert movie_list.updated_date == date(2026, 7, 25)
     assert movie_list.tags == ["favorites"]
+
+    # Completeness columns: stable person id, badge, watchlist header count,
+    # and the diary log date official exports carry alongside the watch date.
+    profile = database.query(Profile).one()
+    assert profile.letterboxd_person_id == 26275117
+    assert profile.member_badge == "Patron"
+    assert profile.reported_watchlist_count == 88
+    assert event.logged_date == date(2026, 7, 5)
 
 
 def test_legacy_bundle_without_tag_columns_preserves_previous_tags(tmp_path: Path, database: Session) -> None:
@@ -282,10 +302,10 @@ def test_legacy_bundle_without_tag_columns_preserves_previous_tags(tmp_path: Pat
     _import_bundle(tmp_path, "legacy", database, with_tags=False)
 
     assert sorted(database.query(Rating).one().tags or []) == [
-        "comma, tag", "mood: eerie", "rewatch club",
+        "comma, tag", "mood: eerie", "rewatch club", "spoiler-review",
     ]
     assert set(database.query(ProfileFilm).one().tags or []) == {
-        "comma, tag", "mood: eerie", "rewatch club",
+        "comma, tag", "mood: eerie", "rewatch club", "spoiler-review",
     }
     assert database.query(WatchEvent).filter(WatchEvent.superseded_at.is_(None)).one().tags == [
         "rewatch club"

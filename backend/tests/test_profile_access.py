@@ -427,6 +427,7 @@ def test_profile_analysis_exposes_review_spoiler_metadata(database):
             "contains_spoilers": True,
             "published_date": "2026-07-30",
             "likes_count": 0,
+            "tags": [],
         }
     ]
 

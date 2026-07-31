@@ -33,6 +33,7 @@ from services.import_contracts import (
     diary_event_key,
     first_value,
     frame_records,
+    is_missing,
     movie_identity_from_row,
     normalize_letterboxd_url,
     normalize_title,
@@ -234,6 +235,27 @@ def _build_legacy_movies(
     # A row's presence in Letterboxd's likes.csv is itself the liked signal;
     # official exports do not include a redundant boolean column.
     ingest_frame(getattr(analyzer_profile, "likes", pd.DataFrame()), force_liked=True)
+
+    # Review tags apply to the reviewed film. Unioning them here makes both
+    # source kinds compute the same film-level tag union: an official export
+    # (whose diary rows lack review-only tags) no longer narrows the
+    # film-level tags an HTML sync previously established. Tags-only merge —
+    # a review row never creates a film-level payload on its own.
+    for row in frame_records(getattr(analyzer_profile, "reviews", pd.DataFrame())):
+        review_tags = parse_tags(first_value(row, ("Tags", "Tag")))
+        if not review_tags:
+            continue
+        identity = movie_identity_from_row(row)
+        if identity is None:
+            continue
+        identity = _enrich_identity(identity, identity_lookup)
+        payload = movies.get(_legacy_key(identity))
+        if payload is None:
+            continue
+        existing_tags = {tag.casefold() for tag in payload["tags"]}
+        payload["tags"].extend(
+            tag for tag in review_tags if tag.casefold() not in existing_tags
+        )
     return movies
 
 
@@ -526,11 +548,20 @@ def _prepare_diary_events(
             occurrence=occurrences[occurrence_key],
             source_entry_id=source_entry_id,
         )
+        # Official export diary rows carry both the log date ("Date") and the
+        # watch date ("Watched Date"). "Date" is only the log date when a
+        # distinct watched-date column exists; otherwise it IS the watch date.
+        logged_date = (
+            parse_date(row.get("Date"))
+            if "Watched Date" in row and not is_missing(row.get("Watched Date"))
+            else None
+        )
         prepared.append(
             {
                 "movie": movie,
                 "event_key": event_key,
                 "watched_date": watched_date,
+                "logged_date": logged_date,
                 "rating": _bounded_rating(first_value(row, ("Rating", "Stars"))),
                 "is_rewatch": parse_boolean(first_value(row, ("Rewatch", "Is_Rewatch", "Is Rewatch"))),
                 "is_liked": parse_boolean(first_value(row, ("Liked", "Is_Liked", "Is Liked"))),
@@ -693,6 +724,10 @@ def _upsert_watch_events(
         event.movie_id = payload["movie"].id
         event.profile_film = profile_films.get(payload["movie"].id)
         event.watched_date = payload["watched_date"]
+        # The log date only exists in official exports; an HTML sync must not
+        # erase a previously imported value with its own unknown.
+        if payload.get("logged_date") is not None:
+            event.logged_date = payload["logged_date"]
         if created_event or rating_authoritative:
             event.rating = payload["rating"]
         if created_event or rewatch_authoritative:
@@ -1000,6 +1035,9 @@ def _upsert_lists(
             published_value = first_value(row, ("Published Date", "Published_Date", "Date"))
             if published_value is not None:
                 movie_list.published_date = parse_date(published_value)
+            updated_value = first_value(row, ("Updated Date", "Updated_Date"))
+            if updated_value is not None:
+                movie_list.updated_date = parse_date(updated_value)
             tags_value = first_value(row, ("Tags", "List_Tags", "List Tags"))
             if tags_value is not None:
                 movie_list.tags = parse_tags(tags_value)
@@ -1227,10 +1265,18 @@ def _update_profile_metadata(profile: Profile, analyzer_profile, sync: ProfileSy
         "reported_total_films": parse_integer(first_value(info, ("Total_Films", "Total Films")), minimum=0),
         "reported_total_reviews": parse_integer(first_value(info, ("Total_Reviews", "Total Reviews")), minimum=0),
         "reported_total_lists": parse_integer(first_value(info, ("Total_Lists", "Total Lists")), minimum=0),
+        "reported_watchlist_count": parse_integer(first_value(info, ("Watchlist_Count", "Watchlist Count")), minimum=0),
+        "letterboxd_person_id": parse_integer(first_value(info, ("Person_ID", "Person ID")), minimum=1),
     }
     for attribute, value in integer_fields.items():
         if value is not None:
             setattr(profile, attribute, value)
+
+    # Badge presence is only meaningful from bundles that observed it: older
+    # bundles predate the column and must not clear a known badge.
+    badge_value = clean_text(first_value(info, ("Badge",)), max_length=20)
+    if badge_value is not None:
+        profile.member_badge = badge_value
     profile.metadata_synced_at = now
 
 
@@ -1523,7 +1569,14 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
         )
         tags_authoritative = any(
             _frame_has_any_column(frame, ("Tags", "Tag"))
-            for frame in (all_films, ratings_frame, watched_frame, diary_frame, likes_frame)
+            for frame in (
+                all_films,
+                ratings_frame,
+                watched_frame,
+                diary_frame,
+                likes_frame,
+                getattr(analyzer_profile, "reviews", pd.DataFrame()),
+            )
         )
         diary_rating_authoritative = _frame_has_any_column(
             diary_frame, ("Rating", "Stars")

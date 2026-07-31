@@ -970,7 +970,8 @@ class SocialSurfaceScrapingTests(unittest.TestCase):
         scraper.profile_info = SimpleNamespace(
             username="viewer", display_name="Viewer", bio="", location="", website="",
             join_date=None, avatar_url="", total_films=1, total_reviews=0,
-            total_lists=0, following_count=1, followers_count=None, favorite_films=[],
+            total_lists=0, following_count=1, followers_count=None,
+            person_id=26275117, badge="", watchlist_count=None, favorite_films=[],
         )
         scraper.films_data = [{
             "title": "Challengers", "year": 2024, "rating": 4.0, "film_id": "842301",

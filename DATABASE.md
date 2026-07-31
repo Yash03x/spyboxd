@@ -25,6 +25,12 @@ Key columns:
 - `website`
 - `profile_image_url`
 - `enhanced_metrics`
+- `letterboxd_person_id` — Letterboxd's stable numeric member id; survives
+  username renames, so an upload under an unknown username with a known person
+  id renames the existing profile in place instead of duplicating it
+- `member_badge` — Patron/Pro/Crew when observed
+- `reported_watchlist_count` — profile-sidebar count, observable even when the
+  watchlist itself is private
 
 Notes:
 
@@ -94,7 +100,10 @@ One current-state row per `(profile_id, movie_id)` containing the profile's late
 
 ### `watch_events`
 
-Authoritative diary imports store one row per occurrence. Stable Letterboxd viewing IDs are preferred for `event_key`; deterministic occurrence-aware keys are the fallback. Repeat watches on the same title and date remain separate events. Superseded rows are retained during normal ingestion while insight queries use only active rows.
+Authoritative diary imports store one row per occurrence. `logged_date`
+preserves the official-export log date next to `watched_date`; public HTML
+only exposes the watch date, so scraper syncs never overwrite a known log
+date with their own unknown. Stable Letterboxd viewing IDs are preferred for `event_key`; deterministic occurrence-aware keys are the fallback. Repeat watches on the same title and date remain separate events. Superseded rows are retained during normal ingestion while insight queries use only active rows.
 
 The normalization backfill also created non-authoritative `legacy_rating_snapshot` events from the one retained date on each legacy rating. `GET /api/spy-signals` therefore keeps ratings as its compatibility default. With `event_source=events`, it uses active WatchEvents only for profiles with a completed authoritative diary and falls back per profile to `ratings.watched_date` when no such diary exists.
 

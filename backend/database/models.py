@@ -69,6 +69,12 @@ class Profile(Base):
     reported_total_films = Column(Integer, nullable=True)
     reported_total_reviews = Column(Integer, nullable=True)
     reported_total_lists = Column(Integer, nullable=True)
+    reported_watchlist_count = Column(Integer, nullable=True)
+    # Letterboxd's stable numeric member id: survives username renames, so an
+    # upload under an unknown username can be recognized as an existing
+    # profile and renamed in place instead of duplicated.
+    letterboxd_person_id = Column(BigInteger, nullable=True)
+    member_badge = Column(String(20), nullable=True)  # 'Patron' | 'Pro' | 'Crew'
     metadata_synced_at = Column(DateTime(timezone=True), nullable=True)
     last_profile_sync_id = Column(
         BigInteger,
@@ -152,8 +158,13 @@ class Profile(Base):
             "reported_total_lists IS NULL OR reported_total_lists >= 0",
             name="ck_profiles_reported_lists_nonnegative",
         ),
+        CheckConstraint(
+            "reported_watchlist_count IS NULL OR reported_watchlist_count >= 0",
+            name="ck_profiles_reported_watchlist_nonnegative",
+        ),
+        Index("uq_profiles_letterboxd_person_id", "letterboxd_person_id", unique=True),
     )
-    
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -704,6 +715,9 @@ class WatchEvent(Base):
     )
     event_key = Column(String(600), nullable=False)
     watched_date = Column(Date, nullable=False)
+    # Official exports carry both the log date and the watch date; public HTML
+    # only exposes the watch date, so this stays NULL for scraper events.
+    logged_date = Column(Date, nullable=True)
     rating = Column(Float, nullable=True)
     is_rewatch = Column(Boolean, nullable=False, server_default=sql_text("false"))
     is_liked = Column(Boolean, nullable=False, server_default=sql_text("false"))
@@ -828,6 +842,7 @@ class MovieList(Base):
     source_list_key = Column(String(600), nullable=True)
     letterboxd_url = Column(String(500), nullable=True)
     published_date = Column(Date, nullable=True)
+    updated_date = Column(Date, nullable=True)
     first_seen_profile_sync_id = Column(
         BigInteger,
         ForeignKey("profile_syncs.id", ondelete="SET NULL"),

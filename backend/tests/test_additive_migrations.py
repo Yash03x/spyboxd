@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_REVISION = "20260313_0001"
 FOUNDATION_REVISION = "20260728_0002"
 BACKFILL_REVISION = "20260728_0003"
-HEAD_REVISION = "20260731_0010"
+HEAD_REVISION = "20260731_0011"
 TEST_DATABASE_NAME_PATTERN = re.compile(r"(?:^|[_-])(?:ci|test|testing)(?:$|[_-])")
 TEST_SCHEMA_NAME_PATTERN = re.compile(r"^spyboxd_migration_test_[0-9a-f]{24}$")
 
@@ -104,7 +104,10 @@ class AdditiveMigrationContractTests(unittest.TestCase):
 
         self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
-            script.get_revision(HEAD_REVISION).down_revision, "20260730_0009"
+            script.get_revision(HEAD_REVISION).down_revision, "20260731_0010"
+        )
+        self.assertEqual(
+            script.get_revision("20260731_0010").down_revision, "20260730_0009"
         )
         self.assertEqual(
             script.get_revision("20260730_0009").down_revision, "20260730_0008"
@@ -163,6 +166,9 @@ class AdditiveMigrationContractTests(unittest.TestCase):
                 "followers_count",
                 "following_count",
                 "last_profile_sync_id",
+                "letterboxd_person_id",
+                "member_badge",
+                "reported_watchlist_count",
             },
             "profile_follow_edges": {
                 "profile_id",
@@ -209,6 +215,7 @@ class AdditiveMigrationContractTests(unittest.TestCase):
                 "movie_id",
                 "event_key",
                 "watched_date",
+                "logged_date",
                 "superseded_at",
             },
             "profile_data_changes": {

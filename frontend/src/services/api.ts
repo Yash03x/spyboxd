@@ -147,9 +147,15 @@ export interface ProfileAnalysis {
   data_coverage?: DataCoverage;
   rating_distribution: Record<string, number>;
   monthly_stats: ActivityData[];
+  tag_counts?: TagCount[];
   recent_ratings: RecentRating[];
   recent_reviews: RecentReview[];
   recent_watching_trend: RecentWatchEvent[];
+}
+
+export interface TagCount {
+  tag: string;
+  count: number;
 }
 
 export interface RecentRating {
@@ -158,6 +164,7 @@ export interface RecentRating {
   rating: number | null;
   watched_date: string | null;
   is_rewatch: boolean;
+  tags?: string[];
 }
 
 export interface RecentReview {
@@ -168,6 +175,7 @@ export interface RecentReview {
   contains_spoilers: boolean;
   published_date: string | null;
   likes_count: number;
+  tags?: string[];
 }
 
 export interface RecentWatchEvent {
@@ -176,6 +184,7 @@ export interface RecentWatchEvent {
   watched_date: string | null;
   rating: number | null;
   is_rewatch: boolean;
+  tags?: string[];
 }
 
 export interface UploadFilesOptions {
