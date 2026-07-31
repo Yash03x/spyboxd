@@ -195,6 +195,22 @@ class WorkflowControlsTests(unittest.TestCase):
             workflow.index("if (( browser_status != 0 ));"),
         )
 
+    def test_superseded_release_yields_instead_of_failing(self) -> None:
+        ci = read_repo_file(".github/workflows/ci.yml")
+        release = read_repo_file("deploy/release.sh")
+        reconcile = read_repo_file("deploy/reconcile-interrupted-deployment.sh")
+
+        # A release overtaken on main mid-flight stands down with exit 75; the
+        # deploy job records a clean skip instead of a failed activation, and
+        # the public verification never probes for a release that yielded.
+        self.assertIn("yielding superseded release", release)
+        self.assertIn('if [ "${activation_status}" -eq 75 ]; then', ci)
+        self.assertIn('echo "superseded=true" >>"${GITHUB_OUTPUT}"', ci)
+        self.assertEqual(
+            ci.count("if: steps.activate.outputs.superseded != 'true'"), 2
+        )
+        self.assertIn("Retaining the historical previous-release marker", reconcile)
+
     def test_dependabot_groups_nonmajor_updates_for_every_runtime_source(self) -> None:
         cases = (
             ("npm", "/frontend", "npm-minor-and-patch"),
