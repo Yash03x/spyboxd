@@ -542,7 +542,7 @@ class ProductionCanaryTests(unittest.TestCase):
         )
         self.assertEqual(
             request.call_args.kwargs["payload"]["redirect_url"],
-            "https://spyboxd.com/profiles",
+            "https://spyboxd.com/",
         )
 
     def test_authenticated_browser_plan_assigns_sign_out_and_expiry_proofs(self):
@@ -706,6 +706,20 @@ class ProductionCanaryTests(unittest.TestCase):
             self.assertFalse((lease / auth_canary.PLAN_NAME).exists())
             retained = auth_canary._read_private_json(lease / auth_canary.STATE_NAME)
             self.assertEqual(retained["phase"], "cleanup_failed")
+
+    def test_guardian_status_distinguishes_primary_and_cleanup_failures(self):
+        primary = auth_canary.AuthCanaryError("browser failed")
+        cleanup = auth_canary.AuthCanaryError("cleanup failed")
+        self.assertEqual(auth_canary._guardian_result_status(None, None), "passed")
+        self.assertEqual(
+            auth_canary._guardian_result_status(primary, None), "failed"
+        )
+        self.assertEqual(
+            auth_canary._guardian_result_status(None, cleanup), "cleanup_failed"
+        )
+        self.assertEqual(
+            auth_canary._guardian_result_status(primary, cleanup), "cleanup_failed"
+        )
 
     def test_consumed_agent_task_is_safe_only_for_the_exact_clerk_error(self):
         response = auth_canary.HttpResponse(

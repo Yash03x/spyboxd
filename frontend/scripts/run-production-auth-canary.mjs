@@ -226,10 +226,31 @@ export function isPrivateSignInRedirect(urlValue, appOrigin, privatePath = PRIVA
     && redirectTargets[0] === `${appOrigin}${privatePath}`;
 }
 
-async function sessionCookie(context, appOrigin, timeoutMilliseconds = 30_000) {
+export async function applicationSessionToken(
+  page,
+  context,
+  appOrigin,
+  timeoutMilliseconds = 30_000,
+) {
   const hostname = new URL(appOrigin).hostname;
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
+    const sdkToken = await page.evaluate(async () => {
+      const clerk = globalThis.Clerk;
+      if (!clerk?.loaded || !clerk.session) return null;
+      try {
+        return await clerk.session.getToken();
+      } catch {
+        return null;
+      }
+    }).catch(() => null);
+    if (typeof sdkToken === 'string' && sdkToken) {
+      return sdkToken;
+    }
+
+    // Keep a cookie fallback for Clerk SDK versions that do not expose the
+    // global browser object. The returned JWT is still verified by Spyboxd's
+    // API before any canary assertion can pass.
     const matching = (await context.cookies(appOrigin)).filter(
       (cookie) => cookie.name === '__session'
         && cookie.secure
@@ -477,8 +498,26 @@ async function main() {
       let token;
       try {
         const page = await context.newPage();
-        const sessionStartedAtMilliseconds = Date.now();
         await page.goto(task.task_url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+        await page.waitForURL(
+          (url) => url.origin === taskContract.appOrigin
+            && url.pathname === '/',
+          { timeout: 45_000 },
+        );
+        token = await applicationSessionToken(page, context, taskContract.appOrigin);
+        // The one-time Clerk handoff may take time. Starting the natural-expiry
+        // proof only after the application can retrieve a token is
+        // conservative: it cannot declare expiry while the bounded Agent Task
+        // session is still live.
+        const sessionEstablishedAtMilliseconds = Date.now();
+        const session = decodeSession(token);
+        if (session.userId !== task.user_id) {
+          fail(`Clerk Agent Task resolved the wrong canary ${task.label} identity`);
+        }
+        await page.goto(`${taskContract.appOrigin}/profiles`, {
+          waitUntil: 'domcontentloaded',
+          timeout: 45_000,
+        });
         await page.waitForURL(
           (url) => url.origin === taskContract.appOrigin
             && url.pathname === '/profiles'
@@ -486,11 +525,6 @@ async function main() {
             && !url.hash,
           { timeout: 45_000 },
         );
-        token = await sessionCookie(context, taskContract.appOrigin);
-        const session = decodeSession(token);
-        if (session.userId !== task.user_id) {
-          fail(`Clerk Agent Task resolved the wrong canary ${task.label} identity`);
-        }
         await validateIdentity(context, taskContract.apiBase, task, other, token);
         if (task.closure === 'sign_out') {
           await proveSignOutClosure(
@@ -508,7 +542,7 @@ async function main() {
             taskContract.appOrigin,
             `canary ${task.label}`,
             token,
-            sessionStartedAtMilliseconds,
+            sessionEstablishedAtMilliseconds,
             session.expiresAtSeconds,
             taskContract.sessionMaxDurationSeconds,
           );

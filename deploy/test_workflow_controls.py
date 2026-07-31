@@ -137,6 +137,21 @@ class WorkflowControlsTests(unittest.TestCase):
         self.assertIn("ref: ${{ github.sha }}", deployment)
         self.assertIn("run-id: ${{ github.run_id }}", deployment)
 
+    def test_authenticated_canary_separates_session_handoff_from_private_access(self) -> None:
+        workflow = read_repo_file(".github/workflows/production-canary.yml")
+        guardian = read_repo_file("deploy/run-production-auth-canary.py")
+        browser = read_repo_file("frontend/scripts/run-production-auth-canary.mjs")
+
+        self.assertIn('"redirect_url": f"{app_origin}/"', guardian)
+        self.assertIn("return \"cleanup_failed\"", guardian)
+        self.assertIn("clerk.session.getToken()", browser)
+        self.assertIn("`${taskContract.appOrigin}/profiles`", browser)
+        self.assertIn('"${guardian_status}" == cleanup_failed', workflow)
+        self.assertLess(
+            workflow.index('"${guardian_status}" == cleanup_failed'),
+            workflow.index("if (( browser_status != 0 ));"),
+        )
+
     def test_dependabot_groups_nonmajor_updates_for_every_runtime_source(self) -> None:
         cases = (
             ("npm", "/frontend", "npm-minor-and-patch"),
