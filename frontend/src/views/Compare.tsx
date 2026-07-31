@@ -193,7 +193,7 @@ export default function Compare() {
   if (completedProfiles.length < 2) {
     return (
       <div className="space-y-6">
-        <div className="flex justify-end"><AdminScopeToggle /></div>
+        <div className="flex justify-end"><div className="lg:hidden"><AdminScopeToggle /></div></div>
         <FeatureState title="Track two profiles to compare" message="Add or request at least two Letterboxd profiles in My Profiles before opening Compare." actionHref="/profiles" actionLabel="Open My Profiles" />
       </div>
     );
@@ -212,7 +212,7 @@ export default function Compare() {
           <p className="mt-2 text-white/60">Understand how two people&apos;s movie lives overlap.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 self-start">
-        <AdminScopeToggle />
+        <div className="lg:hidden"><AdminScopeToggle /></div>
         <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/20 p-1" aria-label="Comparison time window">
           {[1, 7, 30].map((value) => (
             <button

@@ -116,7 +116,7 @@ const Dashboard: React.FC = () => {
             {isGlobalAdminView ? 'Analytics across the complete managed profile library.' : 'Analytics across the Letterboxd profiles you monitor.'}
           </p>
           </div>
-          <AdminScopeToggle />
+          <div className="lg:hidden"><AdminScopeToggle /></div>
         </div>
         <section className="card-cinema flex min-h-80 flex-col items-center justify-center px-6 text-center">
           <motion.div
@@ -199,7 +199,7 @@ const Dashboard: React.FC = () => {
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}
         >
-          <AdminScopeToggle />
+          <div className="lg:hidden"><AdminScopeToggle /></div>
           <motion.button 
             onClick={handleRefreshAll}
             className="btn-secondary flex items-center space-x-2"
