@@ -74,7 +74,7 @@ export default function RewatchEchoesPanel({
 
   if (error || !data) {
     return (
-      <section className="rounded-xl border border-white/12 bg-white/[0.02] px-5 py-8 text-center">
+      <section className="panel-insight px-5 py-8 text-center">
         <History className="mx-auto h-7 w-7 text-cinema-400" />
         <h2 className="mt-3 text-base font-semibold text-white">Rewatch Echoes are unavailable</h2>
         <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-white/45">
@@ -93,7 +93,7 @@ export default function RewatchEchoesPanel({
   return (
     <section className="space-y-4" aria-labelledby="rewatch-echoes-title">
       <CoverageBanner coverage={data.coverage} />
-      <div className="overflow-hidden rounded-xl border border-white/12 bg-white/[0.02]">
+      <div className="overflow-hidden panel-insight">
         <header className="flex flex-col gap-3 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 id="rewatch-echoes-title" className="flex items-center gap-2 text-base font-semibold text-white">

@@ -195,7 +195,7 @@ export function FeatureState({
   actionLabel?: string;
 }) {
   return (
-    <section className="flex min-h-72 flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-white/[0.025] px-6 text-center">
+    <section className="card-cinema flex min-h-72 flex-col items-center justify-center text-center">
       <span className="grid h-12 w-12 place-items-center rounded-xl border border-cinema-400/25 bg-cinema-500/10 text-cinema-300">
         {loading ? <Loader2 className="h-6 w-6 animate-spin" /> : <CircleSlash className="h-6 w-6" />}
       </span>

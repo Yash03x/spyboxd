@@ -302,7 +302,7 @@ export default function WatchTogetherResults({
       <CoverageBanner coverage={data.coverage} />
       <div className={`grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 ${selectedCandidate ? '2xl:grid-cols-[minmax(0,1fr)_20rem]' : ''}`}>
         <div className="min-w-0 space-y-4">
-          <section className="overflow-hidden rounded-xl border border-white/12 bg-white/[0.02]">
+          <section className="overflow-hidden panel-insight">
             <div className="flex flex-col gap-3 border-b border-white/10 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-semibold text-white/75">{modeLabel}</p>
@@ -312,7 +312,7 @@ export default function WatchTogetherResults({
               </div>
               <label className="flex items-center gap-2 text-xs text-white/45">
                 Sort by
-                <select value={sort} onChange={(event) => setSort(event.target.value as ResultSort)} className="rounded-lg border border-white/12 bg-noir-900 px-3 py-2 text-xs font-medium text-white outline-none focus:border-cinema-400/45">
+                <select value={sort} onChange={(event) => setSort(event.target.value as ResultSort)} className="rounded-lg border border-white/10 bg-noir-900 px-3 py-2 text-xs font-medium text-white outline-none focus:border-cinema-400/45">
                   <option value="group_fit">Best group fit</option>
                   <option value="watchlists">Most watchlists</option>
                   <option value="runtime">Shortest runtime</option>
@@ -348,7 +348,7 @@ export default function WatchTogetherResults({
           </section>
 
           {blindSpots.length > 0 && (
-            <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+            <section className="panel-insight p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="flex items-center gap-2 text-sm font-semibold text-white"><Heart className="h-4 w-4 text-cinema-400" /> Mutual blind spots</h2>
