@@ -50,7 +50,7 @@ function MetricStrip({ metrics }: {
   }>;
 }) {
   return (
-    <section className="grid overflow-hidden rounded-xl border border-white/12 bg-white/[0.025] sm:grid-cols-2 xl:grid-cols-4">
+    <section className="grid overflow-hidden panel-insight sm:grid-cols-2 xl:grid-cols-4">
       {metrics.map((metric, index) => (
         <div key={metric.label} className={`min-w-0 px-5 py-4 ${index > 0 ? 'border-t border-white/10 sm:border-t-0 sm:border-l' : ''} ${index === 2 ? 'sm:border-l-0 xl:border-l' : ''}`}>
           <p className="text-xs font-medium text-white/55">{metric.label}</p>
@@ -67,7 +67,7 @@ function PairComparisonTable({ title, rows, tone }: {
   tone: 'love' | 'split';
 }) {
   return (
-    <section className="min-w-0 rounded-xl border border-white/12 bg-white/[0.02]">
+    <section className="min-w-0 panel-insight">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
           {tone === 'love' ? <Heart className="h-4 w-4 text-emerald-400" /> : <Zap className="h-4 w-4 text-cinema-400" />}
@@ -110,7 +110,7 @@ function PairComparisonTable({ title, rows, tone }: {
 function PairTimeline({ data }: { data: PairDossierResponse }) {
   const paths = data.influence_paths ?? [];
   return (
-    <section className="rounded-xl border border-white/12 bg-white/[0.02]">
+    <section className="panel-insight">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
           <Clock3 className="h-4 w-4 text-cinema-400" />
@@ -215,7 +215,7 @@ export function PairDossierPanel({ data, coverage }: {
             const movieLabel = `${row.movie.title}${row.movie.year ? ` (${row.movie.year})` : ''}`;
 
             return (
-              <section key={`${row.movie.title}-reviews`} className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+              <section key={`${row.movie.title}-reviews`} className="panel-insight p-4">
                 <div className="flex items-center gap-3">
                   <MoviePoster movie={row.movie} className="h-14 w-10" />
                   <div>
@@ -338,7 +338,7 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
           ]} />
 
           <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.25fr)_minmax(22rem,.75fr)]">
-            <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+            <section className="panel-insight p-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Dna className="h-4 w-4 text-cinema-400" /> Where your tastes align</h3>
                 <div className="flex items-center gap-4 text-[11px] text-white/45">
@@ -364,7 +364,7 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
             </section>
 
             <div className="space-y-4">
-              <section className="rounded-xl border border-white/12 bg-white/[0.02]">
+              <section className="panel-insight">
                 <div className="border-b border-white/10 px-4 py-3">
                   <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Sparkles className="h-4 w-4 text-cinema-400" /> Strongest shared affinities</h3>
                 </div>
@@ -379,7 +379,7 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+              <section className="panel-insight p-4">
                 <h3 className="text-sm font-semibold text-white">Taste splits</h3>
                 <p className="mt-1 text-xs text-white/40">Traits where these profiles lean in different directions.</p>
                 <div className="mt-4 space-y-3">
@@ -391,7 +391,7 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
           </div>
 
           <div className="grid gap-4 xl:grid-cols-2">
-            <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+            <section className="panel-insight p-4">
               <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Heart className="h-4 w-4 text-cinema-400" /> Shared taste, real examples</h3>
               <div className="mt-4 flex gap-3 overflow-x-auto pb-2">
                 {(data.shared_signature ?? []).flatMap((trait) => trait.top_movies ?? []).slice(0, 8).map((movie, index) => (
@@ -402,7 +402,7 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
                 ))}
               </div>
             </section>
-            <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+            <section className="panel-insight p-4">
               <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Film className="h-4 w-4 text-cinema-400" /> Semantic neighbors</h3>
               <p className="mt-1 text-xs text-white/40">Contextual matches, not exact-title co-watches.</p>
               <div className="mt-4 flex gap-3 overflow-x-auto pb-2">
@@ -490,7 +490,7 @@ export function SignalCalendarPanel({ data, coverage }: {
             { label: 'Peak day', value: peakBucket ? formatCalendarDate(peakBucket.date) : '—', detail: peakBucket ? `${peakBucket.signal_count} signals` : 'No signal peak' },
           ]} />
 
-          <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+          <section className="panel-insight p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><CalendarDays className="h-4 w-4 text-cinema-400" /> Signal activity</h3>
@@ -522,7 +522,7 @@ export function SignalCalendarPanel({ data, coverage }: {
           </section>
 
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-            <section className="rounded-xl border border-white/12 bg-white/[0.02]">
+            <section className="panel-insight">
               <div className="border-b border-white/10 px-4 py-3">
                 <h3 className="text-sm font-semibold text-white">Monthly signal rhythm</h3>
               </div>
@@ -539,7 +539,7 @@ export function SignalCalendarPanel({ data, coverage }: {
               </div>
             </section>
 
-            <section className="rounded-xl border border-white/12 bg-white/[0.02] p-4">
+            <section className="panel-insight p-4">
               <h3 className="text-sm font-semibold text-white">{selectedDate ? formatCalendarDate(selectedDate) : 'Choose a signal day'}</h3>
               {selectedDate ? (
                 selectedEvents.length > 0 ? (

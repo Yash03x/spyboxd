@@ -70,7 +70,7 @@ export default function ProfileMultiSelect({
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => setOpen((value) => !value)}
-        className="flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-white/15 bg-black/15 px-3 text-left transition-colors hover:border-cinema-400/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-cinema-400/70"
+        className="flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-3 text-left transition-colors hover:border-cinema-400/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-cinema-400/70"
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
           {selectedProfiles.slice(0, 4).map((profile) => (
