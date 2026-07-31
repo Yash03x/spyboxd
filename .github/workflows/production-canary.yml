@@ -407,7 +407,7 @@ jobs:
             exit 0
           fi
           status="$("${python_path}" "${canary_path}" status --lease-id "${lease_id}")"
-          [ "${status}" = failed ]
+          [[ "${status}" == failed || "${status}" == cleanup_failed ]]
           REMOTE
           guardian_started=1
 
@@ -421,7 +421,7 @@ jobs:
               deploy/production-ssh.sh run \
                 "${REMOTE_CANARY_PATH}" status --lease-id "${lease_id}"
             )"
-            if [[ "${guardian_status}" == failed ]]; then
+            if [[ "${guardian_status}" == failed || "${guardian_status}" == cleanup_failed ]]; then
               break
             fi
             sleep 2
@@ -451,20 +451,24 @@ jobs:
               deploy/production-ssh.sh run \
                 "${REMOTE_CANARY_PATH}" status --lease-id "${lease_id}"
             )"
-            if [[ "${guardian_status}" == passed || "${guardian_status}" == failed ]]; then
+            if [[ "${guardian_status}" == passed || "${guardian_status}" == failed || "${guardian_status}" == cleanup_failed ]]; then
               break
             fi
             sleep 2
           done
-          if [[ "${guardian_status}" == passed || "${guardian_status}" == failed ]]; then
+          if [[ "${guardian_status}" == passed || "${guardian_status}" == failed || "${guardian_status}" == cleanup_failed ]]; then
             guardian_started=0
           fi
-          if [[ "${guardian_status}" != passed ]]; then
+          if [[ "${guardian_status}" == cleanup_failed ]]; then
             echo 'The VPS guardian did not prove Clerk task and session cleanup.' >&2
             exit 1
           fi
           if (( browser_status != 0 )); then
             exit "${browser_status}"
+          fi
+          if [[ "${guardian_status}" != passed ]]; then
+            echo 'The VPS guardian rejected the authenticated canary result.' >&2
+            exit 1
           fi
 
       - name: Enforce the VPS cleanup backstop and retire the lease

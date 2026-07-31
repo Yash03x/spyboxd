@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  applicationSessionToken,
   decodeSession,
   expiryProofDeadlineMilliseconds,
   isPrivateSignInRedirect,
@@ -77,6 +78,48 @@ test('session token contract requires a future expiry and session identity', () 
     () => decodeSession(token({ sub: 'user_A123', exp: 1_060 }), 1_000),
     /valid identity/,
   );
+});
+
+test('application session handoff prefers Clerk SDK token with a cookie fallback', async () => {
+  const sdkToken = token({ sub: 'user_A123', sid: 'sess_A123', exp: 1_060 });
+  assert.equal(await applicationSessionToken(
+    {
+      async evaluate(callback) {
+        const originalClerk = globalThis.Clerk;
+        globalThis.Clerk = {
+          loaded: true,
+          session: { getToken: async () => sdkToken },
+        };
+        try {
+          return await callback();
+        } finally {
+          if (originalClerk === undefined) {
+            delete globalThis.Clerk;
+          } else {
+            globalThis.Clerk = originalClerk;
+          }
+        }
+      },
+    },
+    { cookies: async () => [] },
+    APP_ORIGIN,
+    1_000,
+  ), sdkToken);
+
+  const cookieToken = token({ sub: 'user_B123', sid: 'sess_B123', exp: 1_060 });
+  assert.equal(await applicationSessionToken(
+    { evaluate: async () => null },
+    {
+      cookies: async () => [{
+        name: '__session',
+        value: cookieToken,
+        secure: true,
+        domain: '.spyboxd.com',
+      }],
+    },
+    APP_ORIGIN,
+    1_000,
+  ), cookieToken);
 });
 
 test('expiry proof deadline covers both JWT and Agent Task session expiry', () => {

@@ -535,7 +535,11 @@ def _create_agent_task(
                 "permissions": "*",
                 "agent_name": "spyboxd-production-canary",
                 "task_description": "Read-only non-admin privacy and isolation check",
-                "redirect_url": f"{app_origin}/profiles",
+                # Land on the only public application route first. Clerk's
+                # frontend SDK must finish the Agent Task handoff and write the
+                # app-scoped session token before middleware can admit the
+                # browser to a protected route.
+                "redirect_url": f"{app_origin}/",
                 "session_max_duration_in_seconds": SESSION_MAX_DURATION_SECONDS,
             },
             clerk_backend=True,
@@ -832,6 +836,17 @@ def _cleanup_state(secret_key: str, state: Mapping[str, Any]) -> None:
         raise AuthCanaryError(
             "temporary Clerk canary state could not be proven inactive"
         )
+
+
+def _guardian_result_status(
+    primary_error: BaseException | None,
+    cleanup_error: BaseException | None,
+) -> str:
+    if cleanup_error is not None:
+        return "cleanup_failed"
+    if primary_error is not None:
+        return "failed"
+    return "passed"
 
 
 def _validate_lease_id(lease_id: str) -> str:
@@ -1227,11 +1242,7 @@ def run_guardian(
                     state["phase"] = "cleanup_failed"
                     _write_private_json(state_path, state)
 
-                status = (
-                    "passed"
-                    if primary_error is None and cleanup_error is None
-                    else "failed"
-                )
+                status = _guardian_result_status(primary_error, cleanup_error)
                 _write_private_json(
                     lease_dir / STATUS_NAME, {"version": 1, "status": status}
                 )
@@ -1287,7 +1298,11 @@ def lease_status(*, lease_id: str, shared_dir: Path) -> str:
         return "running"
     payload = _read_private_json(status_path)
     status_value = payload.get("status")
-    if payload.get("version") != 1 or status_value not in {"passed", "failed"}:
+    if payload.get("version") != 1 or status_value not in {
+        "passed",
+        "failed",
+        "cleanup_failed",
+    }:
         raise AuthCanaryError("authenticated canary status is invalid")
     return str(status_value)
 
