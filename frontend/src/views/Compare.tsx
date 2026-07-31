@@ -14,6 +14,7 @@ import {
 import TasteTimelinePanel from '../components/insights/TasteTimelinePanel';
 import { FeatureState, ProfileAvatar, WorkspaceTabs } from '../components/insights/InsightUI';
 import AdminScopeToggle from '../components/AdminScopeToggle';
+import FollowNetwork from '../components/FollowNetwork';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { useUrlProfileSelection } from '../hooks/useUrlProfileSelection';
 import {
@@ -325,6 +326,8 @@ export default function Compare() {
           <SignalCalendarPanel data={calendarQuery.data} coverage={fallbackCoverage} />
         )}
       </section>
+
+      <FollowNetwork profiles={completedProfiles} />
 
       <footer className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 py-3 text-[11px] text-white/35">
         <span className="flex items-center gap-1.5"><Scale className="h-3.5 w-3.5" /> Pair Dossier uses behavior and ratings.</span>

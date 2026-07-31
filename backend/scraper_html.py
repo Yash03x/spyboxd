@@ -52,6 +52,10 @@ class ProfileInfo:
     # tell "unknown" from "empty".
     following_count: Optional[int] = None
     followers_count: Optional[int] = None
+    # Letterboxd's stable numeric member id — survives username renames.
+    person_id: Optional[int] = None
+    badge: str = ""
+    watchlist_count: Optional[int] = None
     favorite_films: List[Dict] = None
 
     def __post_init__(self):
@@ -592,6 +596,27 @@ class EnhancedLetterboxdScraper:
                 elif target == 'followers':
                     self.profile_info.followers_count = value
             
+            # Stable member id: rendered in several page URLs (report link,
+            # bio full-text). Verified present on profiles with and without
+            # bios, badges, and custom avatars.
+            page_text = getattr(response, 'text', None) or response.content.decode('utf-8', 'ignore')
+            person_match = re.search(r'person:(\d+)', page_text)
+            if person_match:
+                self.profile_info.person_id = int(person_match.group(1))
+
+            # Patron/Pro/Crew badge next to the display name.
+            badge = soup.select_one('h1.person-display-name span.badge')
+            if badge is not None:
+                self.profile_info.badge = badge.get_text(' ', strip=True)
+
+            # Sidebar watchlist count — observable even when the watchlist
+            # page itself is private.
+            watchlist_link = soup.select_one('section.watchlist-aside a.all-link')
+            if watchlist_link is not None:
+                digits = re.findall(r'[\d,]+', watchlist_link.get_text())
+                if digits:
+                    self.profile_info.watchlist_count = int(digits[0].replace(',', ''))
+
             # Favorite films (top 4)
             favorite_root = soup.select_one('#favourites, #favorites, .profile-favorites, .profile-favourites')
             if favorite_root is not None:
@@ -893,9 +918,38 @@ class EnhancedLetterboxdScraper:
         if not reviews and not self._declares_empty(soup, 'reviews'):
             raise ScrapeValidationError("Reviews resolved to zero without an explicit empty state")
         self.reviews_data = reviews
+        if self._review_comments_enabled() and reviews:
+            self._fetch_review_comment_counts()
         self._finish_dataset('reviews')
         print(f"✓ Found {len(reviews)} reviews")
         return reviews
+
+    @staticmethod
+    def _review_comments_enabled() -> bool:
+        """Comment counts need one CSI request per review, so they are opt-in."""
+        raw = os.environ.get('SPYBOXD_SCRAPE_REVIEW_COMMENTS', '').strip().casefold()
+        return raw in {'1', 'true', 'yes', 'on'}
+
+    def _fetch_review_comment_counts(self) -> None:
+        """Fetch each review's comment count from its CSI comments include.
+
+        The include's heading ("98 Comments") is the authoritative count; a
+        zero-comment review renders only the comment prompt. A failed fetch
+        leaves the count unknown (blank in the CSV) so ingestion preserves any
+        previously imported value instead of zeroing it.
+        """
+        print(f"💬 Fetching comment counts for {len(self.reviews_data)} reviews...")
+        for review in self.reviews_data:
+            viewing_id = review.get('viewing_id', '')
+            if not viewing_id:
+                continue
+            url = f"https://letterboxd.com/csi/viewing/{viewing_id}/comments-section/?esiAllowUser=true"
+            response = self.fetch_with_retry(url, max_retries=2)
+            if response is None:
+                continue
+            match = re.search(r'([\d,]+)\s+Comments?', response.text)
+            review['comments_count'] = int(match.group(1).replace(',', '')) if match else 0
+            time.sleep(0.5)
     
     def scrape_watchlist(self) -> List[Dict]:
         """Scrape complete watchlist."""
@@ -1326,7 +1380,8 @@ class EnhancedLetterboxdScraper:
         fieldnames = [
             'Username', 'Display_Name', 'Bio', 'Location', 'Website', 'Join_Date',
             'Avatar_URL', 'Total_Films', 'Total_Reviews', 'Total_Lists',
-            'Following_Count', 'Followers_Count'
+            'Following_Count', 'Followers_Count', 'Person_ID', 'Badge',
+            'Watchlist_Count'
         ]
         data = [{
             'Username': self.profile_info.username,
@@ -1340,7 +1395,10 @@ class EnhancedLetterboxdScraper:
             'Total_Reviews': self.profile_info.total_reviews,
             'Total_Lists': self.profile_info.total_lists,
             'Following_Count': self.profile_info.following_count,
-            'Followers_Count': self.profile_info.followers_count
+            'Followers_Count': self.profile_info.followers_count,
+            'Person_ID': self.profile_info.person_id,
+            'Badge': self.profile_info.badge,
+            'Watchlist_Count': self.profile_info.watchlist_count,
         }]
         self._write_csv("profile.csv", data, fieldnames)
 
@@ -1369,12 +1427,16 @@ class EnhancedLetterboxdScraper:
             return
         fieldnames = [
             'Name', 'Year', 'Rating', 'Review', 'Review_Date', 'Review_Likes',
-            'Contains_Spoilers', 'Rewatch', 'Tags', 'Film_ID', 'Slug', 'Film_URL'
+            'Review_Comments', 'Contains_Spoilers', 'Rewatch', 'Tags',
+            'Film_ID', 'Slug', 'Film_URL'
         ]
         data = [{
             'Name': review['title'], 'Year': review['year'], 'Rating': review['rating'],
             'Review': review['review_text'], 'Review_Date': review['review_date'],
             'Review_Likes': review['review_likes'],
+            # Blank when comment fetching was disabled or failed: ingestion
+            # only overwrites comments_count for non-missing cells.
+            'Review_Comments': review.get('comments_count', ''),
             'Contains_Spoilers': 'Yes' if review.get('contains_spoilers', False) else 'No',
             'Rewatch': 'Yes' if review.get('is_rewatch', False) else 'No',
             'Tags': self._serialize_tags(review.get('tags')),
@@ -1399,18 +1461,16 @@ class EnhancedLetterboxdScraper:
         """Saves custom lists."""
         if 'lists' not in self.completed_datasets:
             return
-        # Updated_Date is captured in _extract_list_detail_metadata but not yet
-        # emitted: movie_lists has no updated-date column, and an unconsumed
-        # CSV column would misrepresent the import contract.
         fieldnames = [
             'Title', 'Description', 'Film_Count', 'URL',
-            'Ranked', 'Published_Date', 'Tags'
+            'Ranked', 'Published_Date', 'Updated_Date', 'Tags'
         ]
         data = [{
             'Title': li['title'], 'Description': li['description'],
             'Film_Count': li['film_count'], 'URL': li['url'],
             'Ranked': 'Yes' if li.get('is_ranked', False) else 'No',
             'Published_Date': li.get('published_date', ''),
+            'Updated_Date': li.get('updated_date', ''),
             'Tags': self._serialize_tags(li.get('tags')),
         } for li in self.lists_data]
         self._write_csv("lists.csv", data, fieldnames)

@@ -20,6 +20,7 @@ from api.routes.insights import router as insights_router
 from api.routes.profile_access import router as profile_access_router
 from auth import ClerkUser, get_admin_user, get_current_user, get_upload_user
 from database.connection import engine, get_db, init_db
+from database.models import Profile
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
@@ -287,6 +288,19 @@ def _get_cors_origins() -> List[str]:
     return deduped
 
 
+def _safe_tag_list(value) -> List[str]:
+    """Coerce a stored tags JSON value into a clean list of tag strings."""
+    if not isinstance(value, list):
+        return []
+    tags: List[str] = []
+    for tag in value:
+        if isinstance(tag, str):
+            cleaned = tag.strip()
+            if cleaned:
+                tags.append(cleaned)
+    return tags
+
+
 def _safe_json_float(value, default: Optional[float] = None) -> Optional[float]:
     if value is None:
         return default
@@ -307,6 +321,17 @@ def _refresh_dashboard_snapshot_cache(db: Session) -> None:
         )
     except Exception as exc:
         print(f"Warning: failed to refresh dashboard analytics snapshot: {exc}")
+
+
+def _bundle_person_id(analyzer_profile) -> Optional[int]:
+    """The stable Letterboxd member id claimed by a bundle's profile.csv."""
+    info = getattr(analyzer_profile, "profile_info", {}) or {}
+    raw = info.get("Person_ID") or info.get("Person ID")
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _record_owner_export_publication_consent(analyzer_profile, publish_owner_data: bool) -> None:
@@ -700,7 +725,18 @@ async def get_analysis(
     total_films = len(all_entries)
     rated_films = len([r for r in all_entries if r.rating is not None and r.rating > 0])
     liked_films = len([r for r in all_entries if r.is_liked])
-    
+
+    # Aggregate film-level tag usage across every entry for this profile
+    tag_usage: dict = {}
+    for entry in all_entries:
+        for tag in _safe_tag_list(entry.tags):
+            tag_usage[tag] = tag_usage.get(tag, 0) + 1
+    tag_counts = [
+        {"tag": tag, "count": count}
+        for tag, count in sorted(tag_usage.items(), key=lambda item: (-item[1], item[0].lower()))
+    ]
+
+
     analysis = {
         "username": profile.username,
         "total_films": total_films,
@@ -715,13 +751,15 @@ async def get_analysis(
         "data_coverage": extract_data_coverage(profile.enhanced_metrics),
         "rating_distribution": rating_distribution,
         "monthly_stats": monthly_stats,
+        "tag_counts": tag_counts,
         "recent_ratings": [
             {
                 "movie_title": r.movie_title,
                 "movie_year": r.movie_year,
                 "rating": _safe_json_float(r.rating),
                 "watched_date": r.watched_date.isoformat() if r.watched_date else None,
-                "is_rewatch": r.is_rewatch
+                "is_rewatch": r.is_rewatch,
+                "tags": _safe_tag_list(r.tags)
             } for r in recent_ratings
         ],
         "recent_reviews": [
@@ -732,7 +770,8 @@ async def get_analysis(
                 "review_text": r.review_text[:200] + "..." if r.review_text and len(r.review_text) > 200 else r.review_text,
                 "contains_spoilers": bool(r.contains_spoilers),
                 "published_date": r.published_date.isoformat() if r.published_date else None,
-                "likes_count": r.likes_count
+                "likes_count": r.likes_count,
+                "tags": _safe_tag_list(r.tags)
             } for r in recent_reviews
         ],
         "recent_watching_trend": [
@@ -741,7 +780,8 @@ async def get_analysis(
                 "movie_year": r.movie_year,
                 "watched_date": r.watched_date.isoformat() if r.watched_date else None,
                 "rating": _safe_json_float(r.rating),
-                "is_rewatch": r.is_rewatch
+                "is_rewatch": r.is_rewatch,
+                "tags": _safe_tag_list(r.tags)
             } for r in recent_watching_sorted
         ]
     }
@@ -926,6 +966,26 @@ async def upload_files(
                 # The unified loader owns snapshot metadata updates so an
                 # already-completed source replay remains a true no-op.
                 existing_profile = profile_repo.get_profile_by_username(username)
+                if not existing_profile:
+                    # Letterboxd renames leave the stable person id intact: a
+                    # bundle under an unknown username that carries a known
+                    # person id is an existing profile to rename in place, not
+                    # a new account to duplicate.
+                    person_id = _bundle_person_id(analyzer_profile)
+                    if person_id is not None:
+                        renamed_profile = (
+                            db.query(Profile)
+                            .filter(Profile.letterboxd_person_id == person_id)
+                            .one_or_none()
+                        )
+                        if renamed_profile is not None:
+                            old_name = renamed_profile.username
+                            profile_repo.rename_profile(renamed_profile, username)
+                            LOGGER.info(
+                                "Auto-renamed profile %s -> %s via person id %s",
+                                old_name, username, person_id,
+                            )
+                            existing_profile = renamed_profile
                 if existing_profile:
                     profile = existing_profile
                 else:

@@ -13,6 +13,7 @@ import RatingDistributionChart from '../components/Charts/RatingDistributionChar
 import StatsCard from '../components/Charts/StatsCard';
 import SpoilerReviewText from '../components/SpoilerReviewText';
 import AdminScopeToggle from '../components/AdminScopeToggle';
+import TagsPanel, { TagChipList } from '../components/insights/TagsPanel';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { profileApi } from '../services/api';
 
@@ -181,6 +182,12 @@ const Analysis: React.FC = () => {
             />
           </div>
 
+          <TagsPanel
+            tagCounts={analysis.tag_counts}
+            username={analysis.username}
+            delay={0.15}
+          />
+
           <div className={`grid grid-cols-1 items-start gap-6 ${hasCoverageLimitations ? 'xl:grid-cols-3' : ''}`}>
             <motion.div
               className={`analysis-panel ${hasCoverageLimitations ? 'xl:col-span-2' : ''}`}
@@ -214,6 +221,7 @@ const Analysis: React.FC = () => {
                           {entry.rating !== null ? `${entry.rating.toFixed(1)} stars` : 'Unrated'}
                         </div>
                       </div>
+                      <TagChipList tags={entry.tags} className="mt-2" />
                     </div>
                   ))
                 ) : (
@@ -276,6 +284,7 @@ const Analysis: React.FC = () => {
                           {entry.rating !== null ? `${entry.rating.toFixed(1)} stars` : 'Unrated'}
                         </div>
                       </div>
+                      <TagChipList tags={entry.tags} className="mt-2" />
                     </div>
                   ))
                 ) : (
@@ -312,6 +321,7 @@ const Analysis: React.FC = () => {
                             {review.rating !== null ? `${review.rating.toFixed(1)} stars` : 'No rating'}
                           </div>
                         </div>
+                        <TagChipList tags={review.tags} className="mt-2" />
                         {reviewText ? (
                           <div className="mt-3">
                             <SpoilerReviewText
