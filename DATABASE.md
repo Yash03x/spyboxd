@@ -140,6 +140,15 @@ sync sets `removed_at`; a re-follow resurrects the row. The first social sync
 for a profile is a baseline and emits no change events; later authoritative
 diffs emit `follow` entity-type rows in `profile_data_changes`.
 
+### `member_content_likes` and `member_comments`
+
+Export-only member activity. Official account exports enumerate likes the
+member placed on other members' reviews and lists (`likes/reviews.csv`,
+`likes/lists.csv`: like date + boxd.it URL) and the member's own comments
+(`comments.csv`: date, target URL, comment HTML). Rows are URL-keyed (comments
+by a URL/date/text digest) with the usual lineage and soft-removal semantics;
+scraper bundles never carry these files, so they always preserve prior state.
+
 ### `movie_enrichments` and `movie_watch_providers`
 
 Optional TMDB cache. `movie_enrichments` stores details such as overview, runtime, release date, language, genres, keywords, credits, countries, and expiry. `movie_watch_providers` stores region/provider/type rows separately so regional availability can expire independently.

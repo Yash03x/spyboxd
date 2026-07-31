@@ -10,6 +10,8 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.database.models import (
     Movie,
+    MemberComment,
+    MemberContentLike,
     MovieList,
     MovieListItem,
     Profile,
@@ -45,6 +47,8 @@ class ProfileDataClearTests(TestCase):
             ProfileFollowEdge.__table__,
             WatchEvent.__table__,
             WatchlistItem.__table__,
+            MemberComment.__table__,
+            MemberContentLike.__table__,
             MovieList.__table__,
             MovieListItem.__table__,
             ProfileFavoriteMovie.__table__,

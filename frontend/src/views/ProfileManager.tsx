@@ -868,6 +868,18 @@ const ProfileManager: React.FC = () => {
             </div>
 
             <div className="rounded-xl border border-white/10 bg-black/15 p-3">
+              <p className="mb-3 text-xs leading-5 text-white/45">
+                Get the ZIP from{' '}
+                <a
+                  href="https://letterboxd.com/user/exportdata/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-cinema-300 underline-offset-2 hover:text-cinema-200 hover:underline"
+                >
+                  Letterboxd&nbsp;→&nbsp;Export your data
+                </a>
+                . Exports include surfaces public pages never show: liked reviews and lists, your comments, pronouns, and diary log dates.
+              </p>
               <label className="block">
                 <span className="mb-2 block text-xs font-semibold text-white/55">Official export ZIP</span>
                 <input
