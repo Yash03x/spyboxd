@@ -772,6 +772,12 @@ export interface TasteDnaResponse {
   coverage: FeatureCoverage;
   summary: {
     similarity_score: number | null;
+    /** The same measure with Letterboxd's own average subtracted from both
+     *  sides, so only agreement the pair actually shares survives. A large gap
+     *  below `similarity_score` means they mostly agree with the crowd rather
+     *  than with each other. Null when no shared film carries a crowd average. */
+    crowd_adjusted_similarity: number | null;
+    crowd_adjusted_films: number;
     shared_rated_titles: number;
     metadata_coverage_ratio: number | null;
     tmdb_status: 'connected' | 'partial' | 'unavailable';
