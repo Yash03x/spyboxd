@@ -1485,6 +1485,26 @@ def _update_profile_metadata(profile: Profile, analyzer_profile, sync: ProfileSy
     if pronoun_value is not None:
         profile.pronoun = pronoun_value
 
+    if any(name in info for name in ("External_Links", "External Links")):
+        raw_links = first_value(info, ("External_Links", "External Links"))
+        links = []
+        if raw_links:
+            try:
+                decoded = json.loads(raw_links) if isinstance(raw_links, str) else raw_links
+            except (TypeError, ValueError):
+                decoded = []
+            for entry in decoded if isinstance(decoded, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                url = clean_text(entry.get("url"), max_length=500)
+                if not url or not url.casefold().startswith(("http://", "https://")):
+                    continue
+                links.append({
+                    "label": clean_text(entry.get("label"), max_length=100) or url,
+                    "url": url,
+                })
+        profile.external_links = links
+
     # Letterboxd's own stats-page figures, when the scrape observed them.
     stats_value = clean_text(first_value(info, ("Stats",)))
     if stats_value:

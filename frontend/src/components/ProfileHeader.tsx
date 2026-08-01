@@ -117,6 +117,17 @@ export default function ProfileHeader({
   const badge = header.member_badge?.trim();
   const joinedLabel = formatMonthYear(header.join_date);
 
+  // A member can list several links (personal site, Twitter, …). Older
+  // payloads only carry the single website field, so fall back to it. Plain
+  // computation rather than useMemo: this component returns early when it has
+  // no header, so a hook here would not run in the same order every render.
+  const observedLinks = header.external_links?.filter((link) => link.url) ?? [];
+  const externalLinks = observedLinks.length > 0
+    ? observedLinks
+    : header.website_url
+      ? [{ label: header.website ?? header.website_url, url: header.website_url }]
+      : [];
+
   // Letterboxd's own header stat row. Anything it never observed is dropped
   // rather than rendered as a blank or a misleading zero.
   const statCandidates: Array<StatItem | null> = [
@@ -221,17 +232,18 @@ export default function ProfileHeader({
                 {pronoun}
               </span>
             ) : null}
-            {header.website_url && header.website ? (
+            {externalLinks.map((link) => (
               <a
-                href={header.website_url}
+                key={link.url}
+                href={link.url}
                 target="_blank"
                 rel="noreferrer nofollow"
                 className="inline-flex max-w-full items-center gap-1.5 truncate text-white/70 transition-colors hover:text-cinema-300"
               >
                 <Globe className="h-3.5 w-3.5 text-cinema-400" aria-hidden="true" />
-                <span className="truncate">{header.website}</span>
+                <span className="truncate">{link.label}</span>
               </a>
-            ) : null}
+            ))}
             {joinedLabel ? <span>Joined {joinedLabel}</span> : null}
           </div>
         </div>

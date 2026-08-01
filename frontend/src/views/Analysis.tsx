@@ -16,6 +16,7 @@ import SpoilerReviewText from '../components/SpoilerReviewText';
 import AdminScopeToggle from '../components/AdminScopeToggle';
 import ProfileHeader from '../components/ProfileHeader';
 import ArchivePanel from '../components/insights/ArchivePanel';
+import TasteProfilePanel from '../components/insights/TasteProfilePanel';
 import TagsPanel, { TagChipList } from '../components/insights/TagsPanel';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { profileApi } from '../services/api';
@@ -220,6 +221,8 @@ const Analysis: React.FC = () => {
             username={analysis.username}
             delay={0.15}
           />
+
+          <TasteProfilePanel username={analysis.username} delay={0.18} />
 
           <ArchivePanel username={analysis.username} />
 

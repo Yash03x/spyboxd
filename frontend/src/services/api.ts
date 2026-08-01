@@ -133,6 +133,11 @@ export const authApi = {
   },
 };
 
+export interface ProfileExternalLink {
+  label: string;
+  url: string;
+}
+
 export interface ProfileFavoriteFilm {
   position: number;
   title: string;
@@ -154,6 +159,8 @@ export interface ProfileHeader {
   location: string | null;
   website: string | null;
   website_url: string | null;
+  /** Every external link the member lists; Letterboxd allows more than one. */
+  external_links?: ProfileExternalLink[];
   pronoun: string | null;
   member_badge: string | null;
   avatar_url: string | null;
@@ -761,6 +768,9 @@ export interface TasteTimelineResponse {
     dated_watch_events: number;
     total_known_watches: number;
     undated_known_watches: number;
+    /** Which date the points sit on; log dates only exist in account exports. */
+    date_basis?: 'logged' | 'watched' | 'mixed';
+    logged_date_events?: number;
     date_coverage_ratio: number | null;
     rated_dated_events: number;
     rating_coverage_ratio: number | null;

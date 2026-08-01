@@ -5,7 +5,20 @@ from typing import Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from database.models import Movie
-from services.import_contracts import MovieIdentity
+from services.import_contracts import MovieIdentity, normalize_letterboxd_url
+
+
+def _usable_poster_url(value: Optional[str]) -> Optional[str]:
+    """Reject Letterboxd's lazy-load placeholder.
+
+    Poster images are resolved client-side, so a scraped ``img src`` is the
+    static empty-poster asset until their JS runs. Persisting it would mask
+    the real poster (TMDB enrichment supplies those).
+    """
+    absolute = normalize_letterboxd_url(value)
+    if not absolute or "empty-poster" in absolute:
+        return None
+    return absolute
 
 
 class MovieResolver:
@@ -34,8 +47,8 @@ class MovieResolver:
                 title=identity.title,
                 normalized_title=identity.normalized_title,
                 release_year=identity.release_year,
-                letterboxd_url=identity.letterboxd_url,
-                poster_url=identity.poster_url,
+                letterboxd_url=normalize_letterboxd_url(identity.letterboxd_url),
+                poster_url=_usable_poster_url(identity.poster_url),
                 first_seen_profile_sync_id=self.profile_sync_id,
                 last_seen_profile_sync_id=self.profile_sync_id,
             )
@@ -103,10 +116,19 @@ class MovieResolver:
             movie.letterboxd_id = identity.letterboxd_id
         if identity.letterboxd_slug and not movie.letterboxd_slug:
             movie.letterboxd_slug = identity.letterboxd_slug
-        if identity.letterboxd_url and not movie.letterboxd_url:
-            movie.letterboxd_url = identity.letterboxd_url
-        if identity.poster_url and (not movie.poster_url or movie.poster_url.startswith("/")):
-            movie.poster_url = identity.poster_url
+        # Every source funnels through the resolver, so normalising here keeps
+        # relative hrefs (data-item-link is site-relative) from reaching the
+        # database and rendering as in-app links.
+        identity_url = normalize_letterboxd_url(identity.letterboxd_url)
+        if identity_url and (not movie.letterboxd_url or movie.letterboxd_url.startswith("/")):
+            movie.letterboxd_url = identity_url
+        identity_poster = _usable_poster_url(identity.poster_url)
+        if identity_poster and (
+            not movie.poster_url
+            or movie.poster_url.startswith("/")
+            or "empty-poster" in movie.poster_url
+        ):
+            movie.poster_url = identity_poster
         if not movie.title and identity.title:
             movie.title = identity.title
             movie.normalized_title = identity.normalized_title

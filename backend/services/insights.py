@@ -38,6 +38,10 @@ ALLOWED_TASTE_DIMENSIONS = {
     "runtime",
 }
 
+# One rated film makes a trait score a perfect 100; below this the number
+# says more about coverage than taste, so such traits rank last in alignment.
+MIN_ALIGNMENT_SAMPLE = 2
+
 LEGACY_EVENT_SOURCE_KINDS = {
     "legacy_backfill",
     "legacy_rating_backfill",
@@ -97,12 +101,25 @@ class EventRow:
     username: str
     movie_id: int
     watched_date: date
+    logged_date: Optional[date]
     rating: Optional[float]
     liked: bool
     rewatch: bool
     tags: List[str]
     source_kind: str
     movie: Movie
+
+    @property
+    def opinion_date(self) -> date:
+        """When the opinion was recorded, not when the film was seen.
+
+        Letterboxd lets a member backdate a diary entry to the day they
+        actually watched something, so a 2015 watch date can carry a rating
+        formed in 2024. Anything charting how taste changed belongs on the
+        log date; the watch date is the fallback, since only official account
+        exports carry log dates.
+        """
+        return self.logged_date or self.watched_date
 
 
 @dataclass(frozen=True)
@@ -643,6 +660,7 @@ class InsightsService:
                 username=profile.username,
                 movie_id=movie.id,
                 watched_date=event.watched_date,
+                logged_date=event.logged_date,
                 rating=_safe_float(event.rating),
                 liked=bool(event.is_liked),
                 rewatch=bool(event.is_rewatch),
@@ -1913,6 +1931,35 @@ class InsightsService:
             )
         return []
 
+    @staticmethod
+    def _alignment_sort_key(trait: Dict[str, Any], profile_count: int) -> Tuple:
+        """Order a dimension by how much the profiles actually agree.
+
+        Ranking by group score alone surfaces traits one profile rated
+        highly and the other never watched — maximum divergence, which the
+        contrasts panel already covers. Alignment needs both sides present,
+        both strong, and close together. A single five-star film also scores
+        a perfect 100, so traits below the credible sample floor rank last.
+        """
+        engaged = [entry for entry in trait["per_profile"] if entry["sample_size"] > 0]
+        shared = len(engaged) == profile_count
+        credible = shared and all(
+            entry["sample_size"] >= MIN_ALIGNMENT_SAMPLE for entry in engaged
+        )
+        scores = [entry["score"] for entry in engaged]
+        weakest = min(scores) if scores else 0.0
+        spread = (max(scores) - min(scores)) if len(scores) >= 2 else 0.0
+        # The weaker side carries the pair, and disagreement is penalised, so
+        # "both like this a lot" outranks "one adores it, one has never seen it".
+        alignment = weakest - (spread / 2)
+        return (
+            not credible,
+            not shared,
+            -alignment,
+            -trait["sample_size"],
+            trait["label"],
+        )
+
     def taste_dna(
         self,
         requested: Sequence[str],
@@ -1920,7 +1967,7 @@ class InsightsService:
         dimensions: Sequence[str],
         limit: int,
     ) -> Dict[str, Any]:
-        profiles = self._resolve_profiles(requested, minimum=2)
+        profiles = self._resolve_profiles(requested, minimum=1)
         invalid = sorted(set(dimensions) - ALLOWED_TASTE_DIMENSIONS)
         if invalid:
             raise InsightRequestError(
@@ -2008,7 +2055,7 @@ class InsightsService:
                     contrast_candidates.append((contrast, {**trait, "group_score": _round(contrast, 1) or 0}))
                 if len(present_profiles) >= 2:
                     signature_candidates.append(trait)
-            traits.sort(key=lambda trait: (-trait["group_score"], -trait["sample_size"], trait["label"]))
+            traits.sort(key=lambda trait: self._alignment_sort_key(trait, len(profiles)))
             dimension_payloads[dimension] = traits[:limit]
 
         signature_candidates.sort(
@@ -2165,7 +2212,7 @@ class InsightsService:
         trait_limit: int,
         year_limit: int,
     ) -> Dict[str, Any]:
-        profiles = self._resolve_profiles(requested, minimum=2)
+        profiles = self._resolve_profiles(requested, minimum=1)
         invalid = sorted(set(dimensions) - ALLOWED_TASTE_DIMENSIONS)
         if invalid:
             raise InsightRequestError(
@@ -2181,21 +2228,21 @@ class InsightsService:
         events = [
             event
             for event in all_events
-            if (from_year is None or event.watched_date.year >= from_year)
-            and (to_year is None or event.watched_date.year <= to_year)
+            if (from_year is None or event.opinion_date.year >= from_year)
+            and (to_year is None or event.opinion_date.year <= to_year)
         ]
 
-        available_years = sorted({event.watched_date.year for event in events})
+        available_years = sorted({event.opinion_date.year for event in events})
         returned_years = available_years[-year_limit:]
         returned_year_set = set(returned_years)
         returned_events = [
-            event for event in events if event.watched_date.year in returned_year_set
+            event for event in events if event.opinion_date.year in returned_year_set
         ]
         yearly_events: Dict[int, List[EventRow]] = defaultdict(list)
         seasonal_events: Dict[Tuple[int, str], List[EventRow]] = defaultdict(list)
         for event in returned_events:
-            yearly_events[event.watched_date.year].append(event)
-            seasonal_events[self._season_for_date(event.watched_date)].append(event)
+            yearly_events[event.opinion_date.year].append(event)
+            seasonal_events[self._season_for_date(event.opinion_date)].append(event)
 
         yearly = [
             self._taste_period_summary(
@@ -2303,6 +2350,20 @@ class InsightsService:
                 "dated_watch_events": len(all_events),
                 "total_known_watches": total_known_watches,
                 "undated_known_watches": undated_known_watches,
+                # Which date each point sits on. Log dates only exist in
+                # official account exports, so a timeline built on watch dates
+                # places backdated entries in the year of the viewing rather
+                # than the year the opinion was formed.
+                "date_basis": (
+                    "logged"
+                    if events and all(event.logged_date is not None for event in events)
+                    else "watched"
+                    if not any(event.logged_date is not None for event in events)
+                    else "mixed"
+                ),
+                "logged_date_events": sum(
+                    1 for event in events if event.logged_date is not None
+                ),
                 "date_coverage_ratio": _round(date_coverage_ratio, 3),
                 "rated_dated_events": rated_dated_events,
                 "rating_coverage_ratio": _round(rating_coverage_ratio, 3),
