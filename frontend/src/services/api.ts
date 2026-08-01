@@ -1474,6 +1474,10 @@ export interface RatingComparisonDivisiveFilm {
   rater_count: number;
   /** The others only — the group average's denominator. */
   group_rater_count: number;
+  /** Share of Letterboxd's crowd in the film's most popular half-star bucket.
+   *  High means the wider world has largely settled, so a split here belongs to
+   *  this circle rather than to the film. Null when no histogram is imported. */
+  crowd_consensus: number | null;
   group_average: number;
   /** Null when this profile has not rated a film the rest of the group split over. */
   profile_rating: number | null;
