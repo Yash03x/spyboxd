@@ -361,6 +361,19 @@ export const profileStats = {
     rewatches: 64,
     average_rating: 3.72,
   },
+  // One real sitting, plus a day the export dated in bulk that must not be
+  // reported as the biggest.
+  marathons: {
+    count: 41,
+    biggest: {
+      date: '2025-10-23',
+      films: 8,
+      runtime_minutes: 884,
+      titles: ['Fixture One', 'Fixture Two', 'Fixture Three'],
+    },
+    recent: [],
+    import_artifact_days: 2,
+  },
   top_directors: [
     { name: 'Akira Kurosawa', count: 18, average_rating: 4.3 },
     { name: 'Agnès Varda', count: 12, average_rating: 4.1 },
