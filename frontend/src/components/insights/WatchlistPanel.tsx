@@ -253,7 +253,7 @@ const WatchlistPanel: React.FC<{ username: string; delay?: number }> = ({
         <div className="mt-6">
           <ListSection
             title="Watch next"
-            subtitle="Highest circle average first, then the number of members behind it"
+            subtitle="Ranked on the circle's average, weighted down when only one or two members have seen it"
           >
             {visibleQueue.map((film, index) => (
               <QueueRow

@@ -265,7 +265,12 @@ def _divisive_entry(row: _FilmRow, identity: Dict[str, Any]) -> Dict[str, Any]:
     return {
         **identity,
         "rating_spread": _round(max(ratings) - min(ratings), 2),
+        # The spread is measured across everyone who rated the film, the group
+        # average deliberately excludes the profile being viewed. Reporting one
+        # count for both presented a four-person average as a five-person one,
+        # so each figure now carries its own denominator.
         "rater_count": len(ratings),
+        "group_rater_count": len(row.other_ratings),
         "group_average": _round(row.group_average, 2),
         "profile_rating": _round(row.profile_rating, 2),
     }
