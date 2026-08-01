@@ -485,6 +485,8 @@ export const watchlistInsights = {
       group_raters: 4,
       liked_by: 3,
       letterboxd_average: 4.11,
+      crowd_ceiling: 0.42,
+      crowd_floor: 0.03,
       added_date: '2024-02-11',
       days_waiting: 871,
       raters: [
@@ -632,6 +634,8 @@ export const ratingComparison = {
       delta: 1.75,
       rater_count: 4,
       letterboxd_average: 3.21,
+      crowd_ceiling: 0.42,
+      crowd_floor: 0.03,
     },
     {
       title: 'Unenriched Champion',
@@ -656,6 +660,8 @@ export const ratingComparison = {
       delta: -2.33,
       rater_count: 5,
       letterboxd_average: 3.94,
+      crowd_ceiling: 0.42,
+      crowd_floor: 0.03,
     },
   ],
   most_divisive: [
@@ -667,6 +673,7 @@ export const ratingComparison = {
       rating_spread: 3,
       rater_count: 6,
       group_rater_count: 5,
+      crowd_consensus: 0.41,
       group_average: 3.08,
       profile_rating: 4.5,
     },
@@ -678,6 +685,7 @@ export const ratingComparison = {
       rating_spread: 2.5,
       rater_count: 4,
       group_rater_count: 3,
+      crowd_consensus: 0.41,
       group_average: 2.88,
       profile_rating: null,
     },
