@@ -490,3 +490,60 @@ def test_the_pusher_sends_null_for_a_film_with_no_histogram(database):
     entries, _ = collect_ratings(database)
 
     assert entries[0]["rating_distribution"] is None
+
+
+def test_the_pusher_reports_every_count_the_endpoint_returns(monkeypatch):
+    """A fixed key set hid the one number that proves the push worked.
+
+    ``push_ratings`` used to accumulate into a hard-coded four-key dict, so
+    ``distributions_written`` -- the only evidence the histograms this delivery
+    exists for actually landed -- was dropped from the summary while the API
+    was reporting it. Counts are accumulated by whatever the endpoint names.
+    """
+    from scripts import push_letterboxd_ratings as pusher
+
+    batches = [
+        {"received": 2, "updated": 2, "unmatched": 0, "skipped": 0,
+         "distributions_written": 2, "distributions_rejected": 0},
+        {"received": 1, "updated": 1, "unmatched": 0, "skipped": 0,
+         "distributions_written": 0, "distributions_rejected": 1},
+    ]
+    sent = iter(batches)
+    monkeypatch.setattr(pusher, "push_batch", lambda **_kwargs: next(sent))
+
+    totals = pusher.push_ratings(
+        [{"slug": f"film-{index}"} for index in range(3)],
+        api_base_url="https://example.test",
+        upload_token="token",
+        bearer_token=None,
+        batch_size=2,
+        timeout_seconds=30,
+    )
+
+    assert totals["updated"] == 3
+    assert totals["distributions_written"] == 2
+    assert totals["distributions_rejected"] == 1
+
+
+def test_non_numeric_fields_in_the_response_are_not_summed(monkeypatch):
+    """The endpoint also returns strings; only counts may accumulate."""
+    from scripts import push_letterboxd_ratings as pusher
+
+    monkeypatch.setattr(
+        pusher,
+        "push_batch",
+        lambda **_kwargs: {"received": 1, "updated": 1, "detail": "ok", "dry_run": False},
+    )
+
+    totals = pusher.push_ratings(
+        [{"slug": "film"}],
+        api_base_url="https://example.test",
+        upload_token="token",
+        bearer_token=None,
+        batch_size=10,
+        timeout_seconds=30,
+    )
+
+    assert totals["updated"] == 1
+    assert "detail" not in totals
+    assert "dry_run" not in totals
