@@ -1508,3 +1508,185 @@ class FollowAwareSignalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SemanticNeighborTests(unittest.TestCase):
+    """Different films that are contextually the same thing.
+
+    The panel promised "contextual matches, not exact-title co-watches" and the
+    backend returned a hard-coded empty list from the first commit onward, so the
+    section was always blank. These pin what it may and may not claim.
+    """
+
+    def setUp(self) -> None:
+        self.service = InsightsService(db=None)
+        self.profiles = [
+            Profile(id=1, username="ana", is_active=True, scraping_status="completed"),
+            Profile(id=2, username="ben", is_active=True, scraping_status="completed"),
+        ]
+
+    def _movie(self, movie_id: int, title: str) -> Movie:
+        return Movie(
+            id=movie_id,
+            canonical_key=f"letterboxd:{movie_id}",
+            title=title,
+            normalized_title=title.casefold(),
+            release_year=2024,
+            letterboxd_slug=f"film-{movie_id}",
+        )
+
+    def _state(
+        self,
+        profile_index: int,
+        movie_id: int,
+        title: str,
+        watched: date,
+        *,
+        director: str | None = None,
+        keywords: tuple[str, ...] = (),
+    ) -> StateRow:
+        profile = self.profiles[profile_index]
+        crew = [{"name": director, "job": "Director"}] if director else []
+        return StateRow(
+            profile_id=profile.id,
+            username=profile.username,
+            movie_id=movie_id,
+            rating=None,
+            liked=False,
+            tags=[],
+            first_watched_date=watched,
+            latest_watched_date=watched,
+            watch_count=1,
+            rewatch_count=0,
+            movie=self._movie(movie_id, title),
+            enrichment=MovieEnrichment(
+                movie_id=movie_id,
+                genres=[],
+                keywords=list(keywords),
+                credits={"crew": crew, "cast": []},
+                production_countries=[],
+            ),
+        )
+
+    def _neighbors(self, states, *, limit: int = 8, profiles=None):
+        return self.service._semantic_neighbors(
+            profiles if profiles is not None else self.profiles, states, limit
+        )
+
+    def test_two_different_films_by_one_director_are_a_neighbour(self) -> None:
+        result = self._neighbors([
+            self._state(0, 10, "Oldboy", date(2026, 7, 1), director="Park Chan-wook"),
+            self._state(1, 11, "Decision to Leave", date(2026, 7, 3), director="Park Chan-wook"),
+        ])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["movie"]["title"], "Decision to Leave")
+        self.assertEqual(result[0]["reason"], "Both watched a Park Chan-wook film")
+        self.assertEqual(result[0]["day_gap"], 2)
+
+    def test_the_same_film_is_a_co_watch_and_never_a_semantic_neighbour(self) -> None:
+        """The panel's whole promise is that these are NOT exact-title co-watches."""
+        result = self._neighbors([
+            self._state(0, 10, "Oldboy", date(2026, 7, 1), director="Park Chan-wook"),
+            self._state(1, 10, "Oldboy", date(2026, 7, 2), director="Park Chan-wook"),
+        ])
+
+        self.assertEqual(result, [])
+
+    def test_one_person_watching_two_related_films_is_not_a_match_between_anyone(self) -> None:
+        result = self._neighbors([
+            self._state(0, 10, "Oldboy", date(2026, 7, 1), director="Park Chan-wook"),
+            self._state(0, 11, "Thirst", date(2026, 7, 2), director="Park Chan-wook"),
+        ])
+
+        self.assertEqual(result, [])
+
+    def test_a_single_profile_can_have_no_neighbours(self) -> None:
+        result = self._neighbors(
+            [self._state(0, 10, "Oldboy", date(2026, 7, 1), director="Park Chan-wook")],
+            profiles=self.profiles[:1],
+        )
+
+        self.assertEqual(result, [])
+
+    def test_films_watched_further_apart_than_the_window_are_not_related_in_time(self) -> None:
+        result = self._neighbors([
+            self._state(0, 10, "Oldboy", date(2026, 6, 1), director="Park Chan-wook"),
+            self._state(1, 11, "Thirst", date(2026, 7, 15), director="Park Chan-wook"),
+        ])
+
+        self.assertEqual(result, [])
+
+    def test_a_film_without_a_watch_date_cannot_claim_closeness_in_time(self) -> None:
+        undated = self._state(1, 11, "Thirst", date(2026, 7, 2), director="Park Chan-wook")
+        undated = StateRow(**{**undated.__dict__, "latest_watched_date": None})
+
+        result = self._neighbors([
+            self._state(0, 10, "Oldboy", date(2026, 7, 1), director="Park Chan-wook"),
+            undated,
+        ])
+
+        self.assertEqual(result, [])
+
+    def test_watched_by_names_the_earlier_watcher_first(self) -> None:
+        result = self._neighbors([
+            self._state(1, 11, "Thirst", date(2026, 7, 5), director="Park Chan-wook"),
+            self._state(0, 10, "Oldboy", date(2026, 7, 1), director="Park Chan-wook"),
+        ])
+
+        self.assertEqual(result[0]["watched_by"], ["ana", "ben"])
+
+    def test_production_trivia_is_not_a_shared_theme(self) -> None:
+        """TMDB keywords mix themes with credits metadata.
+
+        "Both explored duringcreditsstinger" reached the real UI before this.
+        """
+        result = self._neighbors([
+            self._state(0, 10, "A", date(2026, 7, 1), keywords=("duringcreditsstinger", "woman director")),
+            self._state(1, 11, "B", date(2026, 7, 2), keywords=("duringcreditsstinger", "woman director")),
+        ])
+
+        self.assertEqual(result, [])
+
+    def test_one_card_per_film_even_when_several_pairs_point_at_it(self) -> None:
+        """Two Park Chan-wook pairs both surfaced "Decision to Leave" as duplicates."""
+        result = self._neighbors([
+            self._state(0, 10, "Oldboy", date(2026, 7, 1), director="Park Chan-wook"),
+            self._state(0, 12, "Thirst", date(2026, 7, 2), director="Park Chan-wook"),
+            self._state(1, 11, "Decision to Leave", date(2026, 7, 3), director="Park Chan-wook"),
+        ])
+
+        titles = [entry["movie"]["title"] for entry in result]
+        self.assertEqual(titles, sorted(set(titles)))
+        self.assertEqual(titles.count("Decision to Leave"), 1)
+
+    def test_a_director_match_outranks_a_shared_keyword(self) -> None:
+        result = self._neighbors([
+            self._state(0, 10, "A", date(2026, 7, 1), director="Agnes Varda", keywords=("grief",)),
+            self._state(1, 11, "B", date(2026, 7, 2), director="Agnes Varda", keywords=("grief",)),
+        ])
+
+        self.assertEqual(len(result), 1)
+        self.assertIn("Agnes Varda", result[0]["reason"])
+
+    def test_a_vowel_initial_name_takes_the_right_article(self) -> None:
+        result = self._neighbors([
+            self._state(0, 10, "A", date(2026, 7, 1), director="Alex Garland"),
+            self._state(1, 11, "B", date(2026, 7, 2), director="Alex Garland"),
+        ])
+
+        self.assertEqual(result[0]["reason"], "Both watched an Alex Garland film")
+
+    def test_the_limit_trims_without_reordering(self) -> None:
+        states = [
+            self._state(0, 10, "A", date(2026, 7, 1), director="Wong Kar-Wai"),
+            self._state(1, 11, "B", date(2026, 7, 2), director="Wong Kar-Wai"),
+            self._state(0, 12, "C", date(2026, 7, 1), director="Michael Mann"),
+            self._state(1, 13, "D", date(2026, 7, 8), director="Michael Mann"),
+        ]
+
+        full = self._neighbors(states, limit=8)
+        trimmed = self._neighbors(states, limit=1)
+
+        self.assertEqual(len(trimmed), 1)
+        self.assertEqual(trimmed[0]["movie"]["title"], full[0]["movie"]["title"])

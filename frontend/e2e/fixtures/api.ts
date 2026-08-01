@@ -1078,8 +1078,35 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
           },
         ],
       },
+      // The real endpoint always returns this block, and the panel reads
+      // `summary.similarity_score` unguarded. Omitting it here threw
+      // "Cannot read properties of undefined" and took the whole tab down,
+      // which is why nothing under it was ever exercised.
+      summary: {
+        similarity_score: 72.5,
+        shared_rated_titles: 35,
+        metadata_coverage_ratio: 0.92,
+        tmdb_status: 'connected',
+      },
       shared_signature: [],
       contrasts: [],
+      // Carries entries on purpose. The backend returned a hard-coded empty
+      // list from the first commit, and because the fixture omitted the field
+      // too, nothing ever noticed the panel was permanently blank.
+      semantic_neighbors: [
+        {
+          movie: { movie_id: 501, title: 'Decision to Leave', release_year: 2022, poster_url: null },
+          reason: 'Both watched a Park Chan-wook film',
+          watched_by: [profiles[0].username, profiles[1].username],
+          day_gap: 2,
+        },
+        {
+          movie: { movie_id: 502, title: 'Fallen Angels', release_year: 1995, poster_url: null },
+          reason: 'Both watched a Wong Kar-Wai film',
+          watched_by: [profiles[1].username, profiles[0].username],
+          day_gap: 3,
+        },
+      ],
       coverage: { status: 'ready', score: 100, blockers: [], warnings: [] },
     });
   }
