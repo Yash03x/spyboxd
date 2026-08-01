@@ -145,7 +145,16 @@ export default function TasteTimelinePanel({ data, coverage }: {
       </section>
 
       <p className="flex items-start gap-2 px-1 text-xs leading-5 text-white/40">
-        <Info className="mt-0.5 h-4 w-4 shrink-0" /> Only observed, dated watch events are placed on the timeline. {data.summary.undated_known_watches.toLocaleString()} known watches without dates remain excluded.
+        <Info className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>
+          Only observed, dated events are placed on the timeline. {data.summary.undated_known_watches.toLocaleString()} known watches without dates remain excluded.
+          {' '}
+          {data.summary.date_basis === 'logged'
+            ? 'Points sit on the date each entry was logged, so a backdated watch counts toward the year the opinion was recorded.'
+            : data.summary.date_basis === 'mixed'
+              ? `Points sit on the log date where one is known (${data.summary.logged_date_events?.toLocaleString() ?? 0} events) and the watch date otherwise.`
+              : 'Points sit on the watch date: log dates only come from an official Letterboxd export, so entries backdated to an older viewing appear in that older year.'}
+        </span>
       </p>
 
       <section className="panel-insight p-4">

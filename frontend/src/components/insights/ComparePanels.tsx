@@ -275,19 +275,26 @@ function TraitMirror({ trait, profiles }: { trait: TasteTrait; profiles: string[
   const left = trait.per_profile.find((score) => score.username === profiles[0]);
   const right = trait.per_profile.find((score) => score.username === profiles[1]);
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_4rem_minmax(0,1fr)] items-center gap-2 text-xs">
+    // Names (directors, actors) need real room: a fixed narrow column
+    // truncated almost every one of them to "Paul Tho…".
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(8rem,14rem)_minmax(0,1fr)] items-center gap-2 text-xs">
       <div className="flex items-center justify-end gap-2">
-        <span className="truncate text-white/55">{left ? `${Math.round(left.score)}%` : '—'}</span>
-        <span className="h-1.5 w-full max-w-28 overflow-hidden rounded-full bg-white/10">
+        <span className="shrink-0 tabular-nums text-white/55">{left ? `${Math.round(left.score)}%` : '—'}</span>
+        <span className="h-1.5 w-full max-w-24 overflow-hidden rounded-full bg-white/10">
           <span className="ml-auto block h-full rounded-full bg-cinema-500" style={{ width: `${Math.max(2, left?.score ?? 0)}%` }} />
         </span>
       </div>
-      <span className="truncate text-center font-medium text-white/75" title={trait.label}>{trait.label}</span>
+      <span
+        className="truncate text-center text-sm font-medium text-white/85"
+        title={trait.label}
+      >
+        {trait.label}
+      </span>
       <div className="flex items-center gap-2">
-        <span className="h-1.5 w-full max-w-28 overflow-hidden rounded-full bg-white/10">
+        <span className="h-1.5 w-full max-w-24 overflow-hidden rounded-full bg-white/10">
           <span className="block h-full rounded-full bg-blue-500" style={{ width: `${Math.max(2, right?.score ?? 0)}%` }} />
         </span>
-        <span className="truncate text-white/55">{right ? `${Math.round(right.score)}%` : '—'}</span>
+        <span className="shrink-0 tabular-nums text-white/55">{right ? `${Math.round(right.score)}%` : '—'}</span>
       </div>
     </div>
   );

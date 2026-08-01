@@ -52,6 +52,7 @@ def event(
     rewatch: bool = False,
     rating: float | None = 4.0,
     liked: bool = False,
+    logged_date: date | None = None,
 ) -> EventRow:
     return EventRow(
         id=event_id,
@@ -59,6 +60,7 @@ def event(
         username=username,
         movie_id=movie.id,
         watched_date=watched_date,
+        logged_date=logged_date,
         rating=rating,
         liked=liked,
         rewatch=rewatch,

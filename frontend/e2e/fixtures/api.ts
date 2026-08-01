@@ -581,6 +581,35 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   }
   if (path === '/api/watch-together') return json(route, watchTogether);
 
+  // Single-profile taste panel on Analysis; contract-shaped so the page
+  // renders without console noise.
+  if (path === '/api/taste-dna') {
+    return json(route, {
+      selected_profiles: [profiles[0].username],
+      dimensions: {
+        genre: [
+          {
+            id: 'genre:drama',
+            label: 'Drama',
+            dimension: 'genre',
+            group_score: 78,
+            sample_size: 42,
+            average_rating: 3.9,
+            like_rate: 0.3,
+            watch_share: 1,
+            per_profile: [
+              { username: profiles[0].username, score: 78, sample_size: 42, average_rating: 3.9 },
+            ],
+            top_movies: [],
+          },
+        ],
+      },
+      shared_signature: [],
+      contrasts: [],
+      coverage: { status: 'ready', score: 100, blockers: [], warnings: [] },
+    });
+  }
+
   // Social graph (contract-shaped empty states until fixtures grow edges).
   if (path === '/api/follow-graph/suggestions') return json(route, { suggestions: [] });
   if (path === '/api/follow-graph/mutuals') {

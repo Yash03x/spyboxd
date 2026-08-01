@@ -768,6 +768,9 @@ export interface TasteTimelineResponse {
     dated_watch_events: number;
     total_known_watches: number;
     undated_known_watches: number;
+    /** Which date the points sit on; log dates only exist in account exports. */
+    date_basis?: 'logged' | 'watched' | 'mixed';
+    logged_date_events?: number;
     date_coverage_ratio: number | null;
     rated_dated_events: number;
     rating_coverage_ratio: number | null;
