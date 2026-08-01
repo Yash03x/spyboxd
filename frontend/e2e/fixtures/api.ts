@@ -161,6 +161,50 @@ export const profileAnalysis = {
   scraping_status: 'completed',
   enhanced_metrics: {},
   data_coverage: profiles[0].data_coverage,
+  profile_header: {
+    username: 'alpha',
+    display_name: 'Alpha Viewer',
+    bio: 'Fixture bio for the profile header.',
+    location: 'Chennai',
+    website: 'alpha.example.com',
+    website_url: 'https://alpha.example.com',
+    pronoun: 'they/them',
+    member_badge: 'Patron',
+    avatar_url: null,
+    letterboxd_url: 'https://letterboxd.com/alpha/',
+    letterboxd_person_id: 998877,
+    join_date: '2020-01-01',
+    films_count: 1_200,
+    reviews_count: 2,
+    lists_count: 4,
+    watchlist_count: 310,
+    following_count: 88,
+    followers_count: 190,
+    films_this_year: 120,
+    favorites: [
+      {
+        position: 1,
+        title: 'Favourite One',
+        year: 1999,
+        poster_url: null,
+        letterboxd_url: 'https://letterboxd.com/film/favourite-one/',
+      },
+      {
+        position: 2,
+        title: 'Favourite Two',
+        year: 2004,
+        poster_url: null,
+        letterboxd_url: 'https://letterboxd.com/film/favourite-two/',
+      },
+    ],
+    synced_films: 1_200,
+    avg_rating: 3.7,
+    total_reviews: 2,
+    last_scraped_at: '2026-07-29T12:00:00Z',
+    metadata_synced_at: '2026-07-29T12:00:00Z',
+    stats_snapshot: { hours: 2_130, directors: 640, longest_streak: 19 },
+    stats_synced_at: '2026-07-29T12:00:00Z',
+  },
   rating_distribution: { '3.5': 120, '4.0': 240, '4.5': 80 },
   monthly_stats: [
     { month: '2026-05', movies_watched: 10, unique_movies: 8, average_rating: 3.7, is_partial: false },
@@ -541,6 +585,19 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   if (path === '/api/follow-graph/suggestions') return json(route, { suggestions: [] });
   if (path === '/api/follow-graph/mutuals') {
     return json(route, { profiles: [], pairs: [], rollups: {} });
+  }
+  {
+    const archiveMatch = path.match(/^\/api\/profiles\/([^/]+)\/archive$/);
+    if (archiveMatch) {
+      return json(route, {
+        username: decodeURIComponent(archiveMatch[1]),
+        liked_reviews: [],
+        liked_lists: [],
+        comments: [],
+        lost_entries: [],
+        totals: { liked_reviews: 0, liked_lists: 0, comments: 0, lost_entries: 0 },
+      });
+    }
   }
   {
     const followGraphMatch = path.match(/^\/api\/profiles\/([^/]+)\/follow-graph$/);

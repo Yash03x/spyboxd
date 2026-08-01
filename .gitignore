@@ -58,3 +58,7 @@ logs/
 # Temporary files
 tmp/
 temp/
+
+# Local dev-server launch config
+.claude/launch.json
+frontend/e2e/tmp-*.spec.ts

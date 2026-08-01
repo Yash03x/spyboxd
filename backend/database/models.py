@@ -76,6 +76,12 @@ class Profile(Base):
     letterboxd_person_id = Column(BigInteger, nullable=True)
     member_badge = Column(String(20), nullable=True)  # 'Patron' | 'Pro' | 'Crew'
     pronoun = Column(String(50), nullable=True)  # official-export profile.csv only
+    # Letterboxd's own /<user>/stats/ header figures. Hours watched and the
+    # director/country/streak counts are not derivable from imported rows
+    # (runtime and credits would need TMDB for every film), so the site's
+    # published numbers are stored as observed facts.
+    stats_snapshot = Column(_json_type(), nullable=True)
+    stats_synced_at = Column(DateTime(timezone=True), nullable=True)
     metadata_synced_at = Column(DateTime(timezone=True), nullable=True)
     last_profile_sync_id = Column(
         BigInteger,
@@ -149,6 +155,11 @@ class Profile(Base):
     )
     member_comments = relationship(
         "MemberComment",
+        back_populates="profile",
+        cascade="all, delete-orphan",
+    )
+    lost_entries = relationship(
+        "LostEntry",
         back_populates="profile",
         cascade="all, delete-orphan",
     )
@@ -1067,6 +1078,56 @@ class ProfileFollowEdge(Base):
             postgresql_where=sql_text("removed_at IS NULL"),
         ),
         Index("ix_profile_follow_edges_counterpart_profile", "counterpart_profile_id"),
+    )
+
+
+class LostEntry(Base):
+    """A diary entry, review, or comment Letterboxd could no longer place.
+
+    Official exports separate these into deleted/ (the film or thread was
+    removed from Letterboxd) and orphaned/ (the entry survived but its target
+    could not be resolved). They are history the public profile no longer
+    shows, so they are stored apart from live surfaces and never merged into
+    watch events, reviews, or film state.
+    """
+
+    __tablename__ = "lost_entries"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False)
+    lost_kind = Column(String(10), nullable=False)  # 'deleted' | 'orphaned'
+    entry_type = Column(String(10), nullable=False)  # 'diary' | 'review' | 'comment' | 'list'
+    entry_key = Column(String(600), nullable=False)
+    title = Column(String(300), nullable=True)
+    release_year = Column(Integer, nullable=True)
+    source_url = Column(String(500), nullable=True)
+    entry_date = Column(Date, nullable=True)
+    watched_date = Column(Date, nullable=True)
+    rating = Column(Float, nullable=True)
+    is_rewatch = Column(Boolean, nullable=False, server_default=sql_text("false"))
+    body_text = Column(Text, nullable=True)
+    tags = Column(_json_type(), nullable=False, server_default=sql_text("'[]'"))
+    first_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    last_seen_profile_sync_id = Column(
+        BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    profile = relationship("Profile", back_populates="lost_entries")
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "entry_key", name="unique_lost_entry"),
+        CheckConstraint(
+            "lost_kind IN ('deleted', 'orphaned')", name="ck_lost_entries_kind"
+        ),
+        CheckConstraint(
+            "entry_type IN ('diary', 'review', 'comment', 'list')",
+            name="ck_lost_entries_type",
+        ),
+        Index("ix_lost_entries_profile_kind", "profile_id", "lost_kind", "entry_type"),
     )
 
 

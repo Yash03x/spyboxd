@@ -56,11 +56,14 @@ class ProfileInfo:
     person_id: Optional[int] = None
     badge: str = ""
     watchlist_count: Optional[int] = None
+    stats: Dict = None
     favorite_films: List[Dict] = None
 
     def __post_init__(self):
         if self.favorite_films is None:
             self.favorite_films = []
+        if self.stats is None:
+            self.stats = {}
 
 
 @dataclass
@@ -646,6 +649,41 @@ class EnhancedLetterboxdScraper:
         self._finish_dataset('favorites')
         return self.profile_info
     
+    def scrape_stats(self) -> Dict:
+        """Read Letterboxd's own /<user>/stats/ header figures.
+
+        Hours watched and the distinct director/country counts are not
+        derivable from imported rows without runtime and credit metadata for
+        every film, so the site's published numbers are worth keeping. The
+        page is server-rendered for the header block; the charts below it
+        hydrate client-side and are intentionally out of scope. The whole
+        surface is best-effort: it is Pro/Patron-gated for some accounts and
+        must never fail a sync.
+        """
+        print(f"📊 Reading stats for {self.username}...")
+        response = self.fetch_with_retry(self.urls['stats'], max_retries=2)
+        if response is None or getattr(response, 'status_code', 200) != 200:
+            print("⚠ Stats page unavailable; continuing without it")
+            return {}
+        soup = BeautifulSoup(response.content, 'html.parser')
+        stats: Dict = {}
+        for block in soup.select('h4.yir-member-statistic, .yir-member-statistic'):
+            value_el = block.select_one('span.value')
+            definition_el = block.select_one('span.definition')
+            if value_el is None or definition_el is None:
+                continue
+            label = ' '.join(definition_el.stripped_strings).strip()
+            value = ' '.join(value_el.stripped_strings).strip()
+            if not label or not value:
+                continue
+            key = re.sub(r'[^a-z0-9]+', '_', label.casefold()).strip('_')
+            digits = value.replace(',', '')
+            stats[key] = int(digits) if digits.isdigit() else value
+        if stats:
+            print(f"✓ Stats: {', '.join(f'{k}={v}' for k, v in list(stats.items())[:4])}")
+        self.profile_info.stats = stats
+        return stats
+
     def scrape_all_films(self) -> List[Dict]:
         """Scrape all films from the user's films page."""
         print(f"🎬 Scraping all films for {self.username}...")
@@ -1381,7 +1419,7 @@ class EnhancedLetterboxdScraper:
             'Username', 'Display_Name', 'Bio', 'Location', 'Website', 'Join_Date',
             'Avatar_URL', 'Total_Films', 'Total_Reviews', 'Total_Lists',
             'Following_Count', 'Followers_Count', 'Person_ID', 'Badge',
-            'Watchlist_Count'
+            'Watchlist_Count', 'Stats'
         ]
         data = [{
             'Username': self.profile_info.username,
@@ -1399,6 +1437,7 @@ class EnhancedLetterboxdScraper:
             'Person_ID': self.profile_info.person_id,
             'Badge': self.profile_info.badge,
             'Watchlist_Count': self.profile_info.watchlist_count,
+            'Stats': json.dumps(self.profile_info.stats, sort_keys=True) if self.profile_info.stats else '',
         }]
         self._write_csv("profile.csv", data, fieldnames)
 
@@ -1719,6 +1758,7 @@ class EnhancedLetterboxdScraper:
         # the header counts exist for their pre-flight cap, and because they
         # are cheap and fail fast.
         self.scrape_profile_info()
+        self.scrape_stats()
         self.scrape_following()
         self.scrape_followers()
         self.scrape_all_films()  # Add this line to scrape films

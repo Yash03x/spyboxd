@@ -17,10 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes.activity import router as activity_router
 from api.routes.follow_graph import router as follow_graph_router
 from api.routes.insights import router as insights_router
+from api.routes.member_archive import router as member_archive_router
 from api.routes.profile_access import router as profile_access_router
 from auth import ClerkUser, get_admin_user, get_current_user, get_upload_user
 from database.connection import engine, get_db, init_db
-from database.models import Profile
+from database.models import Movie, Profile, ProfileFavoriteMovie
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
@@ -385,6 +386,7 @@ app.include_router(insights_router)
 app.include_router(activity_router)
 app.include_router(profile_access_router)
 app.include_router(follow_graph_router)
+app.include_router(member_archive_router)
 
 @app.get("/health")
 async def health_check():
@@ -690,6 +692,105 @@ async def get_spy_signals(
     }
 
 
+def _safe_external_url(value) -> Optional[str]:
+    """Normalize a member-supplied website into a link-safe absolute URL.
+
+    Letterboxd stores the website exactly as the member typed it, so the value
+    is frequently scheme-less ("example.com") and is never trustworthy enough
+    to hand to an href unchecked. Anything that is not plain http(s) is
+    dropped rather than rendered.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    lowered = candidate.casefold()
+    if lowered.startswith(("http://", "https://")):
+        return candidate
+    if "://" in candidate or ":" in candidate.split("/", 1)[0]:
+        return None
+    return f"https://{candidate}"
+
+
+def _profile_favorite_films(db: Session, profile_id: int) -> List[dict]:
+    """Letterboxd's four favourite films for a profile, in display order."""
+    rows = (
+        db.query(ProfileFavoriteMovie, Movie)
+        .join(Movie, Movie.id == ProfileFavoriteMovie.movie_id)
+        .filter(ProfileFavoriteMovie.profile_id == profile_id)
+        .order_by(ProfileFavoriteMovie.position.asc())
+        .all()
+    )
+    favorites: List[dict] = []
+    for favorite, movie in rows:
+        letterboxd_url = movie.letterboxd_url
+        if not letterboxd_url and movie.letterboxd_slug:
+            letterboxd_url = f"https://letterboxd.com/film/{movie.letterboxd_slug}/"
+        favorites.append(
+            {
+                "position": favorite.position,
+                "title": movie.title,
+                "year": movie.release_year,
+                "poster_url": movie.poster_url,
+                "letterboxd_url": letterboxd_url,
+            }
+        )
+    return favorites
+
+
+def _profile_header_payload(
+    db: Session,
+    profile: Profile,
+    *,
+    films_this_year: Optional[int] = None,
+    total_films: Optional[int] = None,
+) -> dict:
+    """Serialize everything Letterboxd's own profile header shows, plus ours.
+
+    Every field is optional on purpose: the public HTML scrape, the RSS feed,
+    and the official export each observe a different subset (badge, pronoun,
+    and the stats page in particular are usually unknown), so consumers must
+    treat null as "not observed" and render nothing for it.
+    """
+    stats_snapshot = profile.stats_snapshot if isinstance(profile.stats_snapshot, dict) else None
+    return {
+        "username": profile.username,
+        "display_name": profile.display_name,
+        "bio": profile.bio,
+        "location": profile.location,
+        "website": profile.website,
+        "website_url": _safe_external_url(profile.website),
+        "pronoun": profile.pronoun,
+        "member_badge": profile.member_badge,
+        "avatar_url": profile.profile_image_url,
+        "letterboxd_url": f"https://letterboxd.com/{profile.username}/",
+        "letterboxd_person_id": profile.letterboxd_person_id,
+        "join_date": profile.join_date.isoformat() if profile.join_date else None,
+        # Letterboxd's own reported counters (its profile header stat row).
+        "films_count": profile.reported_total_films,
+        "reviews_count": profile.reported_total_reviews,
+        "lists_count": profile.reported_total_lists,
+        "watchlist_count": profile.reported_watchlist_count,
+        "following_count": profile.following_count,
+        "followers_count": profile.followers_count,
+        # Derived from the synced diary, because Letterboxd's "this year"
+        # counter is not carried in any import surface.
+        "films_this_year": films_this_year,
+        "favorites": _profile_favorite_films(db, profile.id),
+        # Spyboxd-only context that Letterboxd's page never shows.
+        "synced_films": total_films,
+        "avg_rating": _safe_json_float(profile.avg_rating, 0.0),
+        "total_reviews": profile.total_reviews,
+        "last_scraped_at": profile.last_scraped_at.isoformat() if profile.last_scraped_at else None,
+        "metadata_synced_at": profile.metadata_synced_at.isoformat() if profile.metadata_synced_at else None,
+        # Letterboxd's own /<user>/stats/ figures, forwarded as observed:
+        # the key set varies by account tier, so consumers render generically.
+        "stats_snapshot": stats_snapshot,
+        "stats_synced_at": profile.stats_synced_at.isoformat() if profile.stats_synced_at else None,
+    }
+
+
 @app.get("/profiles/{username}/analysis")
 async def get_analysis(
     username: str,
@@ -726,6 +827,17 @@ async def get_analysis(
     rated_films = len([r for r in all_entries if r.rating is not None and r.rating > 0])
     liked_films = len([r for r in all_entries if r.is_liked])
 
+    # Letterboxd's header shows a "this year" count that no import surface
+    # carries, so derive it from watch dates. A dataset with no watch dates at
+    # all cannot answer the question, and reports null instead of a false zero.
+    dated_entries = [r for r in all_entries if r.watched_date]
+    current_year = datetime.now(timezone.utc).year
+    films_this_year = (
+        len([r for r in dated_entries if r.watched_date.year == current_year])
+        if dated_entries
+        else None
+    )
+
     # Aggregate film-level tag usage across every entry for this profile
     tag_usage: dict = {}
     for entry in all_entries:
@@ -749,6 +861,12 @@ async def get_analysis(
         "scraping_status": profile.scraping_status,
         "enhanced_metrics": profile.enhanced_metrics or {},
         "data_coverage": extract_data_coverage(profile.enhanced_metrics),
+        "profile_header": _profile_header_payload(
+            db,
+            profile,
+            films_this_year=films_this_year,
+            total_films=total_films,
+        ),
         "rating_distribution": rating_distribution,
         "monthly_stats": monthly_stats,
         "tag_counts": tag_counts,

@@ -21,6 +21,7 @@ from backend.database.models import (
     MovieWatchProvider,
     Profile,
     ProfileAccessRequest,
+    ProfileFavoriteMovie,
     ProfileFilm,
     Rating,
     Review,
@@ -77,6 +78,7 @@ def database():
             MovieEnrichment.__table__,
             MovieWatchProvider.__table__,
             ProfileFilm.__table__,
+            ProfileFavoriteMovie.__table__,
             WatchlistItem.__table__,
             Rating.__table__,
             Review.__table__,
@@ -430,6 +432,147 @@ def test_profile_analysis_exposes_review_spoiler_metadata(database):
             "tags": [],
         }
     ]
+
+
+def test_profile_analysis_header_carries_the_letterboxd_profile_surface(database):
+    profile = _profile(1, "Alpha")
+    profile.display_name = "Alpha Viewer"
+    profile.bio = "Watches too much."
+    profile.location = "Chennai"
+    profile.website = "alpha.example.com"
+    profile.pronoun = "they/them"
+    profile.member_badge = "Patron"
+    profile.profile_image_url = "https://images.example.com/alpha.jpg"
+    profile.letterboxd_person_id = 998877
+    profile.join_date = date(2019, 4, 2)
+    profile.reported_total_films = 1420
+    profile.reported_total_reviews = 210
+    profile.reported_total_lists = 12
+    profile.reported_watchlist_count = 340
+    profile.following_count = 88
+    profile.followers_count = 190
+    profile.avg_rating = 3.75
+    profile.total_reviews = 7
+    profile.stats_snapshot = {"hours": 2130, "directors": 640, "longest_streak": 19}
+    profile.stats_synced_at = datetime(2026, 7, 31, 9, 0, tzinfo=timezone.utc)
+    database.add(profile)
+    database.add_all(
+        [
+            Movie(
+                id=1,
+                canonical_key="letterboxd:fav-one",
+                title="Favourite One",
+                normalized_title="favourite one",
+                release_year=1999,
+                poster_url="https://images.example.com/one.jpg",
+                letterboxd_url="https://letterboxd.com/film/favourite-one/",
+            ),
+            Movie(
+                id=2,
+                canonical_key="letterboxd:fav-two",
+                title="Favourite Two",
+                normalized_title="favourite two",
+                release_year=2004,
+                letterboxd_slug="favourite-two",
+            ),
+        ]
+    )
+    database.flush()
+    database.add_all(
+        [
+            ProfileFavoriteMovie(id=2, profile_id=profile.id, movie_id=2, position=2),
+            ProfileFavoriteMovie(id=1, profile_id=profile.id, movie_id=1, position=1),
+        ]
+    )
+    database.commit()
+
+    analysis = asyncio.run(
+        backend_main.get_analysis(
+            "Alpha",
+            db=database,
+            user=_user("admin_user", admin=True),
+        )
+    )
+    header = analysis["profile_header"]
+
+    assert header["display_name"] == "Alpha Viewer"
+    assert header["bio"] == "Watches too much."
+    assert header["location"] == "Chennai"
+    assert header["website"] == "alpha.example.com"
+    assert header["website_url"] == "https://alpha.example.com"
+    assert header["pronoun"] == "they/them"
+    assert header["member_badge"] == "Patron"
+    assert header["avatar_url"] == "https://images.example.com/alpha.jpg"
+    assert header["letterboxd_url"] == "https://letterboxd.com/Alpha/"
+    assert header["letterboxd_person_id"] == 998877
+    assert header["join_date"] == "2019-04-02"
+    assert header["films_count"] == 1420
+    assert header["reviews_count"] == 210
+    assert header["lists_count"] == 12
+    assert header["watchlist_count"] == 340
+    assert header["following_count"] == 88
+    assert header["followers_count"] == 190
+    assert header["avg_rating"] == 3.75
+    assert header["total_reviews"] == 7
+    assert header["stats_snapshot"] == {"hours": 2130, "directors": 640, "longest_streak": 19}
+    assert header["stats_synced_at"].startswith("2026-07-31T09:00:00")
+    assert header["favorites"] == [
+        {
+            "position": 1,
+            "title": "Favourite One",
+            "year": 1999,
+            "poster_url": "https://images.example.com/one.jpg",
+            "letterboxd_url": "https://letterboxd.com/film/favourite-one/",
+        },
+        {
+            "position": 2,
+            "title": "Favourite Two",
+            "year": 2004,
+            "poster_url": None,
+            "letterboxd_url": "https://letterboxd.com/film/favourite-two/",
+        },
+    ]
+
+
+def test_profile_analysis_header_reports_unobserved_metadata_as_null(database):
+    profile = _profile(1, "Alpha")
+    profile.website = "javascript:alert(1)"
+    database.add(profile)
+    database.commit()
+
+    analysis = asyncio.run(
+        backend_main.get_analysis(
+            "Alpha",
+            db=database,
+            user=_user("admin_user", admin=True),
+        )
+    )
+    header = analysis["profile_header"]
+
+    assert header["username"] == "Alpha"
+    assert header["website_url"] is None
+    assert header["favorites"] == []
+    assert header["stats_snapshot"] is None
+    assert [
+        header[field]
+        for field in (
+            "display_name",
+            "bio",
+            "location",
+            "pronoun",
+            "member_badge",
+            "avatar_url",
+            "join_date",
+            "films_count",
+            "reviews_count",
+            "lists_count",
+            "watchlist_count",
+            "following_count",
+            "followers_count",
+            "films_this_year",
+            "stats_synced_at",
+        )
+    ] == [None] * 15
 
 
 def test_existing_completed_profile_is_tracked_case_insensitively_and_idempotently(database):

@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { Calendar, MessageCircle, Star, Ticket } from 'lucide-react';
@@ -13,6 +14,8 @@ import RatingDistributionChart from '../components/Charts/RatingDistributionChar
 import StatsCard from '../components/Charts/StatsCard';
 import SpoilerReviewText from '../components/SpoilerReviewText';
 import AdminScopeToggle from '../components/AdminScopeToggle';
+import ProfileHeader from '../components/ProfileHeader';
+import ArchivePanel from '../components/insights/ArchivePanel';
 import TagsPanel, { TagChipList } from '../components/insights/TagsPanel';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { profileApi } from '../services/api';
@@ -29,19 +32,43 @@ function formatDate(value: string | null | undefined): string {
 }
 
 const Analysis: React.FC = () => {
-  const [selectedProfile, setSelectedProfile] = useState('');
+  // Only consulted when the URL carries no usable ?profile= value.
+  const [pickedProfile, setPickedProfile] = useState('');
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   const { data: profiles, isLoading: loadingProfiles, error: profilesError } = useScopedProfiles();
 
   const profilesArray = useMemo(() => (Array.isArray(profiles) ? profiles : []), [profiles]);
 
-  useEffect(() => {
-    if (profilesArray.length === 0) return;
-    const selectionInScope = profilesArray.some((profile) => profile.username === selectedProfile);
-    if (!selectedProfile || !selectionInScope) {
-      setSelectedProfile(profilesArray[0].username);
+  const requestedProfile = searchParams.get('profile')?.trim() ?? '';
+
+  // ?profile=<username> deep links (e.g. from the follow network) drive the
+  // selection; the selector writes back to the URL, so one derived value covers
+  // both and survives back/forward navigation.
+  const selectedProfile = useMemo(() => {
+    if (profilesArray.length === 0) return '';
+    const requestedMatch = requestedProfile
+      ? profilesArray.find(
+          (profile) => profile.username.toLowerCase() === requestedProfile.toLowerCase(),
+        )?.username
+      : undefined;
+    if (requestedMatch) return requestedMatch;
+    if (pickedProfile && profilesArray.some((profile) => profile.username === pickedProfile)) {
+      return pickedProfile;
     }
-  }, [profilesArray, selectedProfile]);
+    return profilesArray[0].username;
+  }, [profilesArray, requestedProfile, pickedProfile]);
+
+  const selectProfile = (username: string) => {
+    setPickedProfile(username);
+    const params = new URLSearchParams(searchParams.toString());
+    if (username) params.set('profile', username);
+    else params.delete('profile');
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
 
   const {
     data: analysis,
@@ -111,7 +138,7 @@ const Analysis: React.FC = () => {
           <div className="w-full lg:w-96">
             <select
               value={selectedProfile}
-              onChange={(event) => setSelectedProfile(event.target.value)}
+              onChange={(event) => selectProfile(event.target.value)}
               className="input-field w-full"
             >
               {profilesArray.length === 0 && <option value="">No profiles available</option>}
@@ -136,6 +163,12 @@ const Analysis: React.FC = () => {
 
       {analysis && (
         <>
+          <ProfileHeader
+            header={analysis.profile_header}
+            tagCount={analysis.tag_counts?.length}
+            delay={0.05}
+          />
+
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
             <StatsCard
               title="Films Tracked"
@@ -187,6 +220,8 @@ const Analysis: React.FC = () => {
             username={analysis.username}
             delay={0.15}
           />
+
+          <ArchivePanel username={analysis.username} />
 
           <div className={`grid grid-cols-1 items-start gap-6 ${hasCoverageLimitations ? 'xl:grid-cols-3' : ''}`}>
             <motion.div

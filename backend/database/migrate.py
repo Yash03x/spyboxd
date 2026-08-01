@@ -31,6 +31,7 @@ TABLE_COPY_ORDER = [
     "profile_follow_edges",
     "member_content_likes",
     "member_comments",
+    "lost_entries",
     "profile_source_activities",
     "profile_data_changes",
     "movie_enrichments",
