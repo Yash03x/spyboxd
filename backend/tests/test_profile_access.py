@@ -23,6 +23,7 @@ from backend.database.models import (
     ProfileAccessRequest,
     ProfileFavoriteMovie,
     ProfileFilm,
+    ProfileFollowEdge,
     Rating,
     Review,
     UserTrackedProfile,
@@ -74,6 +75,7 @@ def database():
             AppUser.__table__,
             UserTrackedProfile.__table__,
             ProfileAccessRequest.__table__,
+            ProfileFollowEdge.__table__,
             Movie.__table__,
             MovieEnrichment.__table__,
             MovieWatchProvider.__table__,
@@ -127,6 +129,19 @@ def _legacy_user(
         )
         database.commit()
     return _user(user_id, admin=admin)
+
+
+def _link_handle(database, clerk_user_id: str, handle: str) -> None:
+    """Give an app user a Letterboxd identity.
+
+    The catalog is scoped to the caller's own follow-graph corner, which cannot
+    be computed without one.
+    """
+    app_user = (
+        database.query(AppUser).filter(AppUser.clerk_user_id == clerk_user_id).one()
+    )
+    app_user.letterboxd_username = handle
+    database.commit()
 
 
 def _profile(profile_id: int, username: str, *, completed: bool = True) -> Profile:
@@ -609,8 +624,20 @@ def test_signed_in_catalog_lists_only_selectable_profiles_and_tracks_by_id(datab
             rating=4.0,
         )
     )
+    # The catalog is scoped to the caller's own follow-graph corner, so the
+    # selectable profile has to be connected to them to appear at all.
+    database.add(
+        ProfileFollowEdge(
+            id=1,
+            profile_id=1,
+            direction="follower",
+            counterpart_username="viewer",
+            counterpart_username_normalized="viewer",
+        )
+    )
     database.commit()
     user = _legacy_user(database)
+    _link_handle(database, "user_one", "viewer")
 
     initial = list_profile_catalog(database, user)
     assert initial["total"] == 1
@@ -636,9 +663,21 @@ def test_signed_in_catalog_lists_only_selectable_profiles_and_tracks_by_id(datab
 
 def test_profile_catalog_tracking_is_isolated_per_user(database):
     database.add(_profile(1, "Alpha"))
+    for index, handle in enumerate(("first_viewer", "second_viewer"), start=1):
+        database.add(
+            ProfileFollowEdge(
+                id=index,
+                profile_id=1,
+                direction="follower",
+                counterpart_username=handle,
+                counterpart_username_normalized=handle,
+            )
+        )
     database.commit()
     first_user = _legacy_user(database, "first")
     second_user = _legacy_user(database, "second")
+    _link_handle(database, "first", "first_viewer")
+    _link_handle(database, "second", "second_viewer")
 
     track_profile_by_id(database, first_user, 1)
 
@@ -1320,3 +1359,110 @@ def test_admin_allowlist_is_server_side_and_metadata_boolean_is_strict(monkeypat
     assert _payload_grants_admin({}, "user_admin") is True
     assert _payload_grants_admin({"metadata": {"is_admin": True}}, "regular") is True
     assert _payload_grants_admin({"public_metadata": {"is_admin": "false"}}, "regular") is False
+
+
+def _edge(edge_id: int, profile_id: int, handle: str, *, direction: str = "follower"):
+    return ProfileFollowEdge(
+        id=edge_id,
+        profile_id=profile_id,
+        direction=direction,
+        counterpart_username=handle,
+        counterpart_username_normalized=handle.casefold(),
+    )
+
+
+def test_a_non_admin_only_browses_their_own_corner_of_the_follow_graph(database):
+    """Browsing every tracked profile told a new sign-up who Spyboxd watches.
+
+    Letterboxd does not publish that list even though the profiles are public,
+    so the catalog is narrowed to people the caller is actually connected to.
+    """
+    connected = _profile(1, "Connected")
+    stranger = _profile(2, "Stranger")
+    database.add_all([connected, stranger])
+    database.add(_edge(1, connected.id, "viewer"))
+    database.commit()
+    user = _legacy_user(database)
+    _link_handle(database, "user_one", "viewer")
+
+    catalog = list_profile_catalog(database, user)
+
+    assert [entry["username"] for entry in catalog["profiles"]] == ["Connected"]
+    assert catalog["total"] == 1
+
+
+def test_an_admin_still_sees_the_whole_library(database):
+    database.add_all([_profile(1, "Alpha"), _profile(2, "Beta")])
+    database.commit()
+    admin = _legacy_user(database, "admin_user", admin=True)
+
+    catalog = list_profile_catalog(database, admin)
+
+    assert {entry["username"] for entry in catalog["profiles"]} == {"Alpha", "Beta"}
+
+
+def test_a_caller_with_no_linked_letterboxd_identity_browses_nothing(database):
+    """A fresh sign-up has no connections to compute, which is a real state.
+
+    They are not stuck: typing a known username still resolves.
+    """
+    database.add(_profile(1, "Alpha"))
+    database.commit()
+    user = _legacy_user(database)
+
+    catalog = list_profile_catalog(database, user)
+
+    assert catalog["profiles"] == []
+    assert catalog["total"] == 0
+
+
+def test_connection_counts_from_either_side_of_the_edge(database):
+    """Only one end of a pair may be synced, so both sides have to be read."""
+    theirs = _profile(1, "TheyFollowMe")
+    mine = _profile(2, "Viewer")
+    reached = _profile(3, "IFollowThem")
+    database.add_all([theirs, mine, reached])
+    database.add(_edge(1, theirs.id, "viewer"))
+    edge_out = _edge(2, mine.id, "ifollowthem", direction="following")
+    edge_out.counterpart_profile_id = reached.id
+    database.add(edge_out)
+    database.commit()
+    user = _legacy_user(database)
+    _link_handle(database, "user_one", "viewer")
+
+    usernames = {entry["username"] for entry in list_profile_catalog(database, user)["profiles"]}
+
+    # Their edge naming me, my edge naming them, and my own profile.
+    assert usernames == {"TheyFollowMe", "IFollowThem", "Viewer"}
+
+
+def test_a_removed_follow_edge_is_not_a_connection(database):
+    database.add(_profile(1, "Formerly"))
+    stale = _edge(1, 1, "viewer")
+    stale.removed_at = datetime.now(timezone.utc)
+    database.add(stale)
+    database.commit()
+    user = _legacy_user(database)
+    _link_handle(database, "user_one", "viewer")
+
+    assert list_profile_catalog(database, user)["profiles"] == []
+
+
+def test_a_known_username_outside_the_catalog_still_resolves_directly(database):
+    """The restriction is on discovery, not on access.
+
+    Someone who knows a username can still reach an already-synced profile
+    without an admin in the loop, which is what makes the narrower catalog
+    acceptable rather than obstructive.
+    """
+    database.add(_profile(1, "Unconnected"))
+    database.commit()
+    user = _legacy_user(database)
+    _link_handle(database, "user_one", "viewer")
+
+    assert list_profile_catalog(database, user)["profiles"] == []
+
+    result = track_or_request_profile(database, user, "Unconnected")
+
+    assert result["status"] == "tracked"
+    assert authorize_profile_usernames(database, user, None) == ["Unconnected"]

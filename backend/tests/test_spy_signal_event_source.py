@@ -528,3 +528,74 @@ class EventSourceSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignalFeedOrderingTests(unittest.TestCase):
+    """The Signal Feed is presented newest first and truncated to a limit.
+
+    Whichever key leads the sort decides which events survive that truncation.
+    Leading with crowd size kept the biggest gatherings and dropped the latest
+    ones, so a three-day scan showed nothing from the most recent week while the
+    header still said "most recent first".
+    """
+
+    def _timing(self, entries, gap_days=3):
+        return _calculate_event_source_timing(entries, gap_days=gap_days)
+
+    def test_the_newest_match_leads_even_against_a_bigger_crowd(self) -> None:
+        entries = []
+        # An old film three people watched together.
+        for index, name in enumerate(("ana", "ben", "cal"), start=1):
+            entries.append(
+                timing_entry(
+                    profile_id=index,
+                    username=name,
+                    watched_date=date(2026, 1, 10),
+                    movie_id=1,
+                    title="Old Crowd",
+                )
+            )
+        # A recent film only two of them watched.
+        for index, name in enumerate(("ana", "ben"), start=1):
+            entries.append(
+                timing_entry(
+                    profile_id=index,
+                    username=name,
+                    watched_date=date(2026, 7, 30),
+                    movie_id=2,
+                    title="Recent Pair",
+                )
+            )
+
+        events = self._timing(entries)["gap_events"]
+
+        self.assertEqual(events[0]["title"], "Recent Pair")
+
+    def test_a_bigger_crowd_still_wins_within_the_same_day(self) -> None:
+        """Recency leads, but crowd size remains the tiebreaker."""
+        entries = []
+        for index, name in enumerate(("ana", "ben", "cal"), start=1):
+            entries.append(
+                timing_entry(
+                    profile_id=index,
+                    username=name,
+                    watched_date=date(2026, 7, 30),
+                    movie_id=1,
+                    title="Same Day Crowd",
+                )
+            )
+        for index, name in enumerate(("ana", "ben"), start=1):
+            entries.append(
+                timing_entry(
+                    profile_id=index,
+                    username=name,
+                    watched_date=date(2026, 7, 30),
+                    movie_id=2,
+                    title="Same Day Pair",
+                )
+            )
+
+        events = self._timing(entries)["gap_events"]
+        titles = [event["title"] for event in events]
+
+        self.assertLess(titles.index("Same Day Crowd"), titles.index("Same Day Pair"))
