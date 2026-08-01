@@ -1389,6 +1389,20 @@ export interface ProfileStatsResponse {
   coverage: ProfileStatsCoverage;
   totals: ProfileStatsTotals;
   top_directors: ProfileStatsPerson[];
+  /** Crew whose credits TMDB stores on most enriched films and nothing read
+   *  until now: the people shaping what you watch without being counted. */
+  top_composers: ProfileStatsPerson[];
+  top_cinematographers: ProfileStatsPerson[];
+  top_editors: ProfileStatsPerson[];
+  director_gender: {
+    /** Films with at least one director whose gender TMDB records. Films where
+     *  none is recorded are excluded from the shares rather than assigned. */
+    measured_films: number;
+    women: number;
+    men: number;
+    mixed: number;
+    women_share: number | null;
+  };
   top_actors: ProfileStatsPerson[];
   top_studios: ProfileStatsPerson[];
   genres: ProfileStatsBucket[];
