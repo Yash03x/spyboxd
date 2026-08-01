@@ -140,7 +140,7 @@ function DivisiveRow({ film, username }: { film: RatingComparisonDivisiveFilm; u
   const references = [
     // The group average excludes this profile, so it is quoted with the count
     // it was actually built from; the spread's wider count is named separately.
-    `group ${film.group_average.toFixed(2)} from ${raterNote(film.group_rater_count)}`,
+    `group ${film.group_average.toFixed(2)} from ${raterNote(film.group_rater_count ?? film.rater_count)}`,
     `${film.rater_count} rated in total`,
     film.profile_rating === null ? `@${username} unrated` : `@${username} ${film.profile_rating.toFixed(1)}`,
   ];

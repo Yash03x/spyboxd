@@ -516,7 +516,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
       ? {
           label: 'Highest-rated genre',
           name: highestRated.genre.label,
-          ratedCount: highestRated.genre.rated_count,
+          ratedCount: highestRated.genre.rated_count ?? highestRated.genre.count,
           average: highestRated.genre.average_rating,
         }
       : null,
@@ -524,7 +524,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
       ? {
           label: 'Highest-rated decade',
           name: highestRated.decade.label,
-          ratedCount: highestRated.decade.rated_count,
+          ratedCount: highestRated.decade.rated_count ?? highestRated.decade.count,
           average: highestRated.decade.average_rating,
         }
       : null,
@@ -532,7 +532,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
       ? {
           label: 'Highest-rated director',
           name: highestRated.director.name,
-          ratedCount: highestRated.director.rated_count,
+          ratedCount: highestRated.director.rated_count ?? highestRated.director.count,
           average: highestRated.director.average_rating,
         }
       : null,
