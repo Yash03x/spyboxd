@@ -58,3 +58,6 @@ logs/
 # Temporary files
 tmp/
 temp/
+
+# Local dev-server launch config
+.claude/launch.json

@@ -19,6 +19,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision: str = "20260801_0013"
@@ -28,7 +29,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("profiles", sa.Column("stats_snapshot", sa.JSON(), nullable=True))
+    op.add_column(
+        "profiles",
+        sa.Column("stats_snapshot", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    )
     op.add_column(
         "profiles", sa.Column("stats_synced_at", sa.DateTime(timezone=True), nullable=True)
     )
@@ -54,7 +58,12 @@ def upgrade() -> None:
             "is_rewatch", sa.Boolean(), server_default=sa.text("false"), nullable=False
         ),
         sa.Column("body_text", sa.Text(), nullable=True),
-        sa.Column("tags", sa.JSON(), server_default=sa.text("'[]'"), nullable=False),
+        sa.Column(
+            "tags",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
+            nullable=False,
+        ),
         sa.Column(
             "first_seen_profile_sync_id",
             sa.BigInteger(),

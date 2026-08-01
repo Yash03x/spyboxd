@@ -74,7 +74,12 @@ function ringPlacement(index: number, count: number, radius: number, scale = 1):
 
 /** Leaves fan out on a ring that grows with the number of connections. */
 function egoRingRadius(count: number): number {
-  return Math.min(238, Math.max(150, 118 + count * 9));
+  return Math.min(246, Math.max(196, 150 + count * 9));
+}
+
+/** Rough width for the centre node's label chip; SVG cannot measure text up front. */
+function labelChipWidth(username: string): number {
+  return Math.max(104, username.length * 8.6 + 26);
 }
 
 /** Trim a segment so it starts/ends at the node boundaries instead of centers. */
@@ -433,7 +438,9 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
     const interactive = placement.visible && node.inGroup;
     const labelOffset = NODE_RADIUS * placement.scale + 14;
     const labelX = isCenter ? 0 : placement.cos * labelOffset;
-    const labelY = isCenter ? labelOffset + 4 : placement.sin * labelOffset;
+    // The centre label sits clear of the halo ring, on an opaque chip so it
+    // stays readable where a connection line runs underneath it.
+    const labelY = isCenter ? NODE_RADIUS * CENTER_SCALE + 30 : placement.sin * labelOffset;
     const anchor = isCenter ? 'middle' : placement.cos > 0.35 ? 'start' : placement.cos < -0.35 ? 'end' : 'middle';
     const ringStroke = !node.inGroup
       ? UNTRACKED_STROKE
@@ -451,38 +458,44 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
     return (
       <motion.g
         key={node.key}
-        ref={(element: SVGGElement | null) => {
-          nodeRefs.current.set(node.key, element);
-        }}
         initial={node.inGroup ? false : { x: CENTER_X, y: CENTER_Y, opacity: 0 }}
         animate={{ x: placement.x, y: placement.y, opacity }}
         exit={{ x: CENTER_X, y: CENTER_Y, opacity: 0 }}
         transition={transition}
-        role={interactive ? 'button' : undefined}
-        tabIndex={interactive ? 0 : -1}
         aria-hidden={placement.visible ? undefined : true}
-        aria-label={interactive ? ariaLabel : undefined}
-        aria-pressed={interactive ? focusKey === node.key : undefined}
-        style={{
-          cursor: interactive ? 'pointer' : 'default',
-          pointerEvents: placement.visible ? 'auto' : 'none',
-          outline: 'none',
-        }}
-        onMouseEnter={() => (interactive ? setHovered(node.key) : undefined)}
-        onMouseLeave={() => setHovered(null)}
-        onFocus={() => (interactive ? setHovered(node.key) : undefined)}
-        onBlur={() => setHovered(null)}
-        onClick={() => (interactive ? activateNode(node) : undefined)}
-        onKeyDown={(event) => {
-          if (!interactive) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            activateNode(node);
-          }
-        }}
       >
-        {!node.inGroup && <title>{`@${node.username} is not a tracked profile`}</title>}
-        <motion.g animate={{ scale: placement.scale }} transition={transition}>
+        {/* Interaction lives on the disc alone, so the hit area stays a circle
+            centred on the node rather than stretching over its label. */}
+        <motion.g
+          ref={(element: SVGGElement | null) => {
+            nodeRefs.current.set(node.key, element);
+          }}
+          animate={{ scale: placement.scale }}
+          transition={transition}
+          role={interactive ? 'button' : undefined}
+          tabIndex={interactive ? 0 : -1}
+          aria-label={interactive ? ariaLabel : undefined}
+          aria-pressed={interactive ? focusKey === node.key : undefined}
+          style={{
+            cursor: interactive ? 'pointer' : 'default',
+            pointerEvents: placement.visible ? 'auto' : 'none',
+            outline: 'none',
+          }}
+          onMouseEnter={() => (interactive ? setHovered(node.key) : undefined)}
+          onMouseLeave={() => setHovered(null)}
+          onFocus={() => (interactive ? setHovered(node.key) : undefined)}
+          onBlur={() => setHovered(null)}
+          onClick={() => (interactive ? activateNode(node) : undefined)}
+          onKeyDown={(event) => {
+            if (!interactive) return;
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              activateNode(node);
+            }
+          }}
+        >
+          {!node.inGroup && <title>{`@${node.username} is not a tracked profile`}</title>}
+          <circle r={NODE_RADIUS + 6} fill="transparent" />
           <circle r={NODE_RADIUS + 3} fill="#0f172a" />
           <NodeAvatar
             username={node.username}
@@ -507,38 +520,54 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
             />
           )}
         </motion.g>
-        <motion.text
-          x={0}
-          y={0}
+        <motion.g
           animate={{ x: labelX, y: labelY }}
           transition={transition}
-          textAnchor={anchor}
-          dominantBaseline="central"
-          fill={isCenter || isHovered ? '#ffffff' : node.inGroup ? 'rgba(255, 255, 255, 0.55)' : 'rgba(255, 255, 255, 0.38)'}
-          fontSize={isCenter ? 15 : 13}
-          fontWeight={600}
           style={{ pointerEvents: 'none' }}
         >
-          {node.username}
-        </motion.text>
-        {isCenter && (
-          <motion.text
+          <motion.rect
+            x={-labelChipWidth(node.username) / 2}
+            y={-15}
+            width={labelChipWidth(node.username)}
+            height={44}
+            rx={12}
+            fill="rgba(9, 12, 20, 0.88)"
+            stroke="rgba(255, 255, 255, 0.12)"
+            strokeWidth={1}
+            animate={{ opacity: isCenter ? 1 : 0 }}
+            transition={transition}
+          />
+          <text
             x={0}
             y={0}
-            initial={{ opacity: 0 }}
-            animate={{ x: labelX, y: labelY + 18, opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={transition}
+            textAnchor={anchor}
+            dominantBaseline="central"
+            fill={
+              isCenter || isHovered
+                ? '#ffffff'
+                : node.inGroup
+                  ? 'rgba(255, 255, 255, 0.55)'
+                  : 'rgba(255, 255, 255, 0.38)'
+            }
+            fontSize={isCenter ? 15 : 13}
+            fontWeight={600}
+          >
+            {node.username}
+          </text>
+          <motion.text
+            x={0}
+            y={17}
             textAnchor="middle"
             dominantBaseline="central"
-            fill="rgba(251, 205, 154, 0.85)"
+            fill="rgba(251, 205, 154, 0.9)"
             fontSize={11}
             fontWeight={600}
-            style={{ pointerEvents: 'none' }}
+            animate={{ opacity: isCenter ? 1 : 0 }}
+            transition={transition}
           >
             Open deep dive
           </motion.text>
-        )}
+        </motion.g>
       </motion.g>
     );
   };
@@ -728,7 +757,7 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
           </div>
           <p className="min-h-5 text-center text-xs text-white/45" aria-live="polite">
             {focusNode
-              ? `Centred on @${focusNode.username}${captionRollup ? `, who follows ${captionRollup.follows_in_group} in this group and is followed by ${captionRollup.followed_by_in_group}` : ''}. Open the centre for the deep dive, pick a connection to walk on, or press Escape to go back.`
+              ? `Centred on @${focusNode.username}${captionRollup ? ` (follows ${captionRollup.follows_in_group} here, followed by ${captionRollup.followed_by_in_group})` : ''}. Open the centre for the deep dive, pick a connection to walk on, or press Escape.`
               : captionNode && captionRollup
                 ? `@${captionNode.username} follows ${captionRollup.follows_in_group} in this group, followed by ${captionRollup.followed_by_in_group}. Click to centre the graph on them.`
                 : captionNode
