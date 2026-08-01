@@ -189,12 +189,10 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ username }) => {
                 </a>
                 <span className="shrink-0 text-white/35">{formatDate(comment.commented_date)}</span>
               </div>
-              {comment.comment_html && (
-                // Export comment bodies are Letterboxd-authored HTML; render as
-                // text so nothing from the export can execute in the app.
-                <p className="mt-1 line-clamp-3 text-sm text-white/70">
-                  {comment.comment_html.replace(/<[^>]*>/g, '')}
-                </p>
+              {comment.comment_text && (
+                // The API parses export comment markup into plain text, so
+                // this is an ordinary escaped React text child.
+                <p className="mt-1 line-clamp-3 text-sm text-white/70">{comment.comment_text}</p>
               )}
             </li>
           ))}

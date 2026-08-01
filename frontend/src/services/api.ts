@@ -1139,7 +1139,8 @@ export interface MemberContentLikeEntry {
 export interface MemberCommentEntry {
   target_url: string;
   commented_date: string | null;
-  comment_html: string | null;
+  /** Server-parsed plain text; the API never ships raw comment markup. */
+  comment_text: string | null;
 }
 
 export interface LostEntryRecord {

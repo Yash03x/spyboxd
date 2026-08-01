@@ -1,7 +1,8 @@
 """Export-only member surfaces: liked content, comments, and lost history."""
 from __future__ import annotations
 
-from typing import Optional
+from html.parser import HTMLParser
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -17,6 +18,51 @@ router = APIRouter(prefix="/api", tags=["member archive"])
 
 def _iso(value) -> Optional[str]:
     return value.isoformat() if value is not None else None
+
+
+class _TextExtractor(HTMLParser):
+    """Collect only text nodes, dropping markup and script/style contents."""
+
+    _SKIP_TAGS = {"script", "style"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chunks: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            self._chunks.append(data)
+
+    @property
+    def text(self) -> str:
+        return " ".join("".join(self._chunks).split())
+
+
+def comment_plain_text(comment_html: Optional[str]) -> Optional[str]:
+    """Render an export comment as plain text using a real HTML tokenizer.
+
+    Export comments are Letterboxd-authored HTML. Regex tag-stripping is
+    incomplete sanitization — nested constructions survive a single pass — so
+    the API serves parsed text and clients never have to sanitize markup.
+    """
+    if not comment_html:
+        return None
+    parser = _TextExtractor()
+    try:
+        parser.feed(comment_html)
+        parser.close()
+    except Exception:
+        return None
+    return parser.text or None
 
 
 @router.get("/profiles/{username}/archive")
@@ -79,7 +125,7 @@ def get_member_archive(
             {
                 "target_url": comment.target_url,
                 "commented_date": _iso(comment.commented_date),
-                "comment_html": comment.comment_html,
+                "comment_text": comment_plain_text(comment.comment_html),
             }
             for comment in comments
         ],

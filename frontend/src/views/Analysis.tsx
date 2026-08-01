@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
@@ -32,13 +32,11 @@ function formatDate(value: string | null | undefined): string {
 }
 
 const Analysis: React.FC = () => {
-  const [selectedProfile, setSelectedProfile] = useState('');
+  // Only consulted when the URL carries no usable ?profile= value.
+  const [pickedProfile, setPickedProfile] = useState('');
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  // Remembers which ?profile= value has already been applied, so a manual
-  // pick from the selector is not snapped back by the URL on the next render.
-  const appliedProfileParam = useRef<string | null>(null);
 
   const { data: profiles, isLoading: loadingProfiles, error: profilesError } = useScopedProfiles();
 
@@ -46,29 +44,25 @@ const Analysis: React.FC = () => {
 
   const requestedProfile = searchParams.get('profile')?.trim() ?? '';
 
-  useEffect(() => {
-    if (profilesArray.length === 0) return;
-    // A ?profile=<username> deep link (e.g. from the follow network) wins once,
-    // then the selector takes over again.
+  // ?profile=<username> deep links (e.g. from the follow network) drive the
+  // selection; the selector writes back to the URL, so one derived value covers
+  // both and survives back/forward navigation.
+  const selectedProfile = useMemo(() => {
+    if (profilesArray.length === 0) return '';
     const requestedMatch = requestedProfile
       ? profilesArray.find(
           (profile) => profile.username.toLowerCase() === requestedProfile.toLowerCase(),
         )?.username
       : undefined;
-    if (requestedMatch && appliedProfileParam.current !== requestedProfile) {
-      appliedProfileParam.current = requestedProfile;
-      setSelectedProfile(requestedMatch);
-      return;
+    if (requestedMatch) return requestedMatch;
+    if (pickedProfile && profilesArray.some((profile) => profile.username === pickedProfile)) {
+      return pickedProfile;
     }
-    const selectionInScope = profilesArray.some((profile) => profile.username === selectedProfile);
-    if (!selectedProfile || !selectionInScope) {
-      setSelectedProfile(profilesArray[0].username);
-    }
-  }, [profilesArray, requestedProfile, selectedProfile]);
+    return profilesArray[0].username;
+  }, [profilesArray, requestedProfile, pickedProfile]);
 
   const selectProfile = (username: string) => {
-    appliedProfileParam.current = username;
-    setSelectedProfile(username);
+    setPickedProfile(username);
     const params = new URLSearchParams(searchParams.toString());
     if (username) params.set('profile', username);
     else params.delete('profile');

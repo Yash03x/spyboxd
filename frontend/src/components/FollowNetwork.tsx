@@ -534,6 +534,8 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
             fill="rgba(9, 12, 20, 0.88)"
             stroke="rgba(255, 255, 255, 0.12)"
             strokeWidth={1}
+            opacity={0}
+            initial={false}
             animate={{ opacity: isCenter ? 1 : 0 }}
             transition={transition}
           />
@@ -562,6 +564,8 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
             fill="rgba(251, 205, 154, 0.9)"
             fontSize={11}
             fontWeight={600}
+            opacity={0}
+            initial={false}
             animate={{ opacity: isCenter ? 1 : 0 }}
             transition={transition}
           >
