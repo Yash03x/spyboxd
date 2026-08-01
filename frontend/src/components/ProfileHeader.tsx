@@ -77,6 +77,16 @@ function FavoritePoster({ favorite }: { favorite: ProfileFavoriteFilm }) {
       <p className="mt-2 line-clamp-2 text-xs font-medium text-white/70 group-hover:text-white">
         {label}
       </p>
+      {/* A picture somebody chose as a favourite reads very differently
+          depending on whether they ever logged it. Four favourites across the
+          tracked profiles are absent from their owner's diary entirely. */}
+      <p className="mt-0.5 text-[10px] text-white/35">
+        {favorite.own_rating !== null
+          ? `They rated it ${favorite.own_rating.toFixed(1)}`
+          : favorite.in_library
+            ? 'Logged, never rated'
+            : 'Not in their diary'}
+      </p>
     </>
   );
 

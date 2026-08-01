@@ -27,7 +27,7 @@ from api.routes.watchlist_insights import router as watchlist_insights_router
 from api.routes.rating_comparison import router as rating_comparison_router
 from auth import ClerkUser, get_admin_user, get_current_user, get_upload_user
 from database.connection import engine, get_db, init_db
-from database.models import Movie, Profile, ProfileFavoriteMovie, WatchEvent
+from database.models import Movie, Profile, ProfileFavoriteMovie, ProfileFilm, WatchEvent
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
@@ -759,6 +759,19 @@ def _profile_favorite_films(db: Session, profile_id: int) -> List[dict]:
         .order_by(ProfileFavoriteMovie.position.asc())
         .all()
     )
+    # A stated favourite and a logged one are different claims, and the gap
+    # between them is the interesting part: across the tracked profiles, four
+    # favourites are absent from their owner's diary entirely and five more are
+    # logged without ever being rated.
+    library = {
+        movie_id: rating
+        for movie_id, rating in db.query(ProfileFilm.movie_id, ProfileFilm.rating)
+        .filter(
+            ProfileFilm.profile_id == profile_id,
+            ProfileFilm.removed_at.is_(None),
+        )
+        .all()
+    }
     favorites: List[dict] = []
     for favorite, movie in rows:
         letterboxd_url = movie.letterboxd_url
@@ -771,6 +784,15 @@ def _profile_favorite_films(db: Session, profile_id: int) -> List[dict]:
                 "year": movie.release_year,
                 "poster_url": movie.poster_url,
                 "letterboxd_url": letterboxd_url,
+                # None means "not in their diary at all"; a row present with a
+                # null rating means watched but never scored. The two read very
+                # differently under a picture somebody chose as a favourite.
+                "in_library": favorite.movie_id in library,
+                "own_rating": (
+                    float(library[favorite.movie_id])
+                    if library.get(favorite.movie_id) is not None
+                    else None
+                ),
             }
         )
     return favorites

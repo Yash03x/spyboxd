@@ -17,6 +17,7 @@ from api.routes.watchlist_insights import router as watchlist_insights_router
 from auth import ClerkUser, get_current_user
 from database.connection import get_db
 from database.models import (
+    MovieWatchProvider,
     AppUser,
     Movie,
     MovieEnrichment,
@@ -46,6 +47,7 @@ TABLES = (
     Movie.__table__,
     ProfileFilm.__table__,
     MovieEnrichment.__table__,
+    MovieWatchProvider.__table__,
     WatchlistItem.__table__,
     AppUser.__table__,
     UserTrackedProfile.__table__,
@@ -63,6 +65,16 @@ def database() -> Session:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    # movie_watch_providers carries a CHECK using char_length, which sqlite has
+    # no equivalent for.
+    @event.listens_for(engine, "connect")
+    def _sqlite_compatibility(dbapi_connection, _connection_record):
+        dbapi_connection.create_function(
+            "char_length",
+            1,
+            lambda value: len(value) if value is not None else None,
+        )
+
     for table in TABLES:
         table.create(engine, checkfirst=True)
     db = sessionmaker(bind=engine, expire_on_commit=False)()
@@ -733,6 +745,12 @@ def test_route_serves_the_payload_for_a_tracked_profile(
         "group_raters",
         "liked_by",
         "letterboxd_average",
+        # The distribution behind the average: two films can share a mean while
+        # one has a real chance of being loved and the other reliably does not.
+        "crowd_ceiling",
+        "crowd_floor",
+        # Whether it can be watched now, not just whether it is worth watching.
+        "streaming_on",
         "added_date",
         "days_waiting",
         "raters",
@@ -831,3 +849,93 @@ def test_a_lone_five_star_does_not_outrank_a_corroborated_favourite(
     assert rows["Lone Favourite"]["group_average"] == 5.0
     assert rows["Lone Favourite"]["group_raters"] == 1
     assert rows["Crowd Favourite"]["group_raters"] == 5
+
+
+def test_the_crowd_shape_separates_two_films_with_the_same_average(
+    database: Session,
+) -> None:
+    """A mean cannot tell a divisive film from a uniformly mediocre one."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    polarising = _queued(database, subject, circle, "Polarising", other_ratings=[4.0])
+    flat = _queued(database, subject, circle, "Flat", other_ratings=[4.0])
+    # Same crowd average, very different shapes.
+    polarising.letterboxd_average_rating = 3.5
+    polarising.letterboxd_rating_distribution = {
+        "0.5": 50, "1.0": 50, "1.5": 0, "2.0": 100, "2.5": 0,
+        "3.0": 100, "3.5": 0, "4.0": 100, "4.5": 300, "5.0": 300,
+    }
+    flat.letterboxd_average_rating = 3.5
+    flat.letterboxd_rating_distribution = {
+        "0.5": 0, "1.0": 0, "1.5": 0, "2.0": 0, "2.5": 200,
+        "3.0": 300, "3.5": 400, "4.0": 100, "4.5": 0, "5.0": 0,
+    }
+    database.commit()
+
+    entries = {
+        entry["title"]: entry
+        for entry in _insights(database, subject)["recommendations"]
+    }
+
+    assert entries["Polarising"]["crowd_ceiling"] > entries["Flat"]["crowd_ceiling"]
+    assert entries["Polarising"]["crowd_floor"] > entries["Flat"]["crowd_floor"]
+    assert entries["Flat"]["crowd_ceiling"] == 0.0
+
+
+def test_a_film_with_no_histogram_reports_no_shape_rather_than_zero(
+    database: Session,
+) -> None:
+    """"Nobody rated it highly" and "we have not looked" are different answers."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    _queued(database, subject, circle, "Unscraped", other_ratings=[4.0])
+
+    entry = _insights(database, subject)["recommendations"][0]
+
+    assert entry["crowd_ceiling"] is None
+    assert entry["crowd_floor"] is None
+
+
+def test_a_queued_film_reports_the_subscriptions_carrying_it(database: Session) -> None:
+    """A recommendation you cannot watch tonight is a different proposition."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    movie = _queued(database, subject, circle, "Streamable", other_ratings=[4.5])
+    database.add_all(
+        [
+            MovieWatchProvider(
+                movie_id=movie.id, provider_id=8, provider_name="Netflix",
+                provider_type="flatrate", region="DE",
+            ),
+            # A rental is a purchase decision, not something already paid for.
+            MovieWatchProvider(
+                movie_id=movie.id, provider_id=2, provider_name="Apple TV",
+                provider_type="rent", region="DE",
+            ),
+        ]
+    )
+    database.commit()
+
+    entry = _insights(database, subject, region="DE")["recommendations"][0]
+
+    assert entry["streaming_on"] == ["Netflix"]
+
+
+def test_a_region_with_no_imported_providers_reports_nothing_carried(
+    database: Session,
+) -> None:
+    """Empty means "not carried there", never "not streamable anywhere"."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    movie = _queued(database, subject, circle, "Streamable", other_ratings=[4.5])
+    database.add(
+        MovieWatchProvider(
+            movie_id=movie.id, provider_id=8, provider_name="Netflix",
+            provider_type="flatrate", region="DE",
+        )
+    )
+    database.commit()
+
+    entry = _insights(database, subject, region="US")["recommendations"][0]
+
+    assert entry["streaming_on"] == []

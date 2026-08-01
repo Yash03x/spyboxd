@@ -764,6 +764,9 @@ def test_route_serves_the_payload_for_a_tracked_profile(
         # being viewed. Each figure carries its own denominator.
         "rater_count",
         "group_rater_count",
+        # How settled the wider crowd is, so a split this circle owns can be
+        # told apart from a film the world argues about too.
+        "crowd_consensus",
         "group_average",
         "profile_rating",
     }
@@ -820,3 +823,47 @@ def test_the_group_average_reports_its_own_denominator(database: Session) -> Non
     assert entry["rater_count"] == 5          # the spread spans all five
     assert entry["group_rater_count"] == 4    # the average is over the others
     assert entry["group_average"] == 4.25
+
+
+def test_a_settled_crowd_is_distinguished_from_one_that_argues_too(
+    database: Session,
+) -> None:
+    """A split this circle owns is more interesting than a split everyone has.
+
+    Consensus is the share of the crowd sitting in the single most popular
+    half-star bucket: a film the world agrees on concentrates there.
+    """
+    subject = _profile(database, "subject")
+    circle = _circle(database, size=3)
+    settled = _shared(database, subject, circle, "World Agrees",
+                      subject_rating=1.0, other_ratings=[5.0, 4.5, 4.0])
+    contested = _shared(database, subject, circle, "World Argues Too",
+                        subject_rating=1.0, other_ratings=[5.0, 4.5, 4.0])
+    settled.letterboxd_rating_distribution = {
+        "0.5": 0, "1.0": 0, "1.5": 0, "2.0": 0, "2.5": 0,
+        "3.0": 0, "3.5": 0, "4.0": 900, "4.5": 50, "5.0": 50,
+    }
+    contested.letterboxd_rating_distribution = {
+        "0.5": 100, "1.0": 100, "1.5": 100, "2.0": 100, "2.5": 100,
+        "3.0": 100, "3.5": 100, "4.0": 100, "4.5": 100, "5.0": 100,
+    }
+    database.commit()
+
+    entries = {
+        entry["title"]: entry
+        for entry in build_rating_comparison(database, subject, limit=5)["most_divisive"]
+    }
+
+    assert entries["World Agrees"]["crowd_consensus"] == 0.9
+    assert entries["World Argues Too"]["crowd_consensus"] == 0.1
+
+
+def test_a_film_with_no_histogram_reports_no_consensus(database: Session) -> None:
+    subject = _profile(database, "subject")
+    circle = _circle(database, size=3)
+    _shared(database, subject, circle, "Unscraped",
+            subject_rating=1.0, other_ratings=[5.0, 4.5, 4.0])
+
+    entry = build_rating_comparison(database, subject, limit=5)["most_divisive"][0]
+
+    assert entry["crowd_consensus"] is None
