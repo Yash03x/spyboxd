@@ -54,13 +54,6 @@ function featureCoverageFromResponse(
   };
 }
 
-function getDateRange(): { from: string; to: string } {
-  const now = new Date();
-  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const from = new Date(to.getTime() - 364 * 86_400_000);
-  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
-}
-
 function PairProfileField({
   label,
   value,
@@ -130,10 +123,10 @@ export default function Compare() {
     enabled: canCompare && activeTab === 'timeline',
     staleTime: 10 * 60 * 1000,
   });
-  const dateRange = useMemo(() => getDateRange(), []);
   const calendarQuery = useQuery({
-    queryKey: ['signal-calendar', activeProfiles, windowDays, dateRange.from, dateRange.to],
-    queryFn: () => insightsApi.getSignalCalendar(activeProfiles, { gapDays: windowDays, ...dateRange }),
+    queryKey: ['signal-calendar', activeProfiles, windowDays],
+    // No explicit window: the backend anchors on the pair's own activity.
+    queryFn: () => insightsApi.getSignalCalendar(activeProfiles, { gapDays: windowDays }),
     enabled: canCompare && activeTab === 'calendar',
     staleTime: 5 * 60 * 1000,
   });
