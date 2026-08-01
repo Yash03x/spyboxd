@@ -73,7 +73,11 @@ function PairComparisonTable({ title, rows, tone }: {
           {tone === 'love' ? <Heart className="h-4 w-4 text-emerald-400" /> : <Zap className="h-4 w-4 text-cinema-400" />}
           {title}
         </h3>
-        <span className="text-xs text-white/35">{rows.length} titles</span>
+        {/* The body renders six; quoting the backend's 24-row cap above them was
+            neither the count shown nor the pair's real total. */}
+        <span className="text-xs text-white/35">
+          {Math.min(rows.length, 6)}{rows.length > 6 ? ` of ${rows.length}` : ''} titles
+        </span>
       </div>
       {rows.length === 0 ? (
         <p className="px-4 py-8 text-center text-sm text-white/40">Not enough shared ratings yet.</p>
@@ -279,7 +283,14 @@ function TraitMirror({ trait, profiles }: { trait: TasteTrait; profiles: string[
     // truncated almost every one of them to "Paul Tho…".
     <div className="grid grid-cols-[minmax(0,1fr)_minmax(8rem,14rem)_minmax(0,1fr)] items-center gap-2 text-xs">
       <div className="flex items-center justify-end gap-2">
-        <span className="shrink-0 tabular-nums text-white/55">{left ? `${Math.round(left.score)}%` : '—'}</span>
+        <span
+          className="shrink-0 tabular-nums text-white/55"
+          title={left ? `${left.rated_sample_size} rated ${left.rated_sample_size === 1 ? 'film' : 'films'}` : undefined}
+        >
+          {/* 0% can only mean "rated nothing here": the lowest real score is
+              10%, because Letterboxd's minimum rating is half a star. */}
+          {left && left.rated_sample_size > 0 ? `${Math.round(left.score)}%` : '—'}
+        </span>
         <span className="h-1.5 w-full max-w-24 overflow-hidden rounded-full bg-white/10">
           <span className="ml-auto block h-full rounded-full bg-cinema-500" style={{ width: `${Math.max(2, left?.score ?? 0)}%` }} />
         </span>
@@ -330,7 +341,7 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
       ) : (
         <>
           <MetricStrip metrics={[
-            { label: 'Taste similarity', value: numberOrDash(data.summary.similarity_score), detail: 'Behavior and metadata match', accent: true },
+            { label: 'Taste similarity', value: numberOrDash(data.summary.similarity_score), detail: `Rating correlation on ${data.summary.shared_rated_titles} shared films · 50 is no correlation`, accent: true },
             { label: 'Shared rated titles', value: numberOrDash(data.summary.shared_rated_titles), detail: 'Ratings used for comparison' },
             {
               label: 'Metadata coverage',
