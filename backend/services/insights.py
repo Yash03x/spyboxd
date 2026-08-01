@@ -3375,6 +3375,8 @@ class InsightsService:
             )
 
         recommendations: List[Dict[str, Any]] = []
+        # Candidates dropped only because TMDB has never described them.
+        unenriched_skipped = 0
         for movie_id in candidate_ids:
             candidate = watchlist_by_movie[movie_id]
             movie: Movie = candidate["movie"]
@@ -3387,7 +3389,18 @@ class InsightsService:
             runtime = (enrichment.runtime_minutes or None) if enrichment else None
             genres = _as_string_list(enrichment.genres) if enrichment else []
             providers = providers_by_movie.get(movie_id, [])
-            if max_runtime is not None and (runtime is None or runtime > max_runtime):
+            # A film TMDB never enriched has no runtime and no genres, so both
+            # filters drop it. That is the right call -- we cannot claim it is
+            # under 90 minutes -- but silently, it reads as "no such film in
+            # your watchlists" when the truth is "we do not know". Counted here
+            # and reported in coverage below.
+            if max_runtime is not None and runtime is None:
+                unenriched_skipped += 1
+                continue
+            if max_runtime is not None and runtime > max_runtime:
+                continue
+            if genre and not genres:
+                unenriched_skipped += 1
                 continue
             if genre and genre.casefold() not in {value.casefold() for value in genres}:
                 continue
@@ -3622,7 +3635,12 @@ class InsightsService:
                 certification = enrichment.raw_payload.get("certification")
             item["movie"] = {
                 **self._movie_summary(movie, enrichment),
-                "runtime_minutes": enrichment.runtime_minutes if enrichment else None,
+                # Same guard as the candidate loop: TMDB writes an unfilled
+                # runtime as 0, and this second pass rebuilds the movie payload
+                # wholesale, so writing the raw column here put the zeros
+                # straight back and handed them the top of a "Shortest runtime"
+                # sort.
+                "runtime_minutes": (enrichment.runtime_minutes or None) if enrichment else None,
                 "genres": _as_string_list(enrichment.genres) if enrichment else [],
                 "certification": certification,
                 "providers": [
@@ -3655,10 +3673,13 @@ class InsightsService:
             states,
             coverage_payload,
         )
+        # Every mode except list_mission builds its candidate pool from the
+        # selected profiles' watchlists, so a profile with no watchlist import
+        # silently contributes nothing while coverage still reads green. Only
+        # list_mission genuinely does not need one.
         required_surface_names = {
-            "watchlist_overlap": {"ratings", "watchlist"},
             "list_mission": {"ratings", "lists"},
-        }.get(mode, {"ratings"})
+        }.get(mode, {"ratings", "watchlist"})
         required_surfaces = [
             surface
             for profile_payload in coverage_payload["profiles"]
@@ -3702,7 +3723,11 @@ class InsightsService:
                     *(
                         warning
                         for warning in coverage["warnings"]
-                        if mode == "watchlist_overlap"
+                        # The warning is about the watchlist import, which
+                        # every watchlist-driven mode depends on -- stripping it
+                        # everywhere but watchlist_overlap hid a real gap from
+                        # the modes that share the same input.
+                        if mode != "list_mission"
                         or not warning.startswith("Watchlist overlap requires")
                     ),
                     *(
@@ -3717,6 +3742,17 @@ class InsightsService:
         # result set was being reported as missing streaming data — blaming the
         # TMDB cache for a query that simply matched nothing, and downgrading
         # coverage on the strength of it.
+        # Say when a filter hid films rather than letting an empty-looking
+        # result imply the watchlists held nothing matching.
+        if unenriched_skipped:
+            if coverage["status"] == "ready":
+                coverage["status"] = "partial"
+            coverage["warnings"].append(
+                f"{unenriched_skipped} candidate"
+                f"{'' if unenriched_skipped == 1 else 's'} could not be checked "
+                "against the runtime and genre filters because TMDB metadata "
+                "has not been imported for them."
+            )
         if providers_by_movie and not any(providers_by_movie.values()):
             if coverage["status"] == "ready":
                 coverage["status"] = "partial"

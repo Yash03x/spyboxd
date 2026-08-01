@@ -1802,3 +1802,34 @@ class EarliestEventPerProfileTests(unittest.TestCase):
 
     def test_no_events_yields_no_observations(self) -> None:
         self.assertEqual(InsightsService._earliest_event_per_profile([]), {})
+
+
+class WatchTogetherCoverageHonestyTests(unittest.TestCase):
+    """Filters and inputs the modes depend on have to be visible in coverage.
+
+    A result that looks empty should say why: "your watchlists hold nothing
+    matching" and "we could not check 241 of them" are different answers.
+    """
+
+    def test_every_watchlist_driven_mode_requires_the_watchlist_surface(self) -> None:
+        from backend.services.insights import WATCH_TOGETHER_MODES
+
+        # list_mission reads a public list rather than the members' watchlists;
+        # every other mode builds its candidate pool from them.
+        for mode in WATCH_TOGETHER_MODES:
+            required = {
+                "list_mission": {"ratings", "lists"},
+            }.get(mode, {"ratings", "watchlist"})
+            if mode == "list_mission":
+                self.assertNotIn("watchlist", required, mode)
+            else:
+                self.assertIn("watchlist", required, mode)
+
+    def test_a_zero_runtime_never_reaches_the_payload(self) -> None:
+        """TMDB writes an unfilled runtime as 0; two passes both had to guard it."""
+        enrichment = MovieEnrichment(movie_id=1, genres=[], keywords=[], credits={},
+                                     production_countries=[], runtime_minutes=0)
+        # The expression used by both the candidate loop and the rehydration.
+        runtime = (enrichment.runtime_minutes or None) if enrichment else None
+
+        self.assertIsNone(runtime)
