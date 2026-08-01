@@ -31,6 +31,13 @@ Key columns:
 - `member_badge` — Patron/Pro/Crew when observed
 - `reported_watchlist_count` — profile-sidebar count, observable even when the
   watchlist itself is private
+- `pronoun` — official-export `profile.csv` only
+- `stats_snapshot` / `stats_synced_at` — Letterboxd's own `/<user>/stats/`
+  header figures (hours watched, distinct directors and countries, longest
+  streak, multi-film days). These cannot be derived from imported rows without
+  runtime and credit metadata for every film, so the site's published numbers
+  are stored as observed facts. The surface is best-effort: it is account-tier
+  gated, and an unavailable page never fails a sync.
 
 Notes:
 
@@ -148,6 +155,17 @@ member placed on other members' reviews and lists (`likes/reviews.csv`,
 (`comments.csv`: date, target URL, comment HTML). Rows are URL-keyed (comments
 by a URL/date/text digest) with the usual lineage and soft-removal semantics;
 scraper bundles never carry these files, so they always preserve prior state.
+
+### `lost_entries`
+
+History Letterboxd can no longer place, from an official export's `deleted/`
+(the film or thread was removed) and `orphaned/` (the entry survived, its
+target did not) folders: diary rows, reviews, comments, and the films of
+deleted lists — each list contributing one row per film so the vanished list
+stays legible. Stored apart from every live surface so it can never
+contaminate watch events, reviews, or film state, and append-only: Letterboxd
+prunes these folders, so an entry's absence from a later export is not
+evidence of removal.
 
 ### `movie_enrichments` and `movie_watch_providers`
 

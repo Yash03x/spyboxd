@@ -58,6 +58,8 @@ class LoadedProfileData:
     followers: pd.DataFrame
     liked_reviews: pd.DataFrame
     liked_lists: pd.DataFrame
+    # {(lost_kind, entry_type): frame} from the export's deleted/ and orphaned/ folders
+    lost_entries: Dict[Tuple[str, str], pd.DataFrame]
     avg_rating: float
     total_reviews: int
     join_date: Optional[date]
@@ -237,6 +239,58 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
             liked_lists_path, "likes/lists.csv", source_name="likes/lists.csv"
         )
 
+    # deleted/ holds entries whose film or thread Letterboxd removed;
+    # orphaned/ holds entries it could not re-attach. Same row shapes as the
+    # live surfaces, kept separate so they never merge into them.
+    lost_entries: Dict[Tuple[str, str], pd.DataFrame] = {}
+    for lost_kind in ("deleted", "orphaned"):
+        lost_dir = resolved_profile_path / lost_kind
+        if not lost_dir.is_dir():
+            continue
+        for entry_type in ("diary", "reviews", "comments"):
+            lost_path = lost_dir / f"{entry_type}.csv"
+            if not lost_path.exists():
+                continue
+            relative = f"{lost_kind}/{entry_type}.csv"
+            frame = read_source(lost_path, relative, source_name=relative)
+            normalized_type = "review" if entry_type == "reviews" else (
+                "comment" if entry_type == "comments" else "diary"
+            )
+            lost_entries[(lost_kind, normalized_type)] = frame
+
+        # Deleted lists keep their full v7 export files. Flatten each into one
+        # row per film so the list survives as history even though the list
+        # itself is gone from Letterboxd.
+        lost_lists_dir = lost_dir / "lists"
+        if lost_lists_dir.is_dir():
+            list_rows: List[Dict[str, Any]] = []
+            for list_path in sorted(lost_lists_dir.iterdir()):
+                if not list_path.is_file() or list_path.suffix.casefold() != ".csv":
+                    continue
+                relative = f"{lost_kind}/lists/{list_path.name}"
+                official = _read_official_list_export(list_path)
+                if official is None:
+                    continue
+                metadata_row, items = official
+                info = _file_info(list_path, len(items))
+                info["name"] = relative
+                info["relative_path"] = relative
+                source_files[relative] = info
+                list_title = metadata_row.get("Title") or list_path.stem
+                for _, item in items.iterrows():
+                    list_rows.append({
+                        "List_Name": list_title,
+                        "List_URL": metadata_row.get("URL", ""),
+                        "Date": metadata_row.get("Published Date", ""),
+                        "Tags": metadata_row.get("Tags", ""),
+                        "Name": item.get("Name", ""),
+                        "Year": item.get("Year", ""),
+                        "Letterboxd URI": item.get("URL", ""),
+                        "Position": item.get("Position", ""),
+                    })
+            if list_rows:
+                lost_entries[(lost_kind, "list")] = pd.DataFrame(list_rows)
+
     all_films = pd.DataFrame()
     for candidate in ["films.csv", "all_films.csv", "films_comprehensive.csv"]:
         candidate_path = resolved_profile_path / candidate
@@ -361,6 +415,7 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
         followers=loaded.get("followers", pd.DataFrame()),
         liked_reviews=liked_reviews,
         liked_lists=liked_lists,
+        lost_entries=lost_entries,
         avg_rating=avg_rating,
         total_reviews=len(reviews),
         join_date=_parse_join_date(profile_info),

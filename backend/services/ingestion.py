@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -11,6 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.models import (
+    LostEntry,
     MemberComment,
     MemberContentLike,
     MovieList,
@@ -1026,6 +1028,76 @@ def _upsert_member_comments(
     return len(seen)
 
 
+def _upsert_lost_entries(analyzer_profile, profile_id: int, sync: ProfileSync, db: Session) -> int:
+    """Store the export's deleted/ and orphaned/ history.
+
+    These rows are append-only history: an entry absent from a later export
+    is not evidence of removal (Letterboxd prunes these folders), so nothing
+    is ever soft-removed here.
+    """
+    frames = getattr(analyzer_profile, "lost_entries", {}) or {}
+    if not frames:
+        return 0
+    existing = {
+        entry.entry_key: entry
+        for entry in db.query(LostEntry).filter(LostEntry.profile_id == profile_id).all()
+    }
+    imported = 0
+    for (lost_kind, entry_type), frame in frames.items():
+        for row in frame_records(frame):
+            title = clean_text(first_value(row, ("Name", "Title")), max_length=300)
+            source_url = normalize_letterboxd_url(
+                first_value(row, ("Letterboxd URI", "Content", "URL"))
+            )
+            body_text = clean_text(first_value(row, ("Review", "Comment")))
+            entry_date = parse_date(first_value(row, ("Date",)))
+            # A deleted list contributes one row per film; the list name keeps
+            # the vanished list identifiable.
+            list_name = clean_text(first_value(row, ("List_Name",)), max_length=300)
+            if not title and not source_url and not body_text:
+                continue
+            digest = hashlib.sha256(
+                "|".join(
+                    (
+                        lost_kind,
+                        entry_type,
+                        list_name or "",
+                        source_url or "",
+                        title or "",
+                        entry_date.isoformat() if entry_date else "",
+                        (body_text or "")[:200],
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+            entry_key = f"lost:{digest}"
+            entry = existing.get(entry_key)
+            if entry is None:
+                entry = LostEntry(
+                    profile_id=profile_id,
+                    lost_kind=lost_kind,
+                    entry_type=entry_type,
+                    entry_key=entry_key,
+                    first_seen_profile_sync_id=sync.id,
+                )
+                db.add(entry)
+                existing[entry_key] = entry
+            entry.title = title
+            entry.release_year = parse_integer(first_value(row, ("Year",)), minimum=1800)
+            entry.source_url = source_url
+            entry.entry_date = entry_date
+            entry.watched_date = parse_date(first_value(row, ("Watched Date",)))
+            entry.rating = _bounded_rating(first_value(row, ("Rating",)))
+            entry.is_rewatch = parse_boolean(first_value(row, ("Rewatch",)))
+            # For list rows the body carries the vanished list's name so the
+            # entry stays self-describing without another table.
+            entry.body_text = body_text or (f"From list: {list_name}" if list_name else None)
+            entry.tags = parse_tags(first_value(row, ("Tags", "Tag")))
+            entry.last_seen_profile_sync_id = sync.id
+            imported += 1
+    db.flush()
+    return imported
+
+
 def _upsert_source_activities(
     *,
     analyzer_profile,
@@ -1370,15 +1442,20 @@ def _update_profile_metadata(profile: Profile, analyzer_profile, sync: ProfileSy
     if not _source_present(analyzer_profile, "profile.csv"):
         return
     info = getattr(analyzer_profile, "profile_info", {}) or {}
-    profile.display_name = clean_text(
-        first_value(info, ("Display_Name", "Display Name")), max_length=200
-    )
-    profile.bio = clean_text(first_value(info, ("Bio",)))
-    profile.location = clean_text(first_value(info, ("Location",)), max_length=100)
-    profile.website = clean_text(first_value(info, ("Website",)), max_length=200)
-    profile.profile_image_url = clean_text(
-        first_value(info, ("Avatar_URL", "Avatar URL")), max_length=500
-    )
+    # Sources observe different subsets of the header: an official export's
+    # profile.csv has no display name or avatar, while the HTML scrape has no
+    # pronoun. A column the source never carries means "unknown here", not
+    # "clear the known value" — otherwise each source erases the other's.
+    text_fields = {
+        "display_name": (("Display_Name", "Display Name"), 200),
+        "bio": (("Bio",), None),
+        "location": (("Location",), 100),
+        "website": (("Website",), 200),
+        "profile_image_url": (("Avatar_URL", "Avatar URL"), 500),
+    }
+    for attribute, (names, max_length) in text_fields.items():
+        if any(name in info for name in names):
+            setattr(profile, attribute, clean_text(first_value(info, names), max_length=max_length))
     # The public HTML scraper currently cannot observe join date. An omitted
     # value therefore means "unknown in this source", not "clear known data".
     if analyzer_profile.join_date is not None:
@@ -1407,6 +1484,17 @@ def _update_profile_metadata(profile: Profile, analyzer_profile, sync: ProfileSy
     pronoun_value = clean_text(first_value(info, ("Pronoun", "Pronouns")), max_length=50)
     if pronoun_value is not None:
         profile.pronoun = pronoun_value
+
+    # Letterboxd's own stats-page figures, when the scrape observed them.
+    stats_value = clean_text(first_value(info, ("Stats",)))
+    if stats_value:
+        try:
+            decoded_stats = json.loads(stats_value)
+        except (TypeError, ValueError):
+            decoded_stats = None
+        if isinstance(decoded_stats, dict) and decoded_stats:
+            profile.stats_snapshot = decoded_stats
+            profile.stats_synced_at = now
     profile.metadata_synced_at = now
 
 
@@ -1896,6 +1984,7 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             authoritative=comments_authoritative,
             db=db,
         )
+        lost_entry_count = _upsert_lost_entries(analyzer_profile, profile_id, sync, db)
 
         authoritative = {
             "profile": _source_present(analyzer_profile, "profile.csv"),
@@ -1927,6 +2016,7 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             "comments": comment_count,
             "liked_reviews": liked_reviews_count,
             "liked_lists": liked_lists_count,
+            "lost_entries": lost_entry_count,
             "lists": list_count,
             "list_items": list_item_count,
             "favorites": favorite_count,

@@ -17,15 +17,23 @@ export function formatCalendarDate(value: string | null | undefined): string {
   }).format(new Date(year, month - 1, day));
 }
 
+const AVATAR_DIMENSIONS = {
+  sm: 'h-7 w-7 text-[10px]',
+  md: 'h-9 w-9 text-xs',
+  lg: 'h-11 w-11 text-sm',
+  // Hero treatment for a full profile header.
+  xl: 'h-20 w-20 text-xl sm:h-24 sm:w-24 sm:text-2xl',
+} as const;
+
 export function ProfileAvatar({ profile, username, size = 'md' }: {
   profile?: Pick<ProfileInfo, 'username'> & Partial<Pick<ProfileInfo, 'profile_image_url' | 'avatar_url'>>;
   username?: string;
-  size?: 'sm' | 'md' | 'lg';
+  size?: keyof typeof AVATAR_DIMENSIONS;
 }) {
   const name = profile?.username ?? username ?? '?';
   const imageUrl = profile?.profile_image_url ?? profile?.avatar_url;
   const [failedUrl, setFailedUrl] = React.useState<string | null>(null);
-  const dimensions = size === 'lg' ? 'h-11 w-11 text-sm' : size === 'sm' ? 'h-7 w-7 text-[10px]' : 'h-9 w-9 text-xs';
+  const dimensions = AVATAR_DIMENSIONS[size];
 
   if (imageUrl && imageUrl !== failedUrl) {
     return (

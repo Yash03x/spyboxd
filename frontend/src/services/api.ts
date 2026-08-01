@@ -133,6 +133,51 @@ export const authApi = {
   },
 };
 
+export interface ProfileFavoriteFilm {
+  position: number;
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+}
+
+/**
+ * Everything Letterboxd's own profile header shows, plus the Spyboxd-only
+ * context beside it. Every observed field is nullable: the HTML scrape, the
+ * RSS feed, and the official export each see a different subset, so `null`
+ * means "not observed" and must render as nothing rather than an empty row.
+ */
+export interface ProfileHeader {
+  username: string;
+  display_name: string | null;
+  bio: string | null;
+  location: string | null;
+  website: string | null;
+  website_url: string | null;
+  pronoun: string | null;
+  member_badge: string | null;
+  avatar_url: string | null;
+  letterboxd_url: string;
+  letterboxd_person_id: number | null;
+  join_date: string | null;
+  films_count: number | null;
+  reviews_count: number | null;
+  lists_count: number | null;
+  watchlist_count: number | null;
+  following_count: number | null;
+  followers_count: number | null;
+  films_this_year: number | null;
+  favorites: ProfileFavoriteFilm[];
+  synced_films: number | null;
+  avg_rating: number | null;
+  total_reviews: number | null;
+  last_scraped_at: string | null;
+  metadata_synced_at: string | null;
+  /** Letterboxd's own /<user>/stats/ figures; key set varies by account. */
+  stats_snapshot: Record<string, number | string> | null;
+  stats_synced_at: string | null;
+}
+
 export interface ProfileAnalysis {
   username: string;
   total_films: number;
@@ -145,6 +190,7 @@ export interface ProfileAnalysis {
   scraping_status: string;
   enhanced_metrics: Record<string, unknown>;
   data_coverage?: DataCoverage;
+  profile_header?: ProfileHeader;
   rating_distribution: Record<string, number>;
   monthly_stats: ActivityData[];
   tag_counts?: TagCount[];
@@ -1080,6 +1126,52 @@ export const followGraphApi = {
         limit: options.limit ?? 20,
         min_overlap: options.minOverlap ?? 2,
       },
+    });
+    return response.data;
+  },
+};
+
+export interface MemberContentLikeEntry {
+  target_url: string;
+  liked_date: string | null;
+}
+
+export interface MemberCommentEntry {
+  target_url: string;
+  commented_date: string | null;
+  comment_html: string | null;
+}
+
+export interface LostEntryRecord {
+  lost_kind: 'deleted' | 'orphaned';
+  entry_type: 'diary' | 'review' | 'comment' | 'list';
+  title: string | null;
+  release_year: number | null;
+  source_url: string | null;
+  entry_date: string | null;
+  watched_date: string | null;
+  rating: number | null;
+  body_text: string | null;
+}
+
+export interface MemberArchiveResponse {
+  username: string;
+  liked_reviews: MemberContentLikeEntry[];
+  liked_lists: MemberContentLikeEntry[];
+  comments: MemberCommentEntry[];
+  lost_entries: LostEntryRecord[];
+  totals: {
+    liked_reviews: number;
+    liked_lists: number;
+    comments: number;
+    lost_entries: number;
+  };
+}
+
+export const memberArchiveApi = {
+  getArchive: async (username: string, limit = 100): Promise<MemberArchiveResponse> => {
+    const response = await api.get(`/api/profiles/${encodeURIComponent(username)}/archive`, {
+      params: { limit },
     });
     return response.data;
   },
