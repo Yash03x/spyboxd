@@ -551,8 +551,22 @@ export default function FollowNetwork({
       if (!key || key === focusNode.key || groupIndexByKey.has(key)) return;
       outside.add(key);
     });
-    return Math.max(0, outside.size - extraNodes.length);
-  }, [focusNode, egoQuery.data?.edges, egoQuery.isError, groupIndexByKey, extraNodes.length]);
+    // The edge request is capped, and the endpoint serves followers before any
+    // following rows, so a profile with more followers than the cap returns no
+    // following edges at all -- counting only what arrived understated both the
+    // connections and the "not shown" note that exists to admit truncation.
+    // `total` is the unfiltered count the same response already carries.
+    const fetched = (egoQuery.data?.edges ?? []).length;
+    const beyondPage = Math.max(0, (egoQuery.data?.total ?? fetched) - fetched);
+    return Math.max(0, outside.size - extraNodes.length) + beyondPage;
+  }, [
+    focusNode,
+    egoQuery.data?.edges,
+    egoQuery.data?.total,
+    egoQuery.isError,
+    groupIndexByKey,
+    extraNodes.length,
+  ]);
 
   // Leaves keep the ring's angular order so the collapse into ego view reads
   // as a fold-in rather than a shuffle; outside counterparts come last.
