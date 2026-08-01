@@ -1169,7 +1169,13 @@ class InsightsService:
         if status == "partial":
             # A complete-looking row count is not complete coverage when the
             # source itself is explicitly non-authoritative.
-            return min(max(float(surface.get("ratio") or 0.5), 0.25), 0.75)
+            #
+            # `or 0.5` could not tell "no ratio known" from a ratio of zero, so a
+            # surface with nothing in it scored 0.5 and outranked one that had
+            # genuinely captured a third of its rows.
+            ratio = surface.get("ratio")
+            known = 0.5 if ratio is None else float(ratio)
+            return min(max(known, 0.25), 0.75)
         if status == "stale":
             return 0.4
         return 0.0
@@ -2103,45 +2109,53 @@ class InsightsService:
         influence_paths: List[Dict[str, Any]] = []
         direction_counts: Dict[str, int] = defaultdict(int)
         for movie_id, movie_events in events_by_movie.items():
-            by_profile: Dict[int, List[EventRow]] = defaultdict(list)
-            for event in movie_events:
-                by_profile[event.profile_id].append(event)
-            if len(by_profile) < 2:
+            # One observation per person per film, taken from their EARLIEST
+            # viewing. This used to be a cross product over raw watch events,
+            # and 4,948 (profile, film) pairs in the tracked library carry more
+            # than one event, so a film someone had rewatched six times cast six
+            # votes for who leads while the other person's single viewing cast
+            # one. `directional_leader` was measuring rewatching, not sequence.
+            # A rewatch also cannot make anyone earlier, so first viewings are
+            # the only ones that answer the question being asked.
+            earliest_by_profile = self._earliest_event_per_profile(movie_events)
+            if len(earliest_by_profile) < 2:
                 continue
-            for left in by_profile[ordered_profile_ids[0]]:
-                for right in by_profile[ordered_profile_ids[1]]:
-                    delta = (right.watched_date - left.watched_date).days
-                    if delta == 0 or abs(delta) > gap_days:
-                        continue
-                    leader, follower = (left, right) if delta > 0 else (right, left)
-                    direction_counts[leader.username] += 1
-                    influence_paths.append(
-                        {
-                            "leader": leader.username,
-                            "follower": follower.username,
-                            "movie": self._movie_summary(
-                                leader.movie,
-                                next(
-                                    (
-                                        row.enrichment
-                                        for row in states_by_movie.get(movie_id, [])
-                                        if row.enrichment is not None
-                                    ),
-                                    None,
-                                ),
+            left = earliest_by_profile.get(ordered_profile_ids[0])
+            right = earliest_by_profile.get(ordered_profile_ids[1])
+            if left is None or right is None:
+                continue
+            delta = (right.watched_date - left.watched_date).days
+            if delta == 0 or abs(delta) > gap_days:
+                continue
+            leader, follower = (left, right) if delta > 0 else (right, left)
+            direction_counts[leader.username] += 1
+            influence_paths.append(
+                {
+                    "leader": leader.username,
+                    "follower": follower.username,
+                    "movie": self._movie_summary(
+                        leader.movie,
+                        next(
+                            (
+                                row.enrichment
+                                for row in states_by_movie.get(movie_id, [])
+                                if row.enrichment is not None
                             ),
-                            "leader_date": leader.watched_date.isoformat(),
-                            "follower_date": follower.watched_date.isoformat(),
-                            "gap_days": abs(delta),
-                            # `leader`/`follower` here are watch order, not the
-                            # social graph. This field is the social question:
-                            # was the later watcher already following the
-                            # earlier one? None when that is unobservable.
-                            "follows_earlier_watcher": follow_graph.follows(
-                                follower.profile_id, leader.profile_id
-                            ),
-                        }
-                    )
+                            None,
+                        ),
+                    ),
+                    "leader_date": leader.watched_date.isoformat(),
+                    "follower_date": follower.watched_date.isoformat(),
+                    "gap_days": abs(delta),
+                    # `leader`/`follower` here are watch order, not the social
+                    # graph. This field is the social question: was the later
+                    # watcher already following the earlier one? None when that
+                    # is unobservable.
+                    "follows_earlier_watcher": follow_graph.follows(
+                        follower.profile_id, leader.profile_id
+                    ),
+                }
+            )
         influence_paths.sort(key=lambda item: (item["gap_days"], item["leader_date"], item["movie"]["title"]))
 
         monthly: Dict[str, Dict[str, Any]] = defaultdict(
@@ -2319,7 +2333,12 @@ class InsightsService:
             return _as_string_list(enrichment.production_countries)
         if dimension == "keyword" and enrichment:
             return _as_string_list(enrichment.keywords)
-        if dimension == "runtime" and enrichment and enrichment.runtime_minutes is not None:
+        # TMDB stores an unfilled runtime as 0, not null — 55 films in the
+        # tracked library carry it — and `is not None` read that as a known
+        # length, filing them under "Under 90 min". The user was then told they
+        # favour short films on the strength of films whose runtime nobody has
+        # recorded. Everywhere else in the codebase treats 0 as unknown.
+        if dimension == "runtime" and enrichment and enrichment.runtime_minutes:
             runtime = enrichment.runtime_minutes
             if runtime < 90:
                 return ["Under 90 min"]
@@ -2433,6 +2452,27 @@ class InsightsService:
         return deduped[:limit]
 
     @staticmethod
+    def _earliest_event_per_profile(events: Sequence[EventRow]) -> Dict[int, EventRow]:
+        """One event per profile: the first time each of them saw this film.
+
+        Watch history is not one row per person per film. 4,948 (profile, film)
+        pairs in the tracked library carry more than one event -- rewatches, and
+        several diary entries on a single date -- and pairing the raw rows made
+        a film someone had rewatched six times cast six votes for who watched
+        first, against one from the other person's single viewing.
+
+        A rewatch cannot make anyone earlier, so the earliest event is the only
+        one that speaks to sequence.
+        """
+
+        earliest: Dict[int, EventRow] = {}
+        for event in events:
+            current = earliest.get(event.profile_id)
+            if current is None or event.watched_date < current.watched_date:
+                earliest[event.profile_id] = event
+        return earliest
+
+    @staticmethod
     def _alignment_sort_key(trait: Dict[str, Any], profile_count: int) -> Tuple:
         """Order a dimension by how much the profiles actually agree.
 
@@ -2442,10 +2482,16 @@ class InsightsService:
         both strong, and close together. A single five-star film also scores
         a perfect 100, so traits below the credible sample floor rank last.
         """
-        engaged = [entry for entry in trait["per_profile"] if entry["sample_size"] > 0]
+        # Engagement and credibility are both questions about ratings, because
+        # the score is built from ratings alone. Measuring them against watched
+        # rows made the floor inert for anyone who logs more than they rate: two
+        # profiles who each rated ONE Wes Anderson film five stars both scored a
+        # perfect 100 over a "sample" of three, and outranked a trait where both
+        # had rated twenty-five films.
+        engaged = [entry for entry in trait["per_profile"] if entry["rated_sample_size"] > 0]
         shared = len(engaged) == profile_count
         credible = shared and all(
-            entry["sample_size"] >= MIN_ALIGNMENT_SAMPLE for entry in engaged
+            entry["rated_sample_size"] >= MIN_ALIGNMENT_SAMPLE for entry in engaged
         )
         scores = [entry["score"] for entry in engaged]
         weakest = min(scores) if scores else 0.0
@@ -2524,6 +2570,15 @@ class InsightsService:
                             "username": profile.username,
                             "score": _round((average_rating or 0) * 20, 1) or 0,
                             "sample_size": len(profile_rows),
+                            # The score is an average of RATINGS, but sample_size
+                            # counts every watched row. Someone who logged six
+                            # horror films and rated none scored 0 out of a
+                            # sample of six — indistinguishable from rating them
+                            # all half a star, and enough to clear the
+                            # credibility floor. Anything reasoning about the
+                            # score has to weigh it against the ratings it came
+                            # from, so carry that count too.
+                            "rated_sample_size": len(ratings),
                             "average_rating": _round(average_rating, 2),
                         }
                     )
@@ -2550,17 +2605,33 @@ class InsightsService:
                     ],
                 }
                 traits.append(trait)
-                scores = [entry["score"] for entry in per_profile if entry["sample_size"] > 0]
+                # A profile with nothing rated in this trait holds no opinion to
+                # differ from. Counting its 0 as a position produced the widest
+                # possible split — "Horror: alice 92%, bob 0%" when bob simply
+                # never rated a horror film — and those artefacts crowded real
+                # disagreements out of the panel.
+                scores = [
+                    entry["score"] for entry in per_profile if entry["rated_sample_size"] > 0
+                ]
                 contrast = max(scores) - min(scores) if len(scores) >= 2 else 0
                 if contrast > 0:
                     contrast_candidates.append((contrast, {**trait, "group_score": _round(contrast, 1) or 0}))
-                if len(present_profiles) >= 2:
+                # "Shared" has to mean everyone rated it, not that everyone
+                # watched it. Pooling ratings hid disagreement: one profile at
+                # five stars and another at one averaged to a respectable three
+                # and led a panel headed "where your tastes align".
+                if len(profiles) >= 2 and all(
+                    entry["rated_sample_size"] > 0 for entry in per_profile
+                ):
                     signature_candidates.append(trait)
             traits.sort(key=lambda trait: self._alignment_sort_key(trait, len(profiles)))
             dimension_payloads[dimension] = traits[:limit]
 
+        # Ranked by agreement, using the same definition the dimension lists
+        # already use, rather than by a pooled average that a wide split can
+        # still carry to the top.
         signature_candidates.sort(
-            key=lambda trait: (-trait["watch_share"], -trait["group_score"], -trait["sample_size"], trait["label"])
+            key=lambda trait: self._alignment_sort_key(trait, len(profiles))
         )
         contrast_candidates.sort(key=lambda item: (-item[0], -item[1]["sample_size"], item[1]["label"]))
 
@@ -2590,7 +2661,13 @@ class InsightsService:
             states,
         )
         if tmdb_status == "unavailable":
-            coverage["status"] = "partial" if states else "blocked"
+            # Never promote a blocked panel. Missing TMDB data can only make
+            # coverage worse, and assigning unconditionally turned an existing
+            # "blocked" into "partial" whenever any state row existed, letting a
+            # panel with real blockers present itself as merely incomplete.
+            # `readiness` guards the same way where it downgrades for TMDB.
+            if coverage["status"] != "blocked":
+                coverage["status"] = "partial" if states else "blocked"
             coverage["warnings"].append(
                 "TMDB enrichment has not run yet; only Letterboxd-native dimensions such as decade are shown."
             )
@@ -3279,7 +3356,12 @@ class InsightsService:
             candidate = watchlist_by_movie[movie_id]
             movie: Movie = candidate["movie"]
             enrichment: Optional[MovieEnrichment] = candidate["enrichment"]
-            runtime = enrichment.runtime_minutes if enrichment else None
+            # `or None` so an unfilled TMDB runtime of 0 is unknown here exactly
+            # as a null one is. Left as 0 it slipped through every max-runtime
+            # filter — `0 > 90` is false — so asking for something short
+            # returned films of unrecorded length, and the payload then
+            # reported their runtime as zero minutes.
+            runtime = (enrichment.runtime_minutes or None) if enrichment else None
             genres = _as_string_list(enrichment.genres) if enrichment else []
             providers = providers_by_movie.get(movie_id, [])
             if max_runtime is not None and (runtime is None or runtime > max_runtime):
@@ -3328,17 +3410,30 @@ class InsightsService:
                     + 0.10 * watchlist_component
                 )
             elif mode == "list_mission" and list_context is not None:
-                list_size = max(int((selected_list or {}).get("movie_count") or 0), 1)
-                rank_component = max(
-                    0.0,
-                    1.0 - ((int(list_context["position"]) - 1) / list_size),
-                )
-                score = 100 * (
-                    0.35 * rank_component
-                    + 0.30 * unseen_component
-                    + 0.20 * watchlist_component
-                    + 0.15 * rating_component
-                )
+                # Position only means something on a list its owner ordered
+                # deliberately. Letterboxd marks that explicitly, and on an
+                # unranked list `position` is just the order rows happen to be
+                # stored — so weighting it at 35% ranked recommendations by an
+                # accident of storage. Unranked lists redistribute that weight
+                # across the signals that do carry meaning.
+                if (selected_list or {}).get("is_ranked"):
+                    list_size = max(int((selected_list or {}).get("movie_count") or 0), 1)
+                    rank_component = max(
+                        0.0,
+                        1.0 - ((int(list_context["position"]) - 1) / list_size),
+                    )
+                    score = 100 * (
+                        0.35 * rank_component
+                        + 0.30 * unseen_component
+                        + 0.20 * watchlist_component
+                        + 0.15 * rating_component
+                    )
+                else:
+                    score = 100 * (
+                        0.46 * unseen_component
+                        + 0.31 * watchlist_component
+                        + 0.23 * rating_component
+                    )
             else:
                 # Preserve the established scoring contract for the original
                 # Watch Together modes.
@@ -3350,15 +3445,34 @@ class InsightsService:
                 )
             reasons = []
             if mode == "collective_blind_spots" and blind_spot_source is not None:
-                source_signal = "liked"
-                if blind_spot_source.rating is not None:
-                    source_signal += f" and rated {blind_spot_source.rating:.1f}"
+                # A film qualifies on a like OR a rating of 4.0+, so the word
+                # "liked" cannot be assumed: a 4.5 that was never hearted was
+                # still reported as "liked and rated 4.5 this", contradicting
+                # the blind-spot source line rendered from the same payload a
+                # few rows below — and reading as broken English besides.
+                liked = bool(blind_spot_source.liked)
+                rating = blind_spot_source.rating
+                if liked and rating is not None:
+                    source_signal = f"liked and rated this {rating:.1f}"
+                elif liked:
+                    source_signal = "liked this"
+                elif rating is not None:
+                    source_signal = f"rated this {rating:.1f}"
+                else:
+                    source_signal = "watched this"
                 reasons.append(
-                    f"{blind_spot_source.username} {source_signal} this; everyone else selected has not seen it"
+                    f"{blind_spot_source.username} {source_signal}; everyone else selected has not seen it"
                 )
             if mode == "list_mission" and list_context is not None:
+                # "#3 on ..." asserts a ranking the owner never made when the
+                # list is unordered.
+                where = (
+                    f"#{list_context['position']} on"
+                    if (selected_list or {}).get("is_ranked")
+                    else "On"
+                )
                 reasons.append(
-                    f"#{list_context['position']} on {list_context['owner']}'s {list_context['name']} list"
+                    f"{where} {list_context['owner']}'s {list_context['name']} list"
                 )
             if len(watchlist_ids) == len(selected_ids):
                 reasons.append("On every selected profile's watchlist")
@@ -3575,7 +3689,12 @@ class InsightsService:
                 ]
             )
         )
-        if not any(providers_by_movie.values()):
+        # Only a claim about films that were actually checked. With no candidates
+        # at all `providers_by_movie` is empty, `any({})` is false, and an empty
+        # result set was being reported as missing streaming data — blaming the
+        # TMDB cache for a query that simply matched nothing, and downgrading
+        # coverage on the strength of it.
+        if providers_by_movie and not any(providers_by_movie.values()):
             if coverage["status"] == "ready":
                 coverage["status"] = "partial"
                 coverage["score"] = min(coverage["score"], 75)
