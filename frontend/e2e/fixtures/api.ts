@@ -276,6 +276,8 @@ export const profileAnalysis = {
         year: 1999,
         poster_url: null,
         letterboxd_url: 'https://letterboxd.com/film/favourite-one/',
+        in_library: true,
+        own_rating: 5,
       },
       {
         position: 2,
@@ -283,6 +285,8 @@ export const profileAnalysis = {
         year: 2004,
         poster_url: null,
         letterboxd_url: 'https://letterboxd.com/film/favourite-two/',
+        in_library: false,
+        own_rating: null,
       },
     ],
     synced_films: 1_200,

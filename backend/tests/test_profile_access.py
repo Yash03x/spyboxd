@@ -538,6 +538,9 @@ def test_profile_analysis_header_carries_the_letterboxd_profile_surface(database
             "year": 1999,
             "poster_url": "https://images.example.com/one.jpg",
             "letterboxd_url": "https://letterboxd.com/film/favourite-one/",
+            # A stated favourite is not automatically a logged one.
+            "in_library": False,
+            "own_rating": None,
         },
         {
             "position": 2,
@@ -545,6 +548,8 @@ def test_profile_analysis_header_carries_the_letterboxd_profile_surface(database
             "year": 2004,
             "poster_url": None,
             "letterboxd_url": "https://letterboxd.com/film/favourite-two/",
+            "in_library": False,
+            "own_rating": None,
         },
     ]
 
@@ -1466,3 +1471,49 @@ def test_a_known_username_outside_the_catalog_still_resolves_directly(database):
 
     assert result["status"] == "tracked"
     assert authorize_profile_usernames(database, user, None) == ["Unconnected"]
+
+
+def test_a_favourite_reports_whether_its_owner_ever_logged_it(database):
+    """A stated favourite and a logged one are different claims.
+
+    Across the tracked profiles four favourites are absent from their owner's
+    diary entirely and five more are logged without ever being rated, so the
+    payload must distinguish "never logged" from "logged but unrated".
+    """
+    from main import _profile_favorite_films
+    from database.models import Movie, ProfileFavoriteMovie, ProfileFilm
+
+    profile = _profile(1, "Alpha")
+    database.add(profile)
+    for index, (title, in_library, rating) in enumerate(
+        [("Rated", True, 5.0), ("Unrated", True, None), ("Absent", False, None)], start=1
+    ):
+        movie = Movie(
+            id=index,
+            canonical_key=f"letterboxd:{index}",
+            title=title,
+            normalized_title=title.casefold(),
+            release_year=2020,
+            letterboxd_slug=f"film-{index}",
+        )
+        database.add(movie)
+        database.add(
+            ProfileFavoriteMovie(
+                id=index, profile_id=profile.id, movie_id=movie.id, position=index
+            )
+        )
+        if in_library:
+            database.add(
+                ProfileFilm(
+                    id=index, profile_id=profile.id, movie_id=movie.id, rating=rating
+                )
+            )
+    database.commit()
+
+    favourites = {row["title"]: row for row in _profile_favorite_films(database, profile.id)}
+
+    assert favourites["Rated"]["in_library"] is True
+    assert favourites["Rated"]["own_rating"] == 5.0
+    assert favourites["Unrated"]["in_library"] is True
+    assert favourites["Unrated"]["own_rating"] is None
+    assert favourites["Absent"]["in_library"] is False

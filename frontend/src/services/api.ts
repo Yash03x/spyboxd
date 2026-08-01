@@ -148,6 +148,11 @@ export interface ProfileFavoriteFilm {
   year: number | null;
   poster_url: string | null;
   letterboxd_url: string | null;
+  /** Whether the film appears in this profile's own library at all. A stated
+   *  favourite that was never logged is a different claim from a logged one. */
+  in_library: boolean;
+  /** Their own rating, or null when logged without one. */
+  own_rating: number | null;
 }
 
 /**
