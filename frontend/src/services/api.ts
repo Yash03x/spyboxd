@@ -133,6 +133,11 @@ export const authApi = {
   },
 };
 
+export interface ProfileExternalLink {
+  label: string;
+  url: string;
+}
+
 export interface ProfileFavoriteFilm {
   position: number;
   title: string;
@@ -154,6 +159,8 @@ export interface ProfileHeader {
   location: string | null;
   website: string | null;
   website_url: string | null;
+  /** Every external link the member lists; Letterboxd allows more than one. */
+  external_links?: ProfileExternalLink[];
   pronoun: string | null;
   member_badge: string | null;
   avatar_url: string | null;

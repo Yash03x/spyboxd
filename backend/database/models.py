@@ -76,6 +76,9 @@ class Profile(Base):
     letterboxd_person_id = Column(BigInteger, nullable=True)
     member_badge = Column(String(20), nullable=True)  # 'Patron' | 'Pro' | 'Crew'
     pronoun = Column(String(50), nullable=True)  # official-export profile.csv only
+    # Every external link a member lists on their profile, as
+    # [{"label": ..., "url": ...}]; Letterboxd allows more than one.
+    external_links = Column(_json_type(), nullable=True)
     # Letterboxd's own /<user>/stats/ header figures. Hours watched and the
     # director/country/streak counts are not derivable from imported rows
     # (runtime and credits would need TMDB for every film), so the site's

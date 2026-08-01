@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_REVISION = "20260313_0001"
 FOUNDATION_REVISION = "20260728_0002"
 BACKFILL_REVISION = "20260728_0003"
-HEAD_REVISION = "20260801_0013"
+HEAD_REVISION = "20260801_0014"
 TEST_DATABASE_NAME_PATTERN = re.compile(r"(?:^|[_-])(?:ci|test|testing)(?:$|[_-])")
 TEST_SCHEMA_NAME_PATTERN = re.compile(r"^spyboxd_migration_test_[0-9a-f]{24}$")
 
@@ -104,7 +104,10 @@ class AdditiveMigrationContractTests(unittest.TestCase):
 
         self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
-            script.get_revision(HEAD_REVISION).down_revision, "20260801_0012"
+            script.get_revision(HEAD_REVISION).down_revision, "20260801_0013"
+        )
+        self.assertEqual(
+            script.get_revision("20260801_0013").down_revision, "20260801_0012"
         )
         self.assertEqual(
             script.get_revision("20260801_0012").down_revision, "20260731_0011"

@@ -972,7 +972,7 @@ class SocialSurfaceScrapingTests(unittest.TestCase):
             join_date=None, avatar_url="", total_films=1, total_reviews=0,
             total_lists=0, following_count=1, followers_count=None,
             person_id=26275117, badge="", watchlist_count=None, stats={},
-            favorite_films=[],
+            external_links=[], favorite_films=[],
         )
         scraper.films_data = [{
             "title": "Challengers", "year": 2024, "rating": 4.0, "film_id": "842301",

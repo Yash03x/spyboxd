@@ -713,6 +713,23 @@ def _safe_external_url(value) -> Optional[str]:
     return f"https://{candidate}"
 
 
+def _profile_external_links(profile: Profile) -> List[dict]:
+    """The member's external profile links, each re-validated before serving."""
+    raw = profile.external_links if isinstance(profile.external_links, list) else []
+    links: List[dict] = []
+    seen = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        url = _safe_external_url(entry.get("url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        label = str(entry.get("label") or "").strip()
+        links.append({"label": label or url, "url": url})
+    return links
+
+
 def _profile_favorite_films(db: Session, profile_id: int) -> List[dict]:
     """Letterboxd's four favourite films for a profile, in display order."""
     rows = (
@@ -761,6 +778,7 @@ def _profile_header_payload(
         "location": profile.location,
         "website": profile.website,
         "website_url": _safe_external_url(profile.website),
+        "external_links": _profile_external_links(profile),
         "pronoun": profile.pronoun,
         "member_badge": profile.member_badge,
         "avatar_url": profile.profile_image_url,

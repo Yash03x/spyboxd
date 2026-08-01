@@ -417,7 +417,11 @@ def _persist_prepared(
         imdb_id = str(external_ids.get("imdb_id") or details.get("imdb_id") or "").strip()
         if imdb_id:
             movie.imdb_id = imdb_id
-        if not movie.poster_url and values.get("poster_path"):
+        # Letterboxd resolves posters client-side, so a scraped poster may be
+        # their static empty-poster placeholder. Treat that as absent, or the
+        # placeholder permanently blocks the real artwork.
+        poster_is_placeholder = bool(movie.poster_url) and "empty-poster" in movie.poster_url
+        if (not movie.poster_url or poster_is_placeholder) and values.get("poster_path"):
             image_base_url = os.getenv("TMDB_IMAGE_BASE_URL", DEFAULT_IMAGE_BASE_URL)
             movie.poster_url = f"{image_base_url.rstrip('/')}/{str(values['poster_path']).lstrip('/')}"
         raw_payload["details"] = details

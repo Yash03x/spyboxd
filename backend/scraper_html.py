@@ -57,11 +57,15 @@ class ProfileInfo:
     badge: str = ""
     watchlist_count: Optional[int] = None
     stats: Dict = None
+    # Every external link a member lists (personal site, Twitter, …).
+    external_links: List[Dict] = None
     favorite_films: List[Dict] = None
 
     def __post_init__(self):
         if self.favorite_films is None:
             self.favorite_films = []
+        if self.external_links is None:
+            self.external_links = []
         if self.stats is None:
             self.stats = {}
 
@@ -558,16 +562,45 @@ class EnhancedLetterboxdScraper:
             if bio_element:
                 self.profile_info.bio = bio_element.get_text().strip()
             
-            # Location and website
-            profile_metadata = soup.find('section', class_='profile-metadata')
+            # Location and the external links a member lists on their profile.
+            # Letterboxd allows several (a personal site, Twitter, and so on),
+            # each rendered as an anchor in the metadata block; the location is
+            # the one metadatum without a link.
+            profile_metadata = soup.select_one(
+                'section.profile-metadata, div.profile-metadata, .js-profile-metadata'
+            )
             if profile_metadata:
-                location = profile_metadata.find('span', class_='location')
-                if location:
-                    self.profile_info.location = location.get_text().strip()
-                
-                website = profile_metadata.find('a', class_='url')
-                if website:
-                    self.profile_info.website = website.get('href', '')
+                location = profile_metadata.select_one('span.location, .metadatum .label')
+                anchors = profile_metadata.select('a.metadatum[href], a.url[href]')
+                anchor_texts = {
+                    anchor.get_text(' ', strip=True) for anchor in anchors
+                }
+                if location is not None:
+                    location_text = location.get_text(' ', strip=True)
+                    # A label shared with an anchor is that link's caption.
+                    if location_text and location_text not in anchor_texts:
+                        self.profile_info.location = location_text
+
+                links = []
+                seen_urls = set()
+                for anchor in anchors:
+                    href = (anchor.get('href') or '').strip()
+                    if not href.casefold().startswith(('http://', 'https://')):
+                        continue
+                    if 'letterboxd.com' in urlparse(href).netloc.casefold():
+                        continue
+                    if href in seen_urls:
+                        continue
+                    seen_urls.add(href)
+                    links.append({
+                        'label': anchor.get_text(' ', strip=True) or urlparse(href).netloc,
+                        'url': href,
+                    })
+                self.profile_info.external_links = links
+                if links:
+                    # Keep the single-website contract populated for existing
+                    # consumers; the full set travels alongside it.
+                    self.profile_info.website = links[0]['url']
             
             # Avatar URL
             avatar = soup.select_one('.profile-avatar img, img.avatar, .avatar img')
@@ -1419,7 +1452,7 @@ class EnhancedLetterboxdScraper:
             'Username', 'Display_Name', 'Bio', 'Location', 'Website', 'Join_Date',
             'Avatar_URL', 'Total_Films', 'Total_Reviews', 'Total_Lists',
             'Following_Count', 'Followers_Count', 'Person_ID', 'Badge',
-            'Watchlist_Count', 'Stats'
+            'Watchlist_Count', 'Stats', 'External_Links'
         ]
         data = [{
             'Username': self.profile_info.username,
@@ -1438,6 +1471,11 @@ class EnhancedLetterboxdScraper:
             'Badge': self.profile_info.badge,
             'Watchlist_Count': self.profile_info.watchlist_count,
             'Stats': json.dumps(self.profile_info.stats, sort_keys=True) if self.profile_info.stats else '',
+            'External_Links': (
+                json.dumps(self.profile_info.external_links, sort_keys=True)
+                if self.profile_info.external_links
+                else ''
+            ),
         }]
         self._write_csv("profile.csv", data, fieldnames)
 
