@@ -419,7 +419,14 @@ const SpySignalsResults: React.FC<SpySignalsResultsProps> = ({
             <div>
               <h2 className="text-xl font-semibold text-white">Signal Feed</h2>
               <p className="mt-1 text-xs text-white/50">
-                Showing {Math.min(visibleCount, events.length)} of {totalEventCount} chronological {gapLabel(gapDays)} {totalEventCount === 1 ? 'match' : 'matches'}
+                {/* `totalEventCount` is every match the scan found; `events`
+                    is the most recent slice the API returns. Quoting the first
+                    as the denominator promised rows the feed could not reach,
+                    because "Show More" stops at the slice. */}
+                Showing {Math.min(visibleCount, events.length)} of {events.length} {gapLabel(gapDays)} {events.length === 1 ? 'match' : 'matches'}
+                {totalEventCount > events.length
+                  ? ` · the most recent ${events.length} of ${totalEventCount}`
+                  : ''}
               </p>
             </div>
             <span className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/55">

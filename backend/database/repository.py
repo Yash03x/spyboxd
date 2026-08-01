@@ -441,29 +441,28 @@ def _calculate_event_source_timing(
             path["count"] += 1
             add_sample(path, movie_entries[0])
 
-    same_day_events.sort(
-        key=lambda event: (
-            -event["profile_count"],
-            -event["pair_count"],
-            -int(event["start_date"].replace("-", "")),
-            event["title"],
-        )
+    # These three lists are the Signal Feed, and the feed is presented newest
+    # first. They are truncated to `limit` further down, so whatever leads this
+    # sort decides which events survive -- and leading with crowd size meant the
+    # 100 kept rows were the biggest gatherings, not the latest ones. At a
+    # three-day gap that dropped every match from the most recent week while the
+    # header still said "most recent first". Recency leads; crowd size stays as
+    # the tiebreaker so a busy day still ranks its own events sensibly.
+    feed_order = lambda event: (
+        -int(event["start_date"].replace("-", "")),
+        -event["profile_count"],
+        -event["pair_count"],
+        event["title"],
     )
-    one_day_gap_events.sort(
-        key=lambda event: (
-            -event["profile_count"],
-            -event["pair_count"],
-            -int(event["start_date"].replace("-", "")),
-            event["title"],
-        )
-    )
+    same_day_events.sort(key=feed_order)
+    one_day_gap_events.sort(key=feed_order)
     if gap_days is not None:
         gap_events.sort(
             key=lambda event: (
+                -int(event["start_date"].replace("-", "")),
                 -event["profile_count"],
                 event["day_gap"],
                 -event["pair_count"],
-                -int(event["start_date"].replace("-", "")),
                 event["title"],
             )
         )
