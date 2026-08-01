@@ -4,12 +4,22 @@ from __future__ import annotations
 from backend.services.insights import InsightsService
 
 
-def _trait(label: str, scores, samples, *, sample_size=None):
-    """A trait payload shaped like taste_dna builds it."""
+def _trait(label: str, scores, samples, *, sample_size=None, rated=None):
+    """A trait payload shaped like taste_dna builds it.
+
+    ``samples`` is how many films the profile WATCHED in this trait; ``rated``
+    is how many it rated. They differ constantly on Letterboxd, and the score is
+    derived from ratings alone, so alignment has to read the rated count. When
+    ``rated`` is not given the two are equal, which is the simple case the
+    ordering tests care about.
+    """
+    rated_counts = list(rated) if rated is not None else list(samples)
     per_profile = [
         {"username": f"p{index}", "score": score, "sample_size": sample,
-         "average_rating": score / 20}
-        for index, (score, sample) in enumerate(zip(scores, samples))
+         "rated_sample_size": rated_count, "average_rating": score / 20}
+        for index, (score, sample, rated_count) in enumerate(
+            zip(scores, samples, rated_counts)
+        )
     ]
     return {
         "label": label,
@@ -96,3 +106,31 @@ def test_opinion_date_prefers_the_log_date_over_a_backdated_watch():
         source_kind="diary_csv", movie=None,
     )
     assert scraped_only.opinion_date == _date(2015, 6, 1)
+
+
+def test_a_profile_that_rated_nothing_holds_no_position_to_align_with():
+    """Watched-but-unrated is silence, not a zero.
+
+    ``sample_size`` counts watched films while ``score`` averages ratings, so a
+    profile that logged six horror films and rated none scored 0 over a sample
+    of six. Alignment read that as a real, maximally distant opinion.
+    """
+    traits = [
+        _trait("Rated By Both", [84.0, 80.0], [9, 7], rated=[9, 7]),
+        _trait("One Never Rated", [92.0, 0.0], [8, 6], rated=[8, 0]),
+    ]
+    assert _order(traits) == ["Rated By Both", "One Never Rated"]
+
+
+def test_the_credibility_floor_counts_ratings_not_logs():
+    """MIN_ALIGNMENT_SAMPLE exists so one rating cannot score a perfect 100.
+
+    Measured against watched rows the floor was inert: two profiles who each
+    rated a single film five stars cleared it on the strength of films they had
+    only logged, and outranked a trait both had rated many times.
+    """
+    traits = [
+        _trait("Well Evidenced", [88.0, 86.0], [25, 25], rated=[25, 25]),
+        _trait("One Rating Each", [100.0, 100.0], [3, 3], rated=[1, 1]),
+    ]
+    assert _order(traits) == ["Well Evidenced", "One Rating Each"]

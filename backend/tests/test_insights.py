@@ -1690,3 +1690,58 @@ class SemanticNeighborTests(unittest.TestCase):
 
         self.assertEqual(len(trimmed), 1)
         self.assertEqual(trimmed[0]["movie"]["title"], full[0]["movie"]["title"])
+
+
+class UnknownRuntimeTests(unittest.TestCase):
+    """TMDB writes an unfilled runtime as 0, and 55 films in the library hold it.
+
+    `is not None` read that as a known length and filed them under "Under 90
+    min", telling people they favour short films on the strength of films whose
+    runtime nobody recorded.
+    """
+
+    def _row(self, runtime):
+        movie = Movie(
+            id=1,
+            canonical_key="letterboxd:1",
+            title="Film",
+            normalized_title="film",
+            release_year=2024,
+            letterboxd_slug="film",
+        )
+        return StateRow(
+            profile_id=1, username="ana", movie_id=1, rating=None, liked=False,
+            tags=[], first_watched_date=None, latest_watched_date=None,
+            watch_count=1, rewatch_count=0, movie=movie,
+            enrichment=MovieEnrichment(
+                movie_id=1, genres=[], keywords=[], credits={},
+                production_countries=[], runtime_minutes=runtime,
+            ),
+        )
+
+    def test_a_zero_runtime_is_unknown_and_not_a_short_film(self) -> None:
+        self.assertEqual(InsightsService._trait_values(self._row(0), "runtime"), [])
+
+    def test_a_null_runtime_is_unknown(self) -> None:
+        self.assertEqual(InsightsService._trait_values(self._row(None), "runtime"), [])
+
+    def test_a_real_short_runtime_still_buckets(self) -> None:
+        self.assertEqual(
+            InsightsService._trait_values(self._row(84), "runtime"), ["Under 90 min"]
+        )
+
+
+class SurfaceScoreTests(unittest.TestCase):
+    """A ratio of zero is a measurement, not a missing measurement."""
+
+    def test_a_surface_with_nothing_captured_scores_below_a_partial_one(self) -> None:
+        empty = InsightsService._surface_score({"status": "partial", "ratio": 0.0})
+        third = InsightsService._surface_score({"status": "partial", "ratio": 0.33})
+
+        self.assertLess(empty, third)
+        self.assertEqual(empty, 0.25)
+
+    def test_an_unknown_ratio_still_sits_in_the_middle(self) -> None:
+        self.assertEqual(
+            InsightsService._surface_score({"status": "partial", "ratio": None}), 0.5
+        )
