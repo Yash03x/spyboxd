@@ -161,6 +161,9 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
   const reduceMotion = useReducedMotion();
   const [hovered, setHovered] = useState<string | null>(null);
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  // Tracked separately from `hovered`: a node sliding out from under a resting
+  // cursor fires mouseleave, which must not erase the keyboard focus ring.
+  const [keyboardFocusKey, setKeyboardFocusKey] = useState<string | null>(null);
   const nodeRefs = useRef(new Map<string, SVGGElement | null>());
 
   // No explicit profiles: the endpoint defaults to the caller's full
@@ -372,9 +375,10 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
   const exitEgoView = useCallback(() => {
     const previous = focusKey;
     setFocusKey(null);
-    setHovered(null);
+    // Hand focus back to the node that was centred and keep it highlighted, so
+    // focus is never dropped on the floor when the ego view tears down.
+    setHovered(previous);
     if (previous) {
-      // Hand keyboard focus back to the node that was centred.
       requestAnimationFrame(() => nodeRefs.current.get(previous)?.focus());
     }
   }, [focusKey]);
@@ -482,9 +486,23 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
             outline: 'none',
           }}
           onMouseEnter={() => (interactive ? setHovered(node.key) : undefined)}
-          onMouseLeave={() => setHovered(null)}
-          onFocus={() => (interactive ? setHovered(node.key) : undefined)}
-          onBlur={() => setHovered(null)}
+          onMouseLeave={() => setHovered((current) => (current === node.key ? null : current))}
+          onFocus={(event) => {
+            if (!interactive) return;
+            setHovered(node.key);
+            // Ring for keyboard focus only; a plain click should not draw one.
+            let focusVisible = true;
+            try {
+              focusVisible = event.currentTarget.matches(':focus-visible');
+            } catch {
+              focusVisible = true;
+            }
+            if (focusVisible) setKeyboardFocusKey(node.key);
+          }}
+          onBlur={() => {
+            setHovered((current) => (current === node.key ? null : current));
+            setKeyboardFocusKey((current) => (current === node.key ? null : current));
+          }}
           onClick={() => (interactive ? activateNode(node) : undefined)}
           onKeyDown={(event) => {
             if (!interactive) return;
@@ -517,6 +535,16 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
               fill="none"
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
+            />
+          )}
+          {keyboardFocusKey === node.key && (
+            <circle
+              r={NODE_RADIUS + (isCenter ? 13 : 6)}
+              fill="none"
+              stroke="#ffffff"
+              strokeWidth={2}
+              strokeDasharray="4 4"
+              opacity={0.9}
             />
           )}
         </motion.g>
