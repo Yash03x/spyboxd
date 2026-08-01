@@ -231,7 +231,10 @@ test('analysis keeps spoiler review prose hidden until an accessible reveal acti
     name: 'Hide spoiler review for Short Review (2026)',
   })).toHaveAttribute('aria-expanded', 'true');
 
-  await page.getByRole('combobox').selectOption('bravo');
+  const profilePicker = page.getByRole('combobox', { name: 'Profile' });
+  await profilePicker.click();
+  await profilePicker.fill('brav');
+  await page.getByRole('option', { name: /@bravo/ }).click();
   const nextSpoilerText = page.getByText('A different spoiler review for bravo.', { exact: true });
   await expect(nextSpoilerText).toBeHidden();
   await expect(page.getByRole('button', {
@@ -349,8 +352,11 @@ test('compare changes a profile and applies the selected pair', async ({ page })
 
   await expect(page.getByRole('heading', { name: 'Compare Profiles' })).toBeVisible();
   await expectAccountControl(page);
-  const profileA = page.locator('label').filter({ hasText: 'Profile A' }).locator('select');
-  await profileA.selectOption('charlie');
+  const profileA = page.getByRole('combobox', { name: 'Profile A' });
+  await profileA.click();
+  await profileA.fill('charl');
+  await page.getByRole('option', { name: /@charlie/ }).click();
+  await expect(profileA).toHaveValue('Charlie');
   await page.getByRole('button', { name: 'Compare', exact: true }).click();
 
   await expect(page).toHaveURL(/profiles=charlie/);

@@ -12,8 +12,9 @@ import {
   TasteDnaPanel,
 } from '../components/insights/ComparePanels';
 import TasteTimelinePanel from '../components/insights/TasteTimelinePanel';
-import { FeatureState, ProfileAvatar, WorkspaceTabs } from '../components/insights/InsightUI';
+import { FeatureState, WorkspaceTabs } from '../components/insights/InsightUI';
 import AdminScopeToggle from '../components/AdminScopeToggle';
+import ProfilePicker from '../components/ProfilePicker';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 import { useUrlProfileSelection } from '../hooks/useUrlProfileSelection';
 import {
@@ -75,26 +76,16 @@ function PairProfileField({
 }) {
   const selected = profiles.find((profile) => profile.username === value);
   return (
-    <label className="block min-w-0 rounded-xl border border-white/10 bg-black/20 px-4 py-3 transition-colors focus-within:border-cinema-400/45">
-      <span className="block text-xs font-medium text-white/45">{label}</span>
-      <span className="mt-2 flex items-center gap-3">
-        <ProfileAvatar profile={selected} size="lg" />
-        <span className="min-w-0 flex-1">
-          <select
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            className="w-full cursor-pointer appearance-none bg-transparent text-sm font-semibold text-white outline-none"
-          >
-            {profiles.map((profile) => (
-              <option key={profile.username} value={profile.username} disabled={profile.username === excludedUsername} className="bg-noir-900 text-white">
-                {profile.username}
-              </option>
-            ))}
-          </select>
-          <span className="mt-1 block text-xs text-white/40">{selected?.total_films.toLocaleString() ?? 0} films</span>
-        </span>
-      </span>
-    </label>
+    <ProfilePicker
+      profiles={profiles}
+      value={value}
+      onChange={onChange}
+      label={label}
+      showLabel
+      caption={`${selected?.total_films.toLocaleString() ?? 0} films`}
+      disabledUsernames={excludedUsername ? [excludedUsername] : undefined}
+      className="min-w-0"
+    />
   );
 }
 
