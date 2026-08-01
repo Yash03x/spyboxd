@@ -10,6 +10,44 @@ import FollowNetwork from '../components/FollowNetwork';
 import { followGraphApi } from '../services/api';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 
+/** One direction of a centred profile's connections, coloured to match the
+ *  edges already drawn in the graph above. */
+function ConnectionGroup({
+  label,
+  tone,
+  usernames,
+  empty,
+}: {
+  label: string;
+  tone: 'mutual' | 'outward' | 'inward';
+  usernames: string[];
+  empty: string;
+}) {
+  const accent =
+    tone === 'mutual'
+      ? 'border-emerald-400/25 bg-emerald-400/[0.07] text-emerald-200'
+      : 'border-cinema-400/25 bg-cinema-500/[0.07] text-cinema-200';
+  return (
+    <div className="rounded-lg border border-white/[0.07] bg-black/20 p-3">
+      <p className="flex items-baseline justify-between text-xs font-semibold text-white/60">
+        {label}
+        <span className="tabular-nums text-white/35">{usernames.length}</span>
+      </p>
+      {usernames.length === 0 ? (
+        <p className="mt-2 text-[11px] text-white/30">{empty}</p>
+      ) : (
+        <ul className="mt-2 flex flex-wrap gap-1.5">
+          {usernames.map((username) => (
+            <li key={username} className={`rounded-md border px-2 py-0.5 text-[11px] ${accent}`}>
+              @{username}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function Network() {
   // `?focus=` lets another page hand off to one profile's corner of the graph.
   // My Profiles links here rather than claiming to draw a graph of its own.
@@ -52,6 +90,57 @@ export default function Network() {
       .slice(0, 8);
   }, [mutualsQuery.data]);
 
+  /**
+   * What the centred profile's own connections look like.
+   *
+   * While one person is centred, a leaderboard answers a question about the
+   * whole group instead of about them. Everything below is already on screen in
+   * the graph -- the green and orange edges, the dashed untracked ones -- so
+   * this panel names it rather than making the reader count spokes.
+   */
+  const focusDetail = useMemo(() => {
+    if (!focusedUsername) return null;
+    const handle = focusedUsername.toLowerCase();
+    const pairs = mutualsQuery.data?.pairs ?? [];
+
+    const mutual: string[] = [];
+    const follows: string[] = [];
+    const followedBy: string[] = [];
+    // Who each *other* member is connected to, so we can find shared circles.
+    const circles = new Map<string, Set<string>>();
+
+    for (const pair of pairs) {
+      const a = pair.a.toLowerCase();
+      const b = pair.b.toLowerCase();
+      if (!circles.has(a)) circles.set(a, new Set());
+      if (!circles.has(b)) circles.set(b, new Set());
+      if (pair.a_follows_b || pair.b_follows_a) {
+        circles.get(a)!.add(b);
+        circles.get(b)!.add(a);
+      }
+      if (a !== handle && b !== handle) continue;
+      const other = a === handle ? pair.b : pair.a;
+      const outward = a === handle ? pair.a_follows_b : pair.b_follows_a;
+      const inward = a === handle ? pair.b_follows_a : pair.a_follows_b;
+      if (outward && inward) mutual.push(other);
+      else if (outward) follows.push(other);
+      else if (inward) followedBy.push(other);
+    }
+
+    const mine = circles.get(handle) ?? new Set<string>();
+    const shared = [...circles.entries()]
+      .filter(([username]) => username !== handle)
+      .map(([username, theirs]) => ({
+        username,
+        overlap: [...theirs].filter((entry) => mine.has(entry)).length,
+      }))
+      .filter((entry) => entry.overlap > 0)
+      .sort((left, right) => right.overlap - left.overlap || left.username.localeCompare(right.username))
+      .slice(0, 4);
+
+    return { mutual, follows, followedBy, shared, circleSize: mine.size };
+  }, [focusedUsername, mutualsQuery.data]);
+
   // Where the centred profile sits in the ranking, so the panel answers a
   // question about the selection rather than ignoring it.
   const focusedEntry = useMemo(() => {
@@ -85,7 +174,58 @@ export default function Network() {
         initialFocus={requestedFocus}
       />
 
-      {ranking.length > 0 && (
+      {focusDetail ? (
+        <section className="rounded-xl border border-white/10 bg-white/5 p-4">
+          <h2 className="mb-3 flex flex-wrap items-baseline gap-2 text-sm font-semibold text-white/75">
+            <Waypoints className="h-4 w-4 text-cinema-400" />
+            @{focusedUsername}&rsquo;s connections
+            <span className="text-xs font-normal text-white/40">
+              {focusDetail.circleSize} inside this group
+            </span>
+          </h2>
+
+          <div className="grid gap-2 sm:grid-cols-3">
+            <ConnectionGroup
+              label="Mutual"
+              tone="mutual"
+              usernames={focusDetail.mutual}
+              empty="Nobody here follows them back"
+            />
+            <ConnectionGroup
+              label="They follow"
+              tone="outward"
+              usernames={focusDetail.follows}
+              empty="Follows nobody here one-way"
+            />
+            <ConnectionGroup
+              label="Follow them"
+              tone="inward"
+              usernames={focusDetail.followedBy}
+              empty="Nobody here follows them one-way"
+            />
+          </div>
+
+          {focusDetail.shared.length > 0 && (
+            <div className="mt-3 border-t border-white/[0.07] pt-3">
+              <h3 className="text-xs font-semibold text-white/55">Moves in the same circles as</h3>
+              <ul className="mt-2 flex flex-wrap gap-2">
+                {focusDetail.shared.map((entry) => (
+                  <li
+                    key={entry.username}
+                    className="rounded-lg border border-white/10 bg-black/20 px-2.5 py-1 text-xs text-white/70"
+                  >
+                    @{entry.username}
+                    <span className="ml-1.5 text-white/35">
+                      {entry.overlap} in common
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      ) : ranking.length > 0 ? (
+
         <section className="rounded-xl border border-white/10 bg-white/5 p-4">
           <h2 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold text-white/75">
             <Trophy className="h-4 w-4 text-cinema-400" />
@@ -125,7 +265,7 @@ export default function Network() {
             })}
           </ol>
         </section>
-      )}
+      ) : null}
     </motion.div>
   );
 }
