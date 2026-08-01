@@ -155,8 +155,12 @@ def ingest_letterboxd_ratings(
     request_time = datetime.now(timezone.utc)
 
     # (slug, average, count, distribution, synced_at) for entries worth writing.
+    # The average is optional: Letterboxd publishes no weighted average below a
+    # rating threshold but still renders the histogram, and 75 films in the
+    # library are in exactly that state. Requiring one stranded their crowd
+    # position locally forever.
     prepared: List[
-        Tuple[str, float, Optional[int], Optional[Dict[str, int]], datetime]
+        Tuple[str, Optional[float], Optional[int], Optional[Dict[str, int]], datetime]
     ] = []
     skipped = 0
     distributions_rejected = 0
@@ -170,13 +174,19 @@ def ingest_letterboxd_ratings(
         # average, and report the drop rather than swallowing it.
         if entry.rating_distribution is not None and distribution is None:
             distributions_rejected += 1
+        # A value present but impossible means the entry is corrupt, and the
+        # whole thing is still skipped — the column CHECK constraints must never
+        # be what catches a bad payload. What has changed is only that an
+        # ABSENT average no longer disqualifies an entry: the histogram is
+        # writable on its own. Range tests are written this way round so NaN,
+        # which compares false against everything, fails them.
+        average_ok = average is None or MIN_AVERAGE_RATING <= average <= MAX_AVERAGE_RATING
+        count_ok = count is None or 0 <= count <= MAX_RATING_COUNT
         usable = (
             slug is not None
-            and average is not None
-            # Written as a range test so NaN — which compares false against
-            # everything — is skipped rather than stored.
-            and MIN_AVERAGE_RATING <= average <= MAX_AVERAGE_RATING
-            and (count is None or 0 <= count <= MAX_RATING_COUNT)
+            and average_ok
+            and count_ok
+            and (average is not None or distribution is not None)
         )
         if not usable:
             skipped += 1
@@ -184,7 +194,7 @@ def ingest_letterboxd_ratings(
         prepared.append(
             (
                 slug.lower(),
-                float(average),
+                None if average is None else float(average),
                 count,
                 distribution,
                 _as_utc(entry.synced_at) or request_time,
@@ -202,7 +212,11 @@ def ingest_letterboxd_ratings(
             unmatched += 1
             continue
         for movie in movies:
-            movie.letterboxd_average_rating = average
+            # Now that an entry may legitimately carry no average, assigning
+            # unconditionally would erase a stored one — the exact rule this
+            # endpoint has always promised not to break.
+            if average is not None:
+                movie.letterboxd_average_rating = average
             if count is not None:
                 movie.letterboxd_rating_count = count
             # A null histogram is "this push carried none", not "the film has

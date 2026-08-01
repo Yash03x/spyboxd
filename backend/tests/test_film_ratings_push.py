@@ -547,3 +547,66 @@ def test_non_numeric_fields_in_the_response_are_not_summed(monkeypatch):
     assert totals["updated"] == 1
     assert "detail" not in totals
     assert "dry_run" not in totals
+
+
+def test_a_histogram_travels_without_an_average(client, database):
+    """Letterboxd publishes no weighted average below a rating threshold.
+
+    75 films in the library render ten buckets and no average. Requiring one at
+    both ends of this trip stranded their crowd position on the scraping
+    machine, where nothing reads it.
+    """
+    movie = _film(database, "obscure-classic")
+
+    response = _post(
+        client,
+        [{"slug": "obscure-classic", "average_rating": None, "rating_count": None,
+          "rating_distribution": _HISTOGRAM, "synced_at": None}],
+    )
+
+    body = response.json()
+    assert body["updated"] == 1
+    assert body["skipped"] == 0
+    assert body["distributions_written"] == 1
+    stored = _reload(database, movie)
+    assert stored.letterboxd_rating_distribution == _HISTOGRAM
+    assert stored.letterboxd_average_rating is None
+
+
+def test_an_entry_carrying_neither_average_nor_histogram_is_skipped(client, database):
+    _film(database, "nothing-to-say")
+
+    response = _post(client, [_entry("nothing-to-say", average_rating=None)])
+
+    assert response.json() == {
+        "received": 1, "updated": 0, "unmatched": 0, "skipped": 1,
+        "distributions_written": 0, "distributions_rejected": 0,
+    }
+
+
+def test_a_histogram_only_entry_never_erases_a_stored_average(client, database):
+    """An absent average is "not carried", which must not clear a known one."""
+    movie = _film(database, "known-average", average=4.2)
+
+    _post(
+        client,
+        [{"slug": "known-average", "average_rating": None, "rating_count": None,
+          "rating_distribution": _HISTOGRAM, "synced_at": None}],
+    )
+
+    stored = _reload(database, movie)
+    assert stored.letterboxd_average_rating == 4.2
+    assert stored.letterboxd_rating_distribution == _HISTOGRAM
+
+
+def test_the_pusher_sends_a_film_that_only_has_a_histogram(database):
+    _film(database, "histogram-only")
+    stored = database.query(Movie).filter(Movie.letterboxd_slug == "histogram-only").one()
+    stored.letterboxd_rating_distribution = _HISTOGRAM
+    database.commit()
+
+    entries, _ = collect_ratings(database)
+
+    assert [entry["slug"] for entry in entries] == ["histogram-only"]
+    assert entries[0]["average_rating"] is None
+    assert entries[0]["rating_distribution"] == _HISTOGRAM

@@ -24,6 +24,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 import requests
 from dotenv import load_dotenv
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 
@@ -81,7 +82,16 @@ def collect_ratings(db: Session, *, limit: Optional[int] = None) -> tuple[List[D
             Movie.letterboxd_rating_distribution,
             Movie.letterboxd_rating_synced_at,
         )
-        .filter(Movie.letterboxd_average_rating.isnot(None))
+        # A histogram alone is worth sending. Letterboxd publishes no weighted
+        # average below a rating threshold but still renders the ten buckets,
+        # and filtering on the average left those films' crowd position stuck
+        # on this machine.
+        .filter(
+            or_(
+                Movie.letterboxd_average_rating.isnot(None),
+                Movie.letterboxd_rating_distribution.isnot(None),
+            )
+        )
         .order_by(Movie.id)
     )
     if limit is not None:
@@ -97,7 +107,7 @@ def collect_ratings(db: Session, *, limit: Optional[int] = None) -> tuple[List[D
         entries.append(
             {
                 "slug": resolved,
-                "average_rating": float(average),
+                "average_rating": None if average is None else float(average),
                 "rating_count": int(count) if count is not None else None,
                 # Sent only when this machine actually holds one; the receiver
                 # treats a null as "not carried" and keeps what it has.
