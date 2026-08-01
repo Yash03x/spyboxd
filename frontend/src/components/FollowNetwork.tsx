@@ -8,21 +8,48 @@ import { ArrowLeft, Share2 } from 'lucide-react';
 
 import { followGraphApi, type ProfileInfo } from '../services/api';
 
-const VIEW_WIDTH = 760;
-const VIEW_HEIGHT = 640;
-const CENTER_X = VIEW_WIDTH / 2;
-const CENTER_Y = VIEW_HEIGHT / 2;
-const RING_RADIUS = 232;
+/** Radius every disc is *drawn* at; layout scales the disc group, never this. */
 const NODE_RADIUS = 26;
+/** Clear space kept between neighbouring discs on a ring. */
+const NODE_GAP = 16;
+/** Smallest ring the full view uses, so a 5-profile group still fills the frame. */
+const MIN_RING_RADIUS = 232;
+/** Past this the ring stops growing and the discs shrink instead. */
+const MAX_RING_RADIUS = 560;
+const MIN_NODE_SCALE = 0.58;
 const EDGE_GAP = 8;
 const CENTER_SCALE = 1.3;
 const HIDDEN_SCALE = 0.55;
+/** Degree scaling stays inside this band: hubs read bigger, nothing distorts. */
+const HUB_SCALE_MIN = 0.86;
+const HUB_SCALE_MAX = 1.16;
+/** Room for the halo and the keyboard focus ring outside the biggest disc. */
+const RING_PAD = 12;
+/** Frame left outside the ring for radial labels, and for a bare ring. */
+const LABEL_PAD_X = 132;
+const LABEL_PAD_Y = 48;
+const BARE_PAD = 26;
+/** Adjacent labels sit on alternating radii; this is the step between tiers. */
+const LABEL_TIER_STEP = 16;
+/** Above this many nodes on a ring, labels only appear on hover/focus. */
+const LABEL_ALL_MAX = 24;
+/** Narrower than this and radial labels are unreadable at any node count. */
+const COMPACT_WIDTH = 520;
+/** Space an ego-view label needs outside its ring when the full view has none. */
+const EGO_LABEL_REACH = 166;
+/** The ego ring never pulls in tighter than this, however cramped the frame. */
+const MIN_EGO_RADIUS = 150;
 /** Ego view stays readable only if the fan of leaves stays small. */
 const MAX_EXTRA_LEAVES = 10;
 
 const MUTUAL_COLOR = '#34d399'; // emerald-400
 const ONEWAY_COLOR = '#f57c00'; // cinema-400
 const UNTRACKED_STROKE = 'rgba(255, 255, 255, 0.32)';
+
+interface Point {
+  x: number;
+  y: number;
+}
 
 interface GraphNode {
   key: string;
@@ -44,6 +71,9 @@ interface Placement {
   /** Whether the node takes part in interaction at this layout. */
   visible: boolean;
   isCenter: boolean;
+  /** Slot on its ring, so labels can alternate radius to dodge each other. */
+  ringIndex: number;
+  ringCount: number;
 }
 
 interface RenderEdge {
@@ -55,13 +85,112 @@ interface RenderEdge {
   extra: boolean;
 }
 
-function ringPlacement(index: number, count: number, radius: number, scale = 1): Placement {
+/** Everything the circle geometry needs, derived from group size + container. */
+interface Layout {
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  ringRadius: number;
+  /** Baseline disc scale before the per-node degree boost. */
+  nodeScale: number;
+  /** How hard edges are pulled toward the middle, 0 = straight chords. */
+  bundle: number;
+  /** Enough room in the frame for a label on every node. */
+  labels: boolean;
+  compact: boolean;
+  /** Multiplier keeping revealed labels legible when the viewBox is scaled down. */
+  fontScale: number;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/** Ring radius that keeps `count` discs of `scale` at least NODE_GAP apart. */
+function fitRingRadius(count: number, scale: number): number {
+  if (count <= 1) return 0;
+  return (2 * NODE_RADIUS * scale + NODE_GAP) / (2 * Math.sin(Math.PI / count));
+}
+
+/** Largest disc scale that still leaves NODE_GAP between `count` discs at `radius`. */
+function fitNodeScale(count: number, radius: number): number {
+  if (count <= 1) return 1;
+  return (2 * radius * Math.sin(Math.PI / count) - NODE_GAP) / (2 * NODE_RADIUS);
+}
+
+/**
+ * Circle geometry for `count` nodes. The ring is sized from the chord between
+ * neighbours (2R·sin(pi/n) has to clear one disc plus a gap) rather than a fixed
+ * radius, and the viewBox grows with it so nothing ever leaves the frame.
+ */
+function buildLayout(count: number, containerWidth: number): Layout {
+  const compact = containerWidth > 0 && containerWidth < COMPACT_WIDTH;
+  // Discs also give up a little size past ~22 nodes, so the ring (and with it
+  // the viewBox) grows more slowly than the node count.
+  const wantedScale = count <= 22 ? 1 : clamp(1 - (count - 22) * 0.009, 0.62, 1);
+  const ringRadius = clamp(fitRingRadius(count, wantedScale), MIN_RING_RADIUS, MAX_RING_RADIUS);
+  // Past MAX_RING_RADIUS the ring can no longer absorb more nodes, so the fit
+  // comes out of the disc size instead.
+  const nodeScale = clamp(Math.min(wantedScale, fitNodeScale(count, ringRadius)), MIN_NODE_SCALE, 1);
+  const labels = !compact && count <= LABEL_ALL_MAX;
+  const reach = ringRadius + NODE_RADIUS * nodeScale * HUB_SCALE_MAX + RING_PAD;
+  const width = Math.round(2 * (reach + (labels ? LABEL_PAD_X : BARE_PAD)));
+  const height = Math.round(2 * (reach + (labels ? LABEL_PAD_Y : BARE_PAD)));
+
+  return {
+    width,
+    height,
+    centerX: width / 2,
+    centerY: height / 2,
+    ringRadius,
+    nodeScale,
+    // Denser graphs need a harder pull to separate into bundles; a five-node
+    // ring only needs a hint of a curve.
+    bundle: clamp(0.3 + count * 0.01, 0.3, 0.55),
+    labels,
+    compact,
+    fontScale: containerWidth > 0 ? clamp(width / containerWidth, 1, 2.4) : 1,
+  };
+}
+
+/**
+ * How far names may run before they are clipped, and whether they need to
+ * alternate radius. A label collides with its neighbour once its width passes
+ * the tangential run between them (2*pi*R_label / n), so the budget shrinks as
+ * the ring fills up; tiering adjacent labels doubles that run.
+ */
+function labelPlan(count: number): { maxChars: number; tiers: boolean } {
+  return {
+    maxChars: count <= 8 ? 16 : count <= 18 ? 12 : 10,
+    tiers: count > 14,
+  };
+}
+
+function labelTier(index: number, count: number): number {
+  // An odd ring wraps onto itself, so the last label needs a third radius or it
+  // lands beside index 0 on the same tier.
+  if (count % 2 === 1 && index === count - 1) return 2;
+  return index % 2;
+}
+
+function truncateLabel(username: string, maxChars: number): string {
+  return username.length <= maxChars ? username : `${username.slice(0, maxChars - 1)}…`;
+}
+
+function ringPlacement(
+  index: number,
+  count: number,
+  radius: number,
+  center: Point,
+  scale: number,
+): Placement {
   const angle = -Math.PI / 2 + (index * 2 * Math.PI) / Math.max(count, 1);
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
   return {
-    x: CENTER_X + radius * cos,
-    y: CENTER_Y + radius * sin,
+    x: center.x + radius * cos,
+    y: center.y + radius * sin,
     cos,
     sin,
     scale,
@@ -69,32 +198,69 @@ function ringPlacement(index: number, count: number, radius: number, scale = 1):
     radius: NODE_RADIUS * scale,
     visible: true,
     isCenter: false,
+    ringIndex: index,
+    ringCount: count,
   };
 }
 
-/** Leaves fan out on a ring that grows with the number of connections. */
-function egoRingRadius(count: number): number {
-  return Math.min(246, Math.max(196, 150 + count * 9));
+/**
+ * Leaves fan out on a ring that grows with the number of connections, keeping
+ * the geometry the small fan has always used and stopping at `cap` so the ego
+ * view always fits the frame the full view already claimed.
+ */
+function egoRingRadius(count: number, cap: number): number {
+  const base = Math.min(246, Math.max(196, 150 + count * 9));
+  const wanted = Math.max(base, fitRingRadius(count, 1));
+  return Math.min(wanted, Math.max(cap, MIN_EGO_RADIUS));
 }
 
-/** Rough width for the centre node's label chip; SVG cannot measure text up front. */
+/** Rough width for a label chip; SVG cannot measure text up front. */
 function labelChipWidth(username: string): number {
   return Math.max(104, username.length * 8.6 + 26);
 }
 
-/** Trim a segment so it starts/ends at the node boundaries instead of centers. */
-function edgeSegment(from: Placement, to: Placement) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const ux = dx / length;
-  const uy = dy / length;
-  return {
-    x1: from.x + ux * (from.radius + EDGE_GAP),
-    y1: from.y + uy * (from.radius + EDGE_GAP),
-    x2: to.x - ux * (to.radius + EDGE_GAP),
-    y2: to.y - uy * (to.radius + EDGE_GAP),
-  };
+function lerpPoint(from: Point, to: Point, amount: number): Point {
+  return { x: from.x + (to.x - from.x) * amount, y: from.y + (to.y - from.y) * amount };
+}
+
+/** Step off a node's centre toward a target, so edges start at the disc edge. */
+function offsetToward(node: Placement, target: Point, fallback: Point): Point {
+  let dx = target.x - node.x;
+  let dy = target.y - node.y;
+  let length = Math.hypot(dx, dy);
+  if (length < 0.01) {
+    dx = fallback.x - node.x;
+    dy = fallback.y - node.y;
+    length = Math.hypot(dx, dy);
+  }
+  if (length < 0.01) return { x: node.x, y: node.y };
+  const step = node.radius + EDGE_GAP;
+  return { x: node.x + (dx / length) * step, y: node.y + (dy / length) * step };
+}
+
+const round = (value: number) => value.toFixed(2);
+
+/**
+ * Bundled edge: a cubic whose control points pull each endpoint toward the
+ * centre. Every edge therefore leaves its node aimed at the middle, so one
+ * profile's connections read as a fan rather than n straight chords crossing
+ * the disc. Two consequences worth keeping: an edge between opposite nodes is
+ * still a straight line (its controls sit on the chord), and the whole curve
+ * stays inside the ring, which leaves the label band outside it free of ink.
+ */
+function edgePath(from: Placement, to: Placement, center: Point, bundle: number): string {
+  const start = offsetToward(from, lerpPoint(from, center, bundle), to);
+  const end = offsetToward(to, lerpPoint(to, center, bundle), from);
+  const c1 = lerpPoint(start, center, bundle);
+  const c2 = lerpPoint(end, center, bundle);
+  return `M ${round(start.x)} ${round(start.y)} C ${round(c1.x)} ${round(c1.y)} ${round(c2.x)} ${round(c2.y)} ${round(end.x)} ${round(end.y)}`;
+}
+
+/** Same command shape as edgePath, collapsed to a point for enter/exit. */
+function collapsedPath(center: Point): string {
+  const x = round(center.x);
+  const y = round(center.y);
+  return `M ${x} ${y} C ${x} ${y} ${x} ${y} ${x} ${y}`;
 }
 
 function NodeAvatar({
@@ -146,9 +312,10 @@ function NodeAvatar({
 /**
  * SVG node-edge network of the tracked profiles' follow relationships.
  *
- * Full view: nodes sit on a stable circle (deterministic order = the API's
- * profiles array); mutual follows render as solid emerald lines, one-way
- * follows as orange lines with an arrowhead toward the followed profile.
+ * Full view: nodes sit on a circle sized from the group (deterministic order =
+ * the API's profiles array), each disc scaled by how connected the profile is
+ * inside the group; mutual follows render as solid emerald curves, one-way
+ * follows as orange curves with an arrowhead toward the followed profile.
  *
  * Ego view: clicking a node springs it to the centre, fans its connections
  * around it and fades everything unrelated out. From there the centre opens
@@ -164,6 +331,8 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
   // Tracked separately from `hovered`: a node sliding out from under a resting
   // cursor fires mouseleave, which must not erase the keyboard focus ring.
   const [keyboardFocusKey, setKeyboardFocusKey] = useState<string | null>(null);
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
   const nodeRefs = useRef(new Map<string, SVGGElement | null>());
 
   // No explicit profiles: the endpoint defaults to the caller's full
@@ -175,6 +344,18 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
     refetchOnWindowFocus: false,
     retry: false,
   });
+
+  // The viewBox scales the graph to the container, so how much room a label
+  // really has is a rendered-pixel question, not a viewBox one.
+  useEffect(() => {
+    if (!container || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setContainerWidth((current) => (Math.abs(current - width) < 1 ? current : width));
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [container]);
 
   const avatarByUsername = useMemo(() => {
     const map = new Map<string, string | null>();
@@ -226,6 +407,45 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
     });
     return map;
   }, [groupEdges]);
+
+  const rollupByKey = useMemo(() => {
+    const map = new Map<string, { follows_in_group: number; followed_by_in_group: number }>();
+    Object.entries(networkQuery.data?.rollups ?? {}).forEach(([username, rollup]) => {
+      map.set(username.toLowerCase(), rollup);
+    });
+    return map;
+  }, [networkQuery.data?.rollups]);
+
+  // Degree inside the group drives disc size, so hubs are visible at a glance.
+  const hubScaleByKey = useMemo(() => {
+    const degrees = new Map<string, number>();
+    groupNodes.forEach((node) => {
+      const rollup = rollupByKey.get(node.key);
+      degrees.set(
+        node.key,
+        rollup
+          ? rollup.follows_in_group + rollup.followed_by_in_group
+          : neighborsByKey.get(node.key)?.size ?? 0,
+      );
+    });
+    const values = Array.from(degrees.values());
+    const min = values.length ? Math.min(...values) : 0;
+    const max = values.length ? Math.max(...values) : 0;
+    const span = max - min;
+    const scales = new Map<string, number>();
+    degrees.forEach((degree, key) => {
+      // sqrt keeps the growth closer to area, so twice the connections does not
+      // read as four times the disc.
+      const t = span > 0 ? Math.sqrt((degree - min) / span) : 1;
+      scales.set(key, span > 0 ? HUB_SCALE_MIN + (HUB_SCALE_MAX - HUB_SCALE_MIN) * t : 1);
+    });
+    return scales;
+  }, [groupNodes, rollupByKey, neighborsByKey]);
+
+  const layout = useMemo(
+    () => buildLayout(groupNodes.length, containerWidth),
+    [groupNodes.length, containerWidth],
+  );
 
   // Drop the ego view if a refetch removes the focused profile from the group.
   useEffect(() => {
@@ -295,23 +515,36 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
     return [...groupNeighbors, ...extraNodes.map((node) => node.key)];
   }, [focusKey, neighborsByKey, groupIndexByKey, extraNodes]);
 
+  const ringCount = focusKey ? egoLeafKeys.length : groupNodes.length;
+  const labelsOn = !layout.compact && ringCount > 0 && ringCount <= LABEL_ALL_MAX;
+  const { maxChars, tiers } = labelPlan(ringCount);
+
   const placements = useMemo(() => {
     const map = new Map<string, Placement>();
     const count = groupNodes.length;
+    const center = { x: layout.centerX, y: layout.centerY };
     const leafIndexByKey = new Map(egoLeafKeys.map((key, index) => [key, index]));
     const leafCount = egoLeafKeys.length;
-    const leafRadius = egoRingRadius(leafCount);
+    // A group too big for labels has no label padding in the frame, so the ego
+    // ring has to pull in far enough to fit the labels it does show.
+    const egoCap =
+      !layout.labels && leafCount <= LABEL_ALL_MAX && !layout.compact
+        ? Math.min(layout.ringRadius, Math.min(layout.width, layout.height) / 2 - EGO_LABEL_REACH)
+        : layout.ringRadius;
+    const leafRadius = egoRingRadius(leafCount, egoCap);
+    const leafScale = clamp(fitNodeScale(leafCount, leafRadius), MIN_NODE_SCALE, 1);
 
     groupNodes.forEach((node, index) => {
-      const ring = ringPlacement(index, count, RING_RADIUS);
+      const hub = hubScaleByKey.get(node.key) ?? 1;
+      const ring = ringPlacement(index, count, layout.ringRadius, center, layout.nodeScale * hub);
       if (!focusKey) {
         map.set(node.key, ring);
         return;
       }
       if (node.key === focusKey) {
         map.set(node.key, {
-          x: CENTER_X,
-          y: CENTER_Y,
+          x: center.x,
+          y: center.y,
           cos: 0,
           sin: 1,
           scale: CENTER_SCALE,
@@ -319,6 +552,8 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
           radius: NODE_RADIUS * CENTER_SCALE,
           visible: true,
           isCenter: true,
+          ringIndex: 0,
+          ringCount: 1,
         });
         return;
       }
@@ -334,17 +569,22 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
         });
         return;
       }
-      map.set(node.key, ringPlacement(leafIndex, leafCount, leafRadius));
+      map.set(node.key, ringPlacement(leafIndex, leafCount, leafRadius, center, leafScale * hub));
     });
 
     extraNodes.forEach((node) => {
       const leafIndex = leafIndexByKey.get(node.key);
       if (leafIndex === undefined) return;
-      map.set(node.key, ringPlacement(leafIndex, leafCount, leafRadius));
+      // One known in-group tie (the centre), so they sit at the bottom of the
+      // degree band rather than dwarfing the tracked leaves.
+      map.set(
+        node.key,
+        ringPlacement(leafIndex, leafCount, leafRadius, center, leafScale * HUB_SCALE_MIN),
+      );
     });
 
     return map;
-  }, [groupNodes, focusKey, egoLeafKeys, extraNodes]);
+  }, [groupNodes, focusKey, egoLeafKeys, extraNodes, layout, hubScaleByKey]);
 
   const renderEdges = useMemo<RenderEdge[]>(() => {
     if (!focusKey) return groupEdges;
@@ -362,15 +602,7 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
   const onewayCount = groupEdges.length - mutualCount;
   const hoverNode = hovered ? groupNodes.find((node) => node.key === hovered) ?? null : null;
   const captionNode = focusNode ?? hoverNode;
-  const rollupFor = useCallback(
-    (key: string) => {
-      const rollups = networkQuery.data?.rollups ?? {};
-      const entry = Object.entries(rollups).find(([username]) => username.toLowerCase() === key);
-      return entry ? entry[1] : null;
-    },
-    [networkQuery.data?.rollups],
-  );
-  const captionRollup = captionNode ? rollupFor(captionNode.key) : null;
+  const captionRollup = captionNode ? rollupByKey.get(captionNode.key) ?? null : null;
 
   const exitEgoView = useCallback(() => {
     const previous = focusKey;
@@ -427,6 +659,7 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
 
   const extraByKey = useMemo(() => new Map(extraNodes.map((node) => [node.key, node])), [extraNodes]);
   const hasUntracked = focusKey !== null && extraNodes.length > 0;
+  const center: Point = { x: layout.centerX, y: layout.centerY };
 
   const renderNode = (node: GraphNode) => {
     const placement = placements.get(node.key);
@@ -440,12 +673,41 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
     const opacity = placement.opacity * (hoverDimmed ? 0.25 : 1);
     // Untracked counterparts have no Analysis page and cannot be re-centred.
     const interactive = placement.visible && node.inGroup;
-    const labelOffset = NODE_RADIUS * placement.scale + 14;
+    const revealed = isCenter || isHovered || keyboardFocusKey === node.key;
+    // With labels off, a revealed one is drawn inward on a chip: outside the
+    // ring there is no frame left for it, inside there is nothing but space.
+    const inwardLabel = !labelsOn && !isCenter;
+    const labelScale = inwardLabel || isCenter ? layout.fontScale : 1;
+    const labelText = revealed ? node.username : truncateLabel(node.username, maxChars);
+    const labelVisible = isCenter || revealed || labelsOn;
+    const chipVisible = isCenter || (inwardLabel && revealed);
+    const chipWidth = labelChipWidth(labelText) * labelScale;
+    const tier = labelsOn && tiers && !isCenter ? labelTier(placement.ringIndex, placement.ringCount) : 0;
+    // A reveal chip is axis-aligned, so a node at 3 o'clock needs the chip's own
+    // half-width of clearance to stay inside the ring, one at 12 o'clock only
+    // its half-height. Anything less and the chip runs out of the frame.
+    const labelOffset = inwardLabel
+      ? -(
+          NODE_RADIUS * placement.scale +
+          12 +
+          Math.abs(placement.cos) * (chipWidth / 2) +
+          Math.abs(placement.sin) * 15 * labelScale
+        )
+      : NODE_RADIUS * placement.scale + 14 + tier * LABEL_TIER_STEP;
     const labelX = isCenter ? 0 : placement.cos * labelOffset;
     // The centre label sits clear of the halo ring, on an opaque chip so it
     // stays readable where a connection line runs underneath it.
-    const labelY = isCenter ? NODE_RADIUS * CENTER_SCALE + 30 : placement.sin * labelOffset;
-    const anchor = isCenter ? 'middle' : placement.cos > 0.35 ? 'start' : placement.cos < -0.35 ? 'end' : 'middle';
+    const labelY = isCenter
+      ? NODE_RADIUS * CENTER_SCALE + 18 + 12 * labelScale
+      : placement.sin * labelOffset;
+    const anchor =
+      isCenter || inwardLabel
+        ? 'middle'
+        : placement.cos > 0.35
+          ? 'start'
+          : placement.cos < -0.35
+            ? 'end'
+            : 'middle';
     const ringStroke = !node.inGroup
       ? UNTRACKED_STROKE
       : isCenter || isHovered
@@ -462,9 +724,9 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
     return (
       <motion.g
         key={node.key}
-        initial={node.inGroup ? false : { x: CENTER_X, y: CENTER_Y, opacity: 0 }}
+        initial={node.inGroup ? false : { x: center.x, y: center.y, opacity: 0 }}
         animate={{ x: placement.x, y: placement.y, opacity }}
-        exit={{ x: CENTER_X, y: CENTER_Y, opacity: 0 }}
+        exit={{ x: center.x, y: center.y, opacity: 0 }}
         transition={transition}
         aria-hidden={placement.visible ? undefined : true}
       >
@@ -512,7 +774,7 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
             }
           }}
         >
-          {!node.inGroup && <title>{`@${node.username} is not a tracked profile`}</title>}
+          <title>{node.inGroup ? `@${node.username}` : `@${node.username} is not a tracked profile`}</title>
           <circle r={NODE_RADIUS + 6} fill="transparent" />
           <circle r={NODE_RADIUS + 3} fill="#0f172a" />
           <NodeAvatar
@@ -549,22 +811,22 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
           )}
         </motion.g>
         <motion.g
-          animate={{ x: labelX, y: labelY }}
+          animate={{ x: labelX, y: labelY, opacity: labelVisible ? 1 : 0 }}
           transition={transition}
           style={{ pointerEvents: 'none' }}
         >
           <motion.rect
-            x={-labelChipWidth(node.username) / 2}
-            y={-15}
-            width={labelChipWidth(node.username)}
-            height={44}
-            rx={12}
+            x={-chipWidth / 2}
+            y={(isCenter ? -15 : -13) * labelScale}
+            width={chipWidth}
+            height={(isCenter ? 44 : 26) * labelScale}
+            rx={12 * labelScale}
             fill="rgba(9, 12, 20, 0.88)"
             stroke="rgba(255, 255, 255, 0.12)"
             strokeWidth={1}
             opacity={0}
             initial={false}
-            animate={{ opacity: isCenter ? 1 : 0 }}
+            animate={{ opacity: chipVisible ? 1 : 0 }}
             transition={transition}
           />
           <text
@@ -579,18 +841,18 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
                   ? 'rgba(255, 255, 255, 0.55)'
                   : 'rgba(255, 255, 255, 0.38)'
             }
-            fontSize={isCenter ? 15 : 13}
+            fontSize={(isCenter ? 15 : 13) * labelScale}
             fontWeight={600}
           >
-            {node.username}
+            {labelText}
           </text>
           <motion.text
             x={0}
-            y={17}
+            y={17 * labelScale}
             textAnchor="middle"
             dominantBaseline="central"
             fill="rgba(251, 205, 154, 0.9)"
-            fontSize={11}
+            fontSize={11 * labelScale}
             fontWeight={600}
             opacity={0}
             initial={false}
@@ -668,7 +930,7 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
         </p>
       ) : (
         <>
-          <div className="relative mx-auto mt-2 w-full max-w-3xl">
+          <div ref={setContainer} className="relative mx-auto mt-2 w-full max-w-3xl">
             <AnimatePresence>
               {focusNode && (
                 <motion.button
@@ -688,7 +950,7 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
             </AnimatePresence>
 
             <svg
-              viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
+              viewBox={`0 0 ${layout.width} ${layout.height}`}
               className="h-auto w-full"
               role="group"
               aria-label={
@@ -720,8 +982,8 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
               <rect
                 x="0"
                 y="0"
-                width={VIEW_WIDTH}
-                height={VIEW_HEIGHT}
+                width={layout.width}
+                height={layout.height}
                 fill="transparent"
                 onClick={() => (focusKey ? exitEgoView() : setHovered(null))}
               />
@@ -746,20 +1008,16 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
                         : incidentToHover
                           ? 0.95
                           : 0.08;
-                    const segment = edgeSegment(from, to);
                     const untracked = extraByKey.has(edge.fromKey) || extraByKey.has(edge.toKey);
 
                     return (
-                      <motion.line
+                      <motion.path
                         key={edge.id}
-                        initial={
-                          edge.extra
-                            ? { x1: CENTER_X, y1: CENTER_Y, x2: CENTER_X, y2: CENTER_Y, opacity: 0 }
-                            : false
-                        }
-                        animate={{ ...segment, opacity }}
-                        exit={{ x1: CENTER_X, y1: CENTER_Y, x2: CENTER_X, y2: CENTER_Y, opacity: 0 }}
+                        initial={edge.extra ? { d: collapsedPath(center), opacity: 0 } : false}
+                        animate={{ d: edgePath(from, to, center, layout.bundle), opacity }}
+                        exit={{ d: collapsedPath(center), opacity: 0 }}
                         transition={transition}
+                        fill="none"
                         stroke={edge.mutual ? MUTUAL_COLOR : ONEWAY_COLOR}
                         strokeWidth={incidentToFocus || incidentToHover ? 2.5 : 1.75}
                         strokeLinecap="round"
@@ -794,7 +1052,9 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
                 ? `@${captionNode.username} follows ${captionRollup.follows_in_group} in this group, followed by ${captionRollup.followed_by_in_group}. Click to centre the graph on them.`
                 : captionNode
                   ? `@${captionNode.username}`
-                  : 'Hover a profile to trace its connections, or click one to centre the graph on it.'}
+                  : labelsOn
+                    ? 'Hover a profile to trace its connections, or click one to centre the graph on it.'
+                    : 'Hover or tap a profile to name it and trace its connections; click to centre the graph on it.'}
           </p>
         </>
       )}

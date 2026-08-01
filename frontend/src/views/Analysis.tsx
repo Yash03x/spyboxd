@@ -15,6 +15,7 @@ import StatsCard from '../components/Charts/StatsCard';
 import SpoilerReviewText from '../components/SpoilerReviewText';
 import AdminScopeToggle from '../components/AdminScopeToggle';
 import ProfileHeader from '../components/ProfileHeader';
+import ProfilePicker from '../components/ProfilePicker';
 import ArchivePanel from '../components/insights/ArchivePanel';
 import TasteProfilePanel from '../components/insights/TasteProfilePanel';
 import TagsPanel, { TagChipList } from '../components/insights/TagsPanel';
@@ -124,7 +125,7 @@ const Analysis: React.FC = () => {
         </section>
       ) : (
       <motion.div
-        className="card-cinema"
+        className="card-cinema relative z-30"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
@@ -136,20 +137,13 @@ const Analysis: React.FC = () => {
               Choose any synced profile to inspect ratings, diary activity, and recent reviews.
             </p>
           </div>
-          <div className="w-full lg:w-96">
-            <select
-              value={selectedProfile}
-              onChange={(event) => selectProfile(event.target.value)}
-              className="input-field w-full"
-            >
-              {profilesArray.length === 0 && <option value="">No profiles available</option>}
-              {profilesArray.map((profile) => (
-                <option key={profile.username} value={profile.username}>
-                  {profile.username}
-                </option>
-              ))}
-            </select>
-          </div>
+          <ProfilePicker
+            profiles={profilesArray}
+            value={selectedProfile}
+            onChange={selectProfile}
+            label="Profile"
+            className="w-full lg:w-96"
+          />
         </div>
       </motion.div>
       )}
