@@ -106,8 +106,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       {/* Sidebar Navigation */}
       <motion.nav 
         className="relative z-50 w-full flex-shrink-0 border-b border-white/10 bg-[#081321]/95 backdrop-blur-xl lg:sticky lg:top-0 lg:h-screen lg:w-72 lg:border-b-0 lg:border-r lg:bg-black/20"
-        initial={{ x: -100, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
+        initial={{ x: -100 }}
+        animate={{ x: 0 }}
         transition={{ duration: 0.6, delay: 0.2, ease: "easeOut" }}
       >
         <div className="flex h-full flex-col px-4 py-3 lg:p-6">
@@ -180,8 +180,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             {/* System Status */}
             <motion.div
             className="mb-8 p-4 rounded-xl bg-white/5 border border-white/10 backdrop-blur-sm"
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
+            initial={{ y: 20 }}
+            animate={{ y: 0 }}
             transition={{ delay: 0.4 }}
           >
             <div className="flex items-center justify-between mb-2">
@@ -204,8 +204,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               return (
                 <motion.div
                   key={item.path}
-                  initial={{ x: -50, opacity: 0 }}
-                  animate={{ x: 0, opacity: 1 }}
+                  initial={{ x: -50 }}
+                  animate={{ x: 0 }}
                   transition={{ delay: 0.3 + (index * 0.1) }}
                 >
                   <Link href={item.path} onClick={() => setMobileNavOpen(false)}>
@@ -282,8 +282,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         {/* Top Header */}
         <motion.header 
           className="hidden border-b border-white/10 bg-black/10 px-6 py-3 backdrop-blur-md lg:block"
-          initial={{ y: -50, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
+          initial={{ y: -50 }}
+          animate={{ y: 0 }}
           transition={{ duration: 0.6, delay: 0.3 }}
         >
           <div className="flex min-h-11 items-center justify-between gap-4">
