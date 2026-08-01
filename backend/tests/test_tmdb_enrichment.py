@@ -762,3 +762,27 @@ class TMDBEnrichmentMappingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeAbsenceTests(unittest.TestCase):
+    """TMDB writes 0 for a runtime nobody has filled in.
+
+    Stored as 0 it reads as a known length everywhere downstream: 55 rows
+    arrived that way and once put 27 films in an "Under 90 min" taste bucket on
+    the strength of runtimes nobody had recorded.
+    """
+
+    def _runtime(self, value):
+        return build_enrichment_values({"runtime": value})["runtime_minutes"]
+
+    def test_a_zero_runtime_is_stored_as_unknown(self):
+        self.assertIsNone(self._runtime(0))
+
+    def test_a_missing_runtime_is_unknown(self):
+        self.assertIsNone(self._runtime(None))
+
+    def test_a_negative_runtime_is_unknown(self):
+        self.assertIsNone(self._runtime(-5))
+
+    def test_a_real_runtime_survives(self):
+        self.assertEqual(self._runtime(132), 132)

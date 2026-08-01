@@ -167,7 +167,12 @@ def build_enrichment_values(details: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         "original_title": str(details.get("original_title") or "").strip() or None,
         "overview": str(details.get("overview") or "").strip() or None,
-        "runtime_minutes": _positive_int(details.get("runtime")),
+        # TMDB writes 0 for a runtime nobody has filled in, and `_positive_int`
+        # keeps zero because other callers (display_priority) legitimately use
+        # it. A film of zero minutes does not exist, so store the absence: 55
+        # rows arrived as 0 before this and had to be defended against on every
+        # read, once landing 27 films in a "Under 90 min" taste bucket.
+        "runtime_minutes": _positive_int(details.get("runtime")) or None,
         "original_language": str(details.get("original_language") or "").strip() or None,
         "release_date": _parse_iso_date(details.get("release_date")),
         "genres": _as_list(details.get("genres")),
