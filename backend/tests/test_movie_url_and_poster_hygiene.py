@@ -86,27 +86,13 @@ PROFILE_METADATA_MARKUP = """
 
 
 def _scrape_metadata(markup: str):
-    """Run the profile-metadata branch of scrape_profile_info in isolation."""
-    scraper = EnhancedLetterboxdScraper.__new__(EnhancedLetterboxdScraper)
+    """Exercise the scraper's own extraction, not a copy of it."""
     soup = BeautifulSoup(markup, "html.parser")
     profile_metadata = soup.select_one(
         "section.profile-metadata, div.profile-metadata, .js-profile-metadata"
     )
-    from urllib.parse import urlparse
-
-    links = []
-    seen = set()
-    for anchor in profile_metadata.select("a.metadatum[href], a.url[href]"):
-        href = (anchor.get("href") or "").strip()
-        if not href.casefold().startswith(("http://", "https://")):
-            continue
-        if "letterboxd.com" in urlparse(href).netloc.casefold():
-            continue
-        if href in seen:
-            continue
-        seen.add(href)
-        links.append({"label": anchor.get_text(" ", strip=True) or urlparse(href).netloc, "url": href})
-    return links
+    anchors = profile_metadata.select("a.metadatum[href], a.url[href]")
+    return EnhancedLetterboxdScraper._extract_external_links(anchors)
 
 
 def test_all_external_profile_links_are_captured():
@@ -119,3 +105,14 @@ def test_all_external_profile_links_are_captured():
     assert links[1]["label"] == "InfiniteVibesss"
     # Internal Letterboxd navigation is not an external link.
     assert all("letterboxd.com" not in link["url"] for link in links)
+
+
+def test_letterboxd_host_check_is_not_a_substring_match():
+    is_lbx = EnhancedLetterboxdScraper._is_letterboxd_host
+    assert is_lbx("https://letterboxd.com/user/") is True
+    assert is_lbx("https://www.letterboxd.com/user/") is True
+    # A lookalike domain that merely contains the string is not Letterboxd,
+    # and a host that ends with it must be a real subdomain.
+    assert is_lbx("https://letterboxd.com.attacker.example/") is False
+    assert is_lbx("https://notletterboxd.com/") is False
+    assert is_lbx("https://myanimelist.net/profile/x") is False

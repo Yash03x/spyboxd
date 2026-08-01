@@ -374,6 +374,38 @@ class EnhancedLetterboxdScraper:
         return json.dumps(sorted(tags or []), ensure_ascii=False)
 
     @staticmethod
+    def _is_letterboxd_host(url: str) -> bool:
+        """Whether a URL points at Letterboxd itself.
+
+        Substring matching on the host is unsafe: it both accepts
+        ``letterboxd.com.example.net`` and rejects ``notletterboxd.com``. Only
+        the exact host or a real subdomain of it counts.
+        """
+        host = urlparse(url).netloc.casefold().rsplit('@', 1)[-1]
+        host = host.split(':', 1)[0].rstrip('.')
+        return host == 'letterboxd.com' or host.endswith('.letterboxd.com')
+
+    @classmethod
+    def _extract_external_links(cls, anchors) -> List[Dict]:
+        """The off-site links a member lists, deduplicated in source order."""
+        links: List[Dict] = []
+        seen_urls = set()
+        for anchor in anchors:
+            href = (anchor.get('href') or '').strip()
+            if not href.casefold().startswith(('http://', 'https://')):
+                continue
+            if cls._is_letterboxd_host(href):
+                continue
+            if href in seen_urls:
+                continue
+            seen_urls.add(href)
+            links.append({
+                'label': anchor.get_text(' ', strip=True) or urlparse(href).netloc,
+                'url': href,
+            })
+        return links
+
+    @staticmethod
     def _extract_person_rows(soup: BeautifulSoup) -> List[Dict]:
         """Parse a following/followers page into person identity dicts.
 
@@ -581,21 +613,7 @@ class EnhancedLetterboxdScraper:
                     if location_text and location_text not in anchor_texts:
                         self.profile_info.location = location_text
 
-                links = []
-                seen_urls = set()
-                for anchor in anchors:
-                    href = (anchor.get('href') or '').strip()
-                    if not href.casefold().startswith(('http://', 'https://')):
-                        continue
-                    if 'letterboxd.com' in urlparse(href).netloc.casefold():
-                        continue
-                    if href in seen_urls:
-                        continue
-                    seen_urls.add(href)
-                    links.append({
-                        'label': anchor.get_text(' ', strip=True) or urlparse(href).netloc,
-                        'url': href,
-                    })
+                links = self._extract_external_links(anchors)
                 self.profile_info.external_links = links
                 if links:
                     # Keep the single-website contract populated for existing

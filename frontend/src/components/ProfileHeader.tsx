@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React from 'react';
 import { motion } from 'framer-motion';
 import { BadgeCheck, Globe, Heart, MapPin, RefreshCw, Users } from 'lucide-react';
 
@@ -118,14 +118,15 @@ export default function ProfileHeader({
   const joinedLabel = formatMonthYear(header.join_date);
 
   // A member can list several links (personal site, Twitter, …). Older
-  // payloads only carry the single website field, so fall back to it.
-  const externalLinks = useMemo(() => {
-    const links = header.external_links?.filter((link) => link.url) ?? [];
-    if (links.length > 0) return links;
-    return header.website_url
+  // payloads only carry the single website field, so fall back to it. Plain
+  // computation rather than useMemo: this component returns early when it has
+  // no header, so a hook here would not run in the same order every render.
+  const observedLinks = header.external_links?.filter((link) => link.url) ?? [];
+  const externalLinks = observedLinks.length > 0
+    ? observedLinks
+    : header.website_url
       ? [{ label: header.website ?? header.website_url, url: header.website_url }]
       : [];
-  }, [header.external_links, header.website, header.website_url]);
 
   // Letterboxd's own header stat row. Anything it never observed is dropped
   // rather than rendered as a blank or a misleading zero.
