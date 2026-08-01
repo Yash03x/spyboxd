@@ -142,6 +142,10 @@ function DivisiveRow({ film, username }: { film: RatingComparisonDivisiveFilm; u
     // it was actually built from; the spread's wider count is named separately.
     `group ${film.group_average.toFixed(2)} from ${raterNote(film.group_rater_count ?? film.rater_count)}`,
     `${film.rater_count} rated in total`,
+    // A disagreement the wider world does not share is the interesting kind.
+    film.crowd_consensus !== null && film.crowd_consensus >= 0.35
+      ? `world mostly agrees (${Math.round(film.crowd_consensus * 100)}%)`
+      : null,
     film.profile_rating === null ? `@${username} unrated` : `@${username} ${film.profile_rating.toFixed(1)}`,
   ];
 
