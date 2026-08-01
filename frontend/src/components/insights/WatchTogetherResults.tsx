@@ -15,6 +15,7 @@ import {
 
 import type {
   FeatureCoverage,
+  PublicMovieList,
   WatchTogetherCandidate,
   WatchTogetherResponse,
 } from '../../services/api';
@@ -22,9 +23,36 @@ import { CoverageBanner, FeatureState, MoviePoster, ScoreRing } from './InsightU
 
 type ResultSort = 'group_fit' | 'watchlists' | 'runtime';
 
-function providerSummary(candidate: WatchTogetherCandidate): string {
+const AVAILABILITY_TYPES: Record<string, ReadonlyArray<string>> = {
+  streaming: ['flatrate'],
+  rent: ['rent'],
+  buy: ['buy'],
+};
+
+/**
+ * Names where a film can be watched, preferring the offer the user filtered for.
+ *
+ * Providers arrive ordered by TMDB `display_priority`, and transactional stores
+ * carry far better priorities than niche channels. Taking the first two blindly
+ * meant a search filtered to Streaming advertised "Apple TV Store · Amazon
+ * Video" while the subscription service that actually qualified the film went
+ * unnamed -- contradicting the reason line shown directly above it.
+ */
+function providerSummary(
+  candidate: WatchTogetherCandidate,
+  availability?: string,
+): string {
+  const wanted = availability ? AVAILABILITY_TYPES[availability] : undefined;
+  const providers = candidate.movie.providers ?? [];
+  const matching = wanted
+    ? providers.filter((provider) => wanted.includes(provider.type))
+    : [];
+  // Fall back to the full list when nothing matches, so the column still says
+  // something rather than going blank.
+  const ordered = matching.length > 0 ? matching : providers;
+
   const regionCounts = new Map<string, number>();
-  for (const provider of candidate.movie.providers ?? []) {
+  for (const provider of ordered) {
     regionCounts.set(
       provider.name,
       Math.max(regionCounts.get(provider.name) ?? 0, provider.regions?.length ?? 0),
@@ -67,12 +95,14 @@ function CandidateRow({
   selected,
   selectedProfileCount,
   onSelect,
+  availability,
 }: {
   candidate: WatchTogetherCandidate;
   index: number;
   selected: boolean;
   selectedProfileCount: number;
   onSelect: () => void;
+  availability?: string;
 }) {
   return (
     <button
@@ -104,7 +134,7 @@ function CandidateRow({
         <span className="text-[10px] text-white/35">seen it</span>
       </span>
       <span className="line-clamp-2 text-xs leading-5 text-white/50">{candidate.movie.genres?.join(', ') || 'Genres unavailable'}</span>
-      <span className="line-clamp-2 text-xs leading-5 text-white/55">{providerSummary(candidate)}</span>
+      <span className="line-clamp-2 text-xs leading-5 text-white/55">{providerSummary(candidate, availability)}</span>
       <span className="line-clamp-2 text-xs leading-5 text-white/50">{candidate.reasons?.[0] ?? 'Ranked from the available group signals.'}</span>
     </button>
   );
@@ -116,12 +146,14 @@ function CandidateCard({
   selected,
   selectedProfileCount,
   onSelect,
+  availability,
 }: {
   candidate: WatchTogetherCandidate;
   index: number;
   selected: boolean;
   selectedProfileCount: number;
   onSelect: () => void;
+  availability?: string;
 }) {
   return (
     <button
@@ -135,7 +167,7 @@ function CandidateCard({
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold text-white/85">{candidate.movie.title}</span>
         <span className="mt-1 block text-[11px] text-white/40">{candidate.movie.year ?? '—'}{candidate.movie.runtime_minutes ? ` · ${candidate.movie.runtime_minutes}m` : ''}</span>
-        <span className="mt-1 line-clamp-1 block text-[11px] text-white/45">{candidate.movie.genres?.join(', ') || providerSummary(candidate)}</span>
+        <span className="mt-1 line-clamp-1 block text-[11px] text-white/45">{candidate.movie.genres?.join(', ') || providerSummary(candidate, availability)}</span>
         <span className="mt-1 block text-[11px] text-white/50">{candidate.on_watchlist_by.length}/{selectedProfileCount} want · {candidate.watched_by.length}/{selectedProfileCount} seen</span>
       </span>
       <ScoreRing score={candidate.group_fit_score} size="sm" />
@@ -143,9 +175,12 @@ function CandidateCard({
   );
 }
 
-function WhyPanel({ candidate, onClose }: {
+function WhyPanel({ candidate, onClose, availability, selectedList }: {
   candidate: WatchTogetherCandidate;
   onClose: () => void;
+  availability?: string;
+  /** Needed to know whether the list's order means anything. */
+  selectedList?: PublicMovieList | null;
 }) {
   const tmdbUrl = candidate.movie.tmdb_id ? `https://www.themoviedb.org/movie/${candidate.movie.tmdb_id}` : null;
   const letterboxdUrl = letterboxdFilmUrl(
@@ -155,7 +190,7 @@ function WhyPanel({ candidate, onClose }: {
   return (
     <aside className="rounded-xl border border-cinema-400/25 bg-[#0a1626] p-5 shadow-2xl shadow-black/30 2xl:sticky 2xl:top-5">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-white">Why this ranked first</h2>
+        <h2 className="text-lg font-semibold text-white">Why {candidate.movie.title} fits</h2>
         <button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-white/45 hover:bg-white/5 hover:text-white" aria-label="Close explanation">
           <X className="h-5 w-5" />
         </button>
@@ -200,7 +235,7 @@ function WhyPanel({ candidate, onClose }: {
         <div className="flex items-center justify-between gap-4 text-white/50"><span>Appears on watchlists</span><strong className="text-white/80">{candidate.on_watchlist_by.length}</strong></div>
         <div className="flex items-center justify-between gap-4 text-white/50"><span>Already watched</span><strong className="text-white/80">{candidate.watched_by.length}</strong></div>
         <div className="flex items-center justify-between gap-4 text-white/50"><span>Liked by</span><strong className="text-white/80">{candidate.liked_by.length}</strong></div>
-        <div className="flex items-center justify-between gap-4 text-white/50"><span>Where to watch</span><strong className="max-w-40 truncate text-white/80">{providerSummary(candidate)}</strong></div>
+        <div className="flex items-center justify-between gap-4 text-white/50"><span>Where to watch</span><strong className="max-w-40 truncate text-white/80">{providerSummary(candidate, availability)}</strong></div>
       </div>
 
       {candidate.blind_spot_source && (
@@ -214,7 +249,12 @@ function WhyPanel({ candidate, onClose }: {
       {candidate.list_context && (
         <div className="mb-5 rounded-lg border border-white/10 bg-white/[0.025] px-3 py-3 text-xs leading-5 text-white/55">
           <strong className="text-white/80">List mission:</strong> {candidate.list_context.owner} · {candidate.list_context.name}
-          {candidate.list_context.position ? ` · #${candidate.list_context.position}` : ''}
+          {/* Position is only meaningful on a list its owner ordered. On an
+              unranked list it is the order rows happen to be stored, and
+              printing "#3" asserts a ranking nobody made. */}
+          {candidate.list_context.position && selectedList?.is_ranked
+            ? ` · #${candidate.list_context.position}`
+            : ''}
           {candidate.list_context.notes ? <span className="mt-1 block text-white/40">{candidate.list_context.notes}</span> : null}
         </div>
       )}
@@ -242,9 +282,13 @@ function WhyPanel({ candidate, onClose }: {
 export default function WatchTogetherResults({
   data,
   coverage,
+  availability,
 }: {
   data?: WatchTogetherResponse;
   coverage?: FeatureCoverage;
+  /** The active offer-type filter, so "Where to watch" names the offer the
+   *  user actually asked for rather than whichever store TMDB ranks highest. */
+  availability?: string;
 }) {
   const [sort, setSort] = useState<ResultSort>('group_fit');
   const [selectedMovieKey, setSelectedMovieKey] = useState<string | null>(null);
@@ -326,15 +370,15 @@ export default function WatchTogetherResults({
                   <span>#</span><span>Title</span><span>Group fit</span><span>Want it</span><span>Seen it</span><span>Genres</span><span>Where to watch</span><span>Why it fits</span>
                 </div>
                 <div className="hidden lg:block">
-                  {recommendations.slice(0, 20).map((candidate, index) => {
+                  {recommendations.map((candidate, index) => {
                     const key = `${candidate.movie.movie_id ?? candidate.movie.title}-${candidate.movie.year ?? ''}`;
-                    return <CandidateRow key={key} candidate={candidate} index={index} selected={key === selectedMovieKey} selectedProfileCount={data.selected_profiles.length} onSelect={() => setSelectedMovieKey(key)} />;
+                    return <CandidateRow key={key} candidate={candidate} index={index} selected={key === selectedMovieKey} selectedProfileCount={data.selected_profiles.length} onSelect={() => setSelectedMovieKey(key)} availability={availability} />;
                   })}
                 </div>
                 <div className="lg:hidden">
-                  {recommendations.slice(0, 20).map((candidate, index) => {
+                  {recommendations.map((candidate, index) => {
                     const key = `${candidate.movie.movie_id ?? candidate.movie.title}-${candidate.movie.year ?? ''}`;
-                    return <CandidateCard key={key} candidate={candidate} index={index} selected={key === selectedMovieKey} selectedProfileCount={data.selected_profiles.length} onSelect={() => setSelectedMovieKey(key)} />;
+                    return <CandidateCard key={key} candidate={candidate} index={index} selected={key === selectedMovieKey} selectedProfileCount={data.selected_profiles.length} onSelect={() => setSelectedMovieKey(key)} availability={availability} />;
                   })}
                 </div>
               </>
@@ -375,7 +419,7 @@ export default function WatchTogetherResults({
             </section>
           )}
         </div>
-        {selectedCandidate && <WhyPanel candidate={selectedCandidate} onClose={() => setSelectedMovieKey(null)} />}
+        {selectedCandidate && <WhyPanel candidate={selectedCandidate} onClose={() => setSelectedMovieKey(null)} availability={availability} selectedList={data.selected_list} />}
       </div>
     </div>
   );
