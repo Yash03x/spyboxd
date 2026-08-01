@@ -32,6 +32,26 @@ def _compile_big_integer_as_sqlite_integer(_type, _compiler, **_kwargs):
 
 
 RATINGS_URL = "/api/films/letterboxd-ratings"
+
+
+def _api_routes(routes):
+    """Flatten routers the way test_route_access_matrix does.
+
+    Newer FastAPI defers ``include_router`` behind a wrapper, so scanning
+    ``app.routes`` for APIRoute instances finds nothing for an included
+    router. The repo already hit this; mirror its traversal rather than
+    depending on which version happens to be installed.
+    """
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+        included_router = getattr(route, "original_router", None)
+        nested = getattr(included_router, "routes", None)
+        if nested is not None:
+            yield from _api_routes(nested)
+
+
 INGESTION_TOKEN = "test-ingestion-token"
 _MOVIE_IDS = count(1)
 
@@ -328,8 +348,8 @@ def test_ingestion_token_is_required(client, database):
 def test_route_carries_the_upload_trust_boundary():
     route = next(
         candidate
-        for candidate in backend_main.app.routes
-        if isinstance(candidate, APIRoute) and candidate.path == RATINGS_URL
+        for candidate in _api_routes(backend_main.app.routes)
+        if candidate.path == RATINGS_URL
     )
     names = {dependency.call.__name__ for dependency in route.dependant.dependencies}
 
