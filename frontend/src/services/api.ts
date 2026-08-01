@@ -1012,12 +1012,16 @@ export const insightsApi = {
 
   getSignalCalendar: async (
     profiles: string[],
-    options: { gapDays: number; from: string; to: string },
+    // `from`/`to` are optional on purpose. Sending a fixed window overrides the
+    // backend's data-aware default, which anchors on the pair's own latest
+    // event -- a pair whose newest activity predates the window then renders a
+    // year of empty cells rather than the period they were actually active in.
+    options: { gapDays: number; from?: string; to?: string },
   ): Promise<SignalCalendarResponse> => {
     const params = selectedProfileParams(profiles);
     params.set('gap_days', String(options.gapDays));
-    params.set('from', options.from);
-    params.set('to', options.to);
+    if (options.from) params.set('from', options.from);
+    if (options.to) params.set('to', options.to);
     const response = await api.get('/api/signal-calendar', { params });
     return response.data;
   },
