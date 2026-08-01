@@ -37,7 +37,7 @@ and the rest of the payload is unaffected.
 from __future__ import annotations
 
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
 from statistics import median
@@ -49,6 +49,7 @@ from sqlalchemy.orm import Session, aliased, load_only
 from database.models import (
     Movie,
     MovieEnrichment,
+    MovieWatchProvider,
     Profile,
     ProfileFilm,
     WatchlistItem,
@@ -110,6 +111,9 @@ class _Candidate:
     # and the mean cannot tell them apart.
     crowd_ceiling: Optional[float]
     crowd_floor: Optional[float]
+    # Subscription services carrying it, so a queue entry can say whether it is
+    # watchable now rather than only whether it is worth watching.
+    streaming_on: Tuple[str, ...]
     genres: Tuple[str, ...]
     opinions: _Opinions
 
@@ -169,6 +173,33 @@ def _letterboxd_average(value: Any) -> Optional[float]:
 
     average = _safe_float(value)
     return average if average is not None and average > 0 else None
+
+
+def _streaming_by_movie(
+    db: Session, movie_ids: Sequence[int], *, region: Optional[str]
+) -> Dict[int, Tuple[str, ...]]:
+    """Subscription services per film, for the requested region.
+
+    Only ``flatrate`` counts: a rental is a purchase decision, not something
+    already paid for. Providers are only imported for some regions, so an empty
+    result means "not carried there", never "not streamable anywhere".
+    """
+
+    if not movie_ids:
+        return {}
+    query = db.query(
+        MovieWatchProvider.movie_id, MovieWatchProvider.provider_name
+    ).filter(
+        MovieWatchProvider.movie_id.in_(list(movie_ids)),
+        MovieWatchProvider.provider_type == "flatrate",
+    )
+    if region:
+        query = query.filter(MovieWatchProvider.region == region.upper())
+    grouped: Dict[int, set] = defaultdict(set)
+    for movie_id, name in query.all():
+        if name:
+            grouped[int(movie_id)].add(str(name))
+    return {movie_id: tuple(sorted(names)) for movie_id, names in grouped.items()}
 
 
 def _watchlist_movie_ids(profile_id: int):
@@ -258,7 +289,9 @@ def _group_opinions(db: Session, profile_id: int) -> Dict[int, _Opinions]:
     }
 
 
-def _candidates(db: Session, profile_id: int) -> List[_Candidate]:
+def _candidates(
+    db: Session, profile_id: int, *, region: Optional[str] = None
+) -> List[_Candidate]:
     """Bulk-load the unwatched watchlist in one query, opinions in a second.
 
     Films the profile already has a ``profile_films`` row for are excluded in
@@ -287,6 +320,9 @@ def _candidates(db: Session, profile_id: int) -> List[_Candidate]:
         .all()
     )
     opinions = _group_opinions(db, profile_id)
+    streaming = _streaming_by_movie(
+        db, [int(row.movie_id) for row in rows], region=region
+    )
     candidates = []
     for row in rows:
         ceiling, floor = _crowd_shape(row.letterboxd_rating_distribution)
@@ -298,6 +334,7 @@ def _candidates(db: Session, profile_id: int) -> List[_Candidate]:
                 letterboxd_average=_letterboxd_average(row.letterboxd_average_rating),
                 crowd_ceiling=ceiling,
                 crowd_floor=floor,
+                streaming_on=streaming.get(int(row.movie_id), ()),
                 genres=tuple(_as_string_list(row.genres)),
                 opinions=opinions.get(int(row.movie_id), _Opinions()),
             )
@@ -393,6 +430,8 @@ def _recommendation(
         # favourite, and what share wrote it off.
         "crowd_ceiling": candidate.crowd_ceiling,
         "crowd_floor": candidate.crowd_floor,
+        # Whether it can be watched now, not just whether it is worth watching.
+        "streaming_on": list(candidate.streaming_on),
         "added_date": candidate.added_date.isoformat() if candidate.added_date else None,
         "days_waiting": candidate.days_waiting(today),
         "raters": [
@@ -428,6 +467,7 @@ def build_watchlist_insights(
     *,
     limit: int = DEFAULT_LIMIT,
     today: Optional[date] = None,
+    region: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Rank one profile's unwatched watchlist by what its circle scored.
 
@@ -451,7 +491,7 @@ def build_watchlist_insights(
 
     limit = _clamp_limit(limit)
     today = today or date.today()
-    candidates = _candidates(db, profile.id)
+    candidates = _candidates(db, profile.id, region=region)
 
     recommendable = [
         candidate for candidate in candidates if candidate.opinions.is_recommendable

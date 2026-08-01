@@ -17,6 +17,7 @@ from api.routes.watchlist_insights import router as watchlist_insights_router
 from auth import ClerkUser, get_current_user
 from database.connection import get_db
 from database.models import (
+    MovieWatchProvider,
     AppUser,
     Movie,
     MovieEnrichment,
@@ -46,6 +47,7 @@ TABLES = (
     Movie.__table__,
     ProfileFilm.__table__,
     MovieEnrichment.__table__,
+    MovieWatchProvider.__table__,
     WatchlistItem.__table__,
     AppUser.__table__,
     UserTrackedProfile.__table__,
@@ -63,6 +65,16 @@ def database() -> Session:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    # movie_watch_providers carries a CHECK using char_length, which sqlite has
+    # no equivalent for.
+    @event.listens_for(engine, "connect")
+    def _sqlite_compatibility(dbapi_connection, _connection_record):
+        dbapi_connection.create_function(
+            "char_length",
+            1,
+            lambda value: len(value) if value is not None else None,
+        )
+
     for table in TABLES:
         table.create(engine, checkfirst=True)
     db = sessionmaker(bind=engine, expire_on_commit=False)()
@@ -737,6 +749,8 @@ def test_route_serves_the_payload_for_a_tracked_profile(
         # one has a real chance of being loved and the other reliably does not.
         "crowd_ceiling",
         "crowd_floor",
+        # Whether it can be watched now, not just whether it is worth watching.
+        "streaming_on",
         "added_date",
         "days_waiting",
         "raters",
@@ -880,3 +894,48 @@ def test_a_film_with_no_histogram_reports_no_shape_rather_than_zero(
 
     assert entry["crowd_ceiling"] is None
     assert entry["crowd_floor"] is None
+
+
+def test_a_queued_film_reports_the_subscriptions_carrying_it(database: Session) -> None:
+    """A recommendation you cannot watch tonight is a different proposition."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    movie = _queued(database, subject, circle, "Streamable", other_ratings=[4.5])
+    database.add_all(
+        [
+            MovieWatchProvider(
+                movie_id=movie.id, provider_id=8, provider_name="Netflix",
+                provider_type="flatrate", region="DE",
+            ),
+            # A rental is a purchase decision, not something already paid for.
+            MovieWatchProvider(
+                movie_id=movie.id, provider_id=2, provider_name="Apple TV",
+                provider_type="rent", region="DE",
+            ),
+        ]
+    )
+    database.commit()
+
+    entry = _insights(database, subject, region="DE")["recommendations"][0]
+
+    assert entry["streaming_on"] == ["Netflix"]
+
+
+def test_a_region_with_no_imported_providers_reports_nothing_carried(
+    database: Session,
+) -> None:
+    """Empty means "not carried there", never "not streamable anywhere"."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    movie = _queued(database, subject, circle, "Streamable", other_ratings=[4.5])
+    database.add(
+        MovieWatchProvider(
+            movie_id=movie.id, provider_id=8, provider_name="Netflix",
+            provider_type="flatrate", region="DE",
+        )
+    )
+    database.commit()
+
+    entry = _insights(database, subject, region="US")["recommendations"][0]
+
+    assert entry["streaming_on"] == []
