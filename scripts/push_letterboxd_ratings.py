@@ -161,6 +161,10 @@ def push_ratings(
 ) -> Dict[str, Any]:
     """Send every batch, accumulating the API's per-batch counts."""
 
+    # Seeded with the counts the endpoint has always returned, but any further
+    # integer it reports is accumulated too. A fixed key set silently dropped
+    # ``distributions_written``, which is the only signal that the histograms
+    # this push exists to deliver actually arrived.
     totals = {"received": 0, "updated": 0, "unmatched": 0, "skipped": 0}
     batches = 0
     total_batches = (len(entries) + batch_size - 1) // batch_size
@@ -175,8 +179,10 @@ def push_ratings(
             bearer_token=bearer_token,
             timeout_seconds=timeout_seconds,
         )
-        for key in totals:
-            totals[key] += int(payload.get(key, 0) or 0)
+        for key, value in payload.items():
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            totals[key] = totals.get(key, 0) + value
     return {"batches": batches, **totals}
 
 
