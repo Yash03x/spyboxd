@@ -19,6 +19,7 @@ from api.routes.follow_graph import router as follow_graph_router
 from api.routes.insights import router as insights_router
 from api.routes.member_archive import router as member_archive_router
 from api.routes.profile_access import router as profile_access_router
+from api.routes.profile_stats import router as profile_stats_router
 from auth import ClerkUser, get_admin_user, get_current_user, get_upload_user
 from database.connection import engine, get_db, init_db
 from database.models import Movie, Profile, ProfileFavoriteMovie
@@ -387,6 +388,7 @@ app.include_router(activity_router)
 app.include_router(profile_access_router)
 app.include_router(follow_graph_router)
 app.include_router(member_archive_router)
+app.include_router(profile_stats_router)
 
 @app.get("/health")
 async def health_check():
