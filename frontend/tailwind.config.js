@@ -85,6 +85,7 @@ module.exports = {
         '3xl': '40px',
       },
       animation: {
+        'rise-in': 'riseIn 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
         'fade-in': 'fadeIn 0.5s ease-in-out',
         'fade-up': 'fadeUp 0.5s ease-out',
         'slide-in': 'slideIn 0.3s ease-out',
@@ -95,6 +96,16 @@ module.exports = {
         'shimmer': 'shimmer 2s linear infinite',
       },
       keyframes: {
+        // Entrance for anything whose visibility matters. Every other keyframe
+        // here starts at `opacity: 0`, which makes the animation own whether
+        // the content can be seen -- and an animation clock that never advances
+        // (a background tab freezes it at 0%) then leaves the page blank. This
+        // one only moves, so a frozen clock costs a few pixels of offset
+        // instead of the entire page.
+        riseIn: {
+          '0%': { transform: 'translateY(12px)' },
+          '100%': { transform: 'translateY(0)' },
+        },
         fadeIn: {
           '0%': { opacity: '0' },
           '100%': { opacity: '1' },

@@ -98,13 +98,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     : 'Account';
 
   return (
-    // Whether the app is visible at all must not depend on a JavaScript
-    // animation finishing. This wrapper used to fade the entire shell in, and
-    // an interrupted route change could strand it part-way -- three nested
-    // opacity animations multiply, so a stranded 0.16 here left the page at
-    // ~2% and read as blank. The entrance is CSS now: it cannot be interrupted
-    // into an invisible resting state.
-    <div className="min-h-screen flex flex-col lg:flex-row animate-fade-in">
+    // The shell has no entrance animation at all. It used to fade itself in,
+    // and because opacity multiplies down the tree that made the whole app's
+    // visibility depend on an animation finishing -- stranded, the page read as
+    // blank. Nothing decorative is worth that.
+    <div className="min-h-screen flex flex-col lg:flex-row">
       {/* Sidebar Navigation */}
       <motion.nav 
         className="relative z-50 w-full flex-shrink-0 border-b border-white/10 bg-[#081321]/95 backdrop-blur-xl lg:sticky lg:top-0 lg:h-screen lg:w-72 lg:border-b-0 lg:border-r lg:bg-black/20"
@@ -322,7 +320,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             opacity of 0. CSS replaces it, so a route change cannot leave
             content invisible. */}
         <div className="flex-1 p-4 sm:p-6">
-          <div key={pathname} className="animate-fade-up">
+          <div key={pathname} className="animate-rise-in">
             {children}
           </div>
         </div>
