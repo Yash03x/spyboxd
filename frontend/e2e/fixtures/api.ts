@@ -1072,7 +1072,9 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
             like_rate: 0.3,
             watch_share: 1,
             per_profile: [
-              { username: profiles[0].username, score: 78, sample_size: 42, average_rating: 3.9 },
+              // `sample_size` is films watched, `rated_sample_size` films rated; they
+              // differ in real data and the score is built from the latter.
+              { username: profiles[0].username, score: 78, sample_size: 42, rated_sample_size: 35, average_rating: 3.9 },
             ],
             top_movies: [],
           },

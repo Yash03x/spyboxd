@@ -2554,6 +2554,11 @@ class InsightsService:
                 all_ratings = []
                 liked_count = 0
                 top_movies: Dict[int, StateRow] = {}
+                # Ratings per film per profile, so "shared" examples can require
+                # that everybody actually rated the film. Keeping the single
+                # best row per movie put films only one profile had seen into a
+                # panel headed "Shared taste, real examples".
+                rated_by: Dict[int, Dict[int, float]] = defaultdict(dict)
                 for profile in profiles:
                     profile_rows = [row for row in rows if row.profile_id == profile.id]
                     ratings = [row.rating for row in profile_rows if row.rating is not None]
@@ -2565,6 +2570,8 @@ class InsightsService:
                         current = top_movies.get(row.movie_id)
                         if current is None or (row.rating or 0) > (current.rating or 0):
                             top_movies[row.movie_id] = row
+                        if row.rating is not None:
+                            rated_by[row.movie_id][profile.id] = row.rating
                     per_profile.append(
                         {
                             "username": profile.username,
@@ -2585,9 +2592,25 @@ class InsightsService:
                 average_rating = _average(all_ratings)
                 watch_share = len(present_profiles) / len(profiles)
                 score = ((average_rating or 0) / 5 * 70) + (watch_share * 30)
+                # Only films every selected profile rated, ranked by the
+                # weakest of those ratings: a film one person adored and another
+                # merely tolerated is not the best example of shared taste, and
+                # the maximum hid exactly that.
+                shared_movie_ids = {
+                    movie_id
+                    for movie_id, by_profile in rated_by.items()
+                    if len(by_profile) == len(profiles)
+                }
                 top_rows = sorted(
-                    top_movies.values(),
-                    key=lambda row: (-(row.rating or 0), row.movie.title),
+                    (
+                        row
+                        for movie_id, row in top_movies.items()
+                        if movie_id in shared_movie_ids
+                    ),
+                    key=lambda row: (
+                        -min(rated_by[row.movie_id].values()),
+                        row.movie.title,
+                    ),
                 )[:4]
                 trait = {
                     "id": f"{dimension}:{key}",

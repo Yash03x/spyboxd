@@ -737,7 +737,11 @@ export type TasteDimension =
 export interface TasteTraitProfileScore {
   username: string;
   score: number;
+  /** Films watched in this trait. */
   sample_size: number;
+  /** Films *rated* in this trait — the score is built from these alone, so a
+   *  zero here means "no opinion", not "disliked". */
+  rated_sample_size: number;
   average_rating: number | null;
 }
 

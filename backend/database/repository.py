@@ -30,6 +30,13 @@ def _format_month_bucket(year: int, month: int) -> str:
     return f"{int(year):04d}-{int(month):02d}"
 
 
+
+# Films two profiles must both have rated before their rating correlation is
+# trusted at full weight. Below it the correlation is pulled toward the
+# no-correlation midpoint: a perfect 1.0 from two shared ratings says nothing,
+# because any two points lie on a line.
+CORRELATION_PRIOR_FILMS = 8
+
 RATING_MIN = 0.0
 RATING_MAX = 5.0
 DASHBOARD_SNAPSHOT_FORMAT_VERSION = 3
@@ -537,6 +544,17 @@ def _merge_event_source_timing(
                 correlation_component = 0.5
             else:
                 correlation_component = 0.0
+            # A correlation over two films is structurally +/-1: two points
+            # always sit on a line. Taken at face value that paid the full 45%
+            # of the score, so a pair who had rated two films in common and
+            # happened to agree scored 80 -- level with a pair sharing 95 films
+            # and 48 ratings. Thin overlaps are pulled toward 0.5, which is the
+            # "no correlation" midpoint, in proportion to how thin they are.
+            correlation_weight = overlap_count / (overlap_count + CORRELATION_PRIOR_FILMS)
+            correlation_component = (
+                correlation_weight * correlation_component
+                + (1 - correlation_weight) * 0.5
+            )
             shared_titles = int(pair.get("shared_titles") or 0)
             shared_component = min(shared_titles / 20, 1.0)
             timing_component = min(
@@ -548,6 +566,11 @@ def _merge_event_source_timing(
                 max(0.0, 1.0 - (average_gap / 2.5))
                 if average_gap is not None
                 else 1.0
+            )
+            # The same thinness applies here: a 0.0 average gap across two films
+            # is not agreement, it is a coincidence with a small sample.
+            gap_component = (
+                correlation_weight * gap_component + (1 - correlation_weight) * 0.5
             )
             pair["alignment_score"] = _safe_round(
                 100
@@ -1755,6 +1778,24 @@ class AnalyticsRepository:
             gap_component = 1.0
             if average_rating_gap is not None:
                 gap_component = max(0.0, 1.0 - (average_rating_gap / 2.5))
+
+            # Both of these are rating-derived, and both are meaningless on a
+            # handful of films: any two points lie on a line, so a pair who had
+            # rated two films in common and agreed on them scored a perfect
+            # correlation and a zero gap, taking the full 55% those two
+            # components are worth. That put them level with a pair sharing 95
+            # films and 48 ratings. Shrink both toward the neutral midpoint in
+            # proportion to how thin the overlap is.
+            correlation_weight = rating_overlap_count / (
+                rating_overlap_count + CORRELATION_PRIOR_FILMS
+            )
+            correlation_component = (
+                correlation_weight * correlation_component
+                + (1 - correlation_weight) * 0.5
+            )
+            gap_component = (
+                correlation_weight * gap_component + (1 - correlation_weight) * 0.5
+            )
 
             alignment_score = (
                 (correlation_component * 0.45)
