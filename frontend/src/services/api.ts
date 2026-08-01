@@ -1566,6 +1566,10 @@ export interface WatchlistRecommendation {
   crowd_ceiling: number | null;
   /** Share that rated it 2.0 or below. */
   crowd_floor: number | null;
+  /** Subscription services carrying it in the requested region. Empty means
+   *  "not carried there", never "not streamable anywhere" — providers are only
+   *  imported per country. */
+  streaming_on?: string[];
   added_date: string | null;
   /** Null when the import carried no added date: an unknown wait, not a zero-day one. */
   days_waiting: number | null;
