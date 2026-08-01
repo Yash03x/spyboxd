@@ -181,15 +181,23 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: index * 0.1 + 0.7 }}
         >
+          {/* Letterboxd publishes no join date on a public profile page -- it
+              only appears in an account's own export -- so every scraped
+              profile read "Unknown" here. The first diary entry is something we
+              hold for everyone, and it answers the same question: how far back
+              does this person go. */}
           <div className="flex items-center space-x-2 mb-2">
             <CalendarIcon className="w-4 h-4 text-green-400" />
-            <span className="text-xs text-white/60 font-medium">Member Since</span>
+            <span className="text-xs text-white/60 font-medium">
+              {profile.join_date ? 'Member Since' : 'Logging Since'}
+            </span>
           </div>
           <div className="text-sm font-semibold text-white">
-            {profile.join_date 
+            {profile.join_date
               ? new Date(profile.join_date).getFullYear()
-              : 'Unknown'
-            }
+              : profile.first_logged_date
+                ? new Date(profile.first_logged_date).getFullYear()
+                : 'Unknown'}
           </div>
         </motion.div>
       </div>

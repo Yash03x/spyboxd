@@ -70,7 +70,9 @@ export const profiles = PROFILE_NAMES.map((username, index) => ({
   liked_films: 180 - index * 7,
   avg_rating: 3.4 + (index % 4) * 0.1,
   total_reviews: 80 - index * 3,
-  join_date: '2020-01-01',
+  // Export-only in reality; most profiles have none.
+  join_date: index === 0 ? '2020-01-01' : null,
+  first_logged_date: '2021-03-14',
   last_scraped_at: '2026-07-29T12:00:00Z',
   scraping_status: 'completed',
   data_coverage: {
@@ -961,7 +963,28 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
     });
   }
   if (path === '/api/recent-changes') {
-    return json(route, { generated_at: '2026-07-29T12:00:00Z', scope: 'latest_sync', changes: [] });
+    // Carries entries: an empty list disables the Investigate control, so the
+    // hand-off it performs was never exercised.
+    return json(route, {
+      generated_at: '2026-07-29T12:00:00Z',
+      scope: 'latest_sync',
+      changes: [
+        {
+          id: 1,
+          change_type: 'review_added',
+          entity_type: 'review',
+          detected_at: '2026-07-29T11:00:00Z',
+          source_date: '2026-07-28',
+          source_kind: 'full_html_upload',
+          source_dataset: 'reviews',
+          username: profiles[1].username,
+          movie: { id: 501, title: 'Fixture Film', year: 2024, poster_url: null },
+          list: null,
+          before: null,
+          after: null,
+        },
+      ],
+    });
   }
   if (path === '/api/spy-signals') {
     const selected = url.searchParams.getAll('profiles');
