@@ -85,8 +85,6 @@ def _film(
     *,
     year: Optional[int] = 2000,
     letterboxd_average: Optional[float] = None,
-    tmdb_vote_average: Optional[float] = None,
-    tmdb_vote_count: Optional[int] = None,
 ) -> Movie:
     movie_id = next(_MOVIE_IDS)
     movie = Movie(
@@ -99,22 +97,6 @@ def _film(
         letterboxd_average_rating=letterboxd_average,
     )
     database.add(movie)
-    if tmdb_vote_average is not None or tmdb_vote_count is not None:
-        details: dict[str, Any] = {}
-        if tmdb_vote_average is not None:
-            details["vote_average"] = tmdb_vote_average
-        if tmdb_vote_count is not None:
-            details["vote_count"] = tmdb_vote_count
-        database.add(
-            MovieEnrichment(
-                movie_id=movie_id,
-                genres=[],
-                keywords=[],
-                credits={},
-                production_countries=[],
-                raw_payload={"details": details},
-            )
-        )
     database.commit()
     return movie
 
@@ -335,62 +317,17 @@ def test_only_active_completed_profiles_count_towards_the_group(
     assert payload["most_generous"][0]["group_average"] == 3.0
 
 
-# --- TMDB is scored out of ten ----------------------------------------------
+# --- Letterboxd is the only external reference ------------------------------
 
 
-def test_tmdb_average_is_halved_onto_the_five_point_scale(database: Session) -> None:
-    subject = _profile(database, "subject")
-    circle = _circle(database)
-    _shared(
-        database,
-        subject,
-        circle,
-        "Eight Out Of Ten",
-        subject_rating=4.0,
-        other_ratings=[3.0, 3.0],
-        tmdb_vote_average=8.0,
-        tmdb_vote_count=1200,
-    )
-
-    payload = build_rating_comparison(database, subject)
-
-    # 8/10 is 4/5, so a 4.0 rating agrees exactly. Skipping the conversion
-    # would report a -4.0 delta against a nonsense 8-star crowd.
-    assert payload["most_generous"][0]["tmdb_average"] == 4.0
-    assert payload["summary"]["tmdb_delta"] == 0.0
-    assert payload["coverage"]["tmdb_average_films"] == 1
-
-
-def test_a_tmdb_film_with_no_votes_has_no_average(database: Session) -> None:
-    subject = _profile(database, "subject")
-    circle = _circle(database)
-    _shared(
-        database,
-        subject,
-        circle,
-        "Nobody Voted",
-        subject_rating=4.0,
-        other_ratings=[3.0, 3.0],
-        tmdb_vote_average=0.0,
-        tmdb_vote_count=0,
-    )
-
-    payload = build_rating_comparison(database, subject)
-
-    # An unvoted film reports 0.0; treating that as a crowd verdict would
-    # invent a +4.0 delta out of an absent opinion.
-    assert payload["coverage"]["tmdb_average_films"] == 0
-    assert payload["summary"]["tmdb_delta"] is None
-    assert payload["most_generous"][0]["tmdb_average"] is None
-
-
-def test_tmdb_delta_covers_every_rated_film_with_an_average(
+def test_letterboxd_delta_covers_every_rated_film_with_an_average(
     database: Session,
 ) -> None:
     subject = _profile(database, "subject")
     circle = _circle(database)
-    # Rated by the subject alone: no group comparison, but TMDB still applies.
-    lonely = _film(database, "Solo Watch", tmdb_vote_average=6.0, tmdb_vote_count=50)
+    # Rated by the subject alone: no group to compare against, but Letterboxd's
+    # crowd still has an opinion, so the film counts towards that reference.
+    lonely = _film(database, "Solo Watch", letterboxd_average=3.0)
     _rate(database, subject, lonely, 4.0)
     _shared(
         database,
@@ -399,16 +336,38 @@ def test_tmdb_delta_covers_every_rated_film_with_an_average(
         "Shared Watch",
         subject_rating=3.0,
         other_ratings=[3.0, 3.0],
-        tmdb_vote_average=7.0,
-        tmdb_vote_count=90,
+        letterboxd_average=3.5,
     )
 
     payload = build_rating_comparison(database, subject)
 
-    assert payload["coverage"]["tmdb_average_films"] == 2
+    assert payload["coverage"]["letterboxd_average_films"] == 2
     # (4.0 - 3.0) and (3.0 - 3.5) average to +0.25.
-    assert payload["summary"]["tmdb_delta"] == 0.25
+    assert payload["summary"]["letterboxd_delta"] == 0.25
     assert payload["coverage"]["compared_films"] == 1
+
+
+def test_a_zero_letterboxd_average_is_an_absent_opinion(database: Session) -> None:
+    subject = _profile(database, "subject")
+    circle = _circle(database)
+    _shared(
+        database,
+        subject,
+        circle,
+        "Zeroed Out",
+        subject_rating=4.0,
+        other_ratings=[3.0, 3.0],
+        letterboxd_average=0.0,
+    )
+
+    payload = build_rating_comparison(database, subject)
+
+    # Letterboxd never publishes a 0.0 crowd average -- no film can be rated
+    # below half a star -- so a stored zero is a missing figure. Comparing
+    # against it would invent a +4.0 delta out of an absent opinion.
+    assert payload["coverage"]["letterboxd_average_films"] == 0
+    assert payload["summary"]["letterboxd_delta"] is None
+    assert payload["most_generous"][0]["letterboxd_average"] is None
 
 
 # --- Letterboxd degrades to null until its backfill lands -------------------
@@ -698,12 +657,10 @@ def test_a_profile_with_no_overlap_returns_a_valid_payload(database: Session) ->
         "compared_films": 0,
         "min_raters": 2,
         "letterboxd_average_films": 0,
-        "tmdb_average_films": 0,
     }
     assert payload["summary"] == {
         "group_delta": None,
         "letterboxd_delta": None,
-        "tmdb_delta": None,
         "lean": None,
         "agreement": None,
     }
@@ -796,7 +753,6 @@ def test_route_serves_the_payload_for_a_tracked_profile(
         "delta",
         "rater_count",
         "letterboxd_average",
-        "tmdb_average",
     }
     assert set(payload["most_divisive"][0]) == {
         "title",

@@ -1280,8 +1280,8 @@ export interface RatingComparisonCoverage {
   compared_films: number;
   /** How many *other* profiles must have rated a film for it to count. */
   min_raters: number;
+  /** Rated films carrying Letterboxd's own crowd average, the one external reference. */
   letterboxd_average_films: number;
-  tmdb_average_films: number;
 }
 
 /** Which way this profile leans against its own circle. */
@@ -1290,10 +1290,11 @@ export type RatingComparisonLean = 'generous' | 'harsh' | 'aligned';
 export interface RatingComparisonSummary {
   /** Mean of (profile rating - group average). Null when nothing is comparable. */
   group_delta: number | null;
-  /** Null until the Letterboxd crowd-average backfill has run. */
+  /**
+   * Mean of (profile rating - Letterboxd crowd average) over the rated films
+   * that carry one. Null until the crowd-average backfill has reached them.
+   */
   letterboxd_delta: number | null;
-  /** Already rescaled to /5 by the API, unlike the per-film TMDB averages. */
-  tmdb_delta: number | null;
   lean: RatingComparisonLean | null;
   /** Pearson correlation of this profile's ratings against the group average. */
   agreement: number | null;
@@ -1309,9 +1310,8 @@ export interface RatingComparisonFilm {
   /** profile_rating - group_average: positive means rated above the circle. */
   delta: number;
   rater_count: number;
+  /** Letterboxd's crowd average, on the same five-point scale as every rating here. */
   letterboxd_average: number | null;
-  /** TMDB's own average, on TMDB's 10-point scale. */
-  tmdb_average: number | null;
 }
 
 export interface RatingComparisonDivisiveFilm {

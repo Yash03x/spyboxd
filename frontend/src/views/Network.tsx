@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { Trophy, Waypoints } from 'lucide-react';
@@ -10,6 +10,13 @@ import { followGraphApi } from '../services/api';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 
 export default function Network() {
+  // The graph reports which profile is centred so the ranking can follow the
+  // selection instead of sitting underneath it contradicting the view.
+  const [focusedUsername, setFocusedUsername] = useState<string | null>(null);
+  const handleFocusChange = useCallback((username: string | null) => {
+    setFocusedUsername(username);
+  }, []);
+
   const profilesQuery = useScopedProfiles();
   const completedProfiles = useMemo(
     () => (profilesQuery.data ?? []).filter((profile) => profile.scraping_status === 'completed'),
@@ -39,6 +46,16 @@ export default function Network() {
       .slice(0, 8);
   }, [mutualsQuery.data]);
 
+  // Where the centred profile sits in the ranking, so the panel answers a
+  // question about the selection rather than ignoring it.
+  const focusedEntry = useMemo(() => {
+    if (!focusedUsername) return null;
+    const index = ranking.findIndex(
+      (entry) => entry.username.toLowerCase() === focusedUsername.toLowerCase(),
+    );
+    return index === -1 ? null : { ...ranking[index], rank: index + 1 };
+  }, [focusedUsername, ranking]);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -56,29 +73,46 @@ export default function Network() {
         </p>
       </header>
 
-      <FollowNetwork profiles={completedProfiles} />
+      <FollowNetwork profiles={completedProfiles} onFocusChange={handleFocusChange} />
 
       {ranking.length > 0 && (
         <section className="rounded-xl border border-white/10 bg-white/5 p-4">
-          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-white/75">
+          <h2 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold text-white/75">
             <Trophy className="h-4 w-4 text-cinema-400" />
             Most connected
+            {focusedEntry && (
+              <span className="text-xs font-normal text-white/40">
+                @{focusedEntry.username} ranks #{focusedEntry.rank} of {ranking.length}
+              </span>
+            )}
           </h2>
           <ol className="grid gap-2 sm:grid-cols-2">
-            {ranking.map((entry, index) => (
-              <li
-                key={entry.username}
-                className="flex items-center justify-between rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-sm"
-              >
-                <span className="flex items-center gap-2 text-white/80">
-                  <span className="w-5 text-right text-xs text-white/35">{index + 1}.</span>
-                  @{entry.username}
-                </span>
-                <span className="text-xs text-white/45">
-                  follows {entry.follows} · followed by {entry.followedBy}
-                </span>
-              </li>
-            ))}
+            {ranking.map((entry, index) => {
+              const isFocused =
+                focusedUsername != null &&
+                entry.username.toLowerCase() === focusedUsername.toLowerCase();
+              return (
+                <li
+                  key={entry.username}
+                  aria-current={isFocused ? 'true' : undefined}
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition-colors ${
+                    isFocused
+                      ? 'border-cinema-400/40 bg-cinema-500/10'
+                      : focusedUsername
+                        ? 'border-white/5 bg-black/20 opacity-50'
+                        : 'border-white/5 bg-black/20'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-white/80">
+                    <span className="w-5 text-right text-xs text-white/35">{index + 1}.</span>
+                    @{entry.username}
+                  </span>
+                  <span className="text-xs text-white/45">
+                    follows {entry.follows} · followed by {entry.followedBy}
+                  </span>
+                </li>
+              );
+            })}
           </ol>
         </section>
       )}

@@ -320,12 +320,10 @@ export const ratingComparison = {
     compared_films: 312,
     min_raters: 2,
     letterboxd_average_films: 268,
-    tmdb_average_films: 295,
   },
   summary: {
     group_delta: 0.31,
     letterboxd_delta: -0.12,
-    tmdb_delta: 0.04,
     lean: 'generous',
     agreement: 0.62,
   },
@@ -340,7 +338,6 @@ export const ratingComparison = {
       delta: 1.75,
       rater_count: 4,
       letterboxd_average: 3.21,
-      tmdb_average: 6.8,
     },
     {
       title: 'Unenriched Champion',
@@ -352,7 +349,6 @@ export const ratingComparison = {
       delta: 1.5,
       rater_count: 3,
       letterboxd_average: null,
-      tmdb_average: null,
     },
   ],
   most_harsh: [
@@ -366,7 +362,6 @@ export const ratingComparison = {
       delta: -2.33,
       rater_count: 5,
       letterboxd_average: 3.94,
-      tmdb_average: 7.6,
     },
   ],
   most_divisive: [

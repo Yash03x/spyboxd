@@ -1,4 +1,4 @@
-"""Rating comparison: one profile's ratings against its circle, Letterboxd and TMDB."""
+"""Rating comparison: one profile's ratings against its circle and Letterboxd."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
@@ -28,9 +28,10 @@ def get_rating_comparison(
     Letterboxd can only ever show its own site-wide average, which is why this
     comparison does not exist there.
 
-    ``summary`` also reports the same profile against Letterboxd's crowd average
-    and TMDB's (halved from /10 onto the 5-point scale). The Letterboxd figures
-    stay null until that backfill lands; everything else is unaffected.
+    ``summary`` also reports the same profile against Letterboxd's own crowd
+    average, the single external reference point here. Those figures stay null
+    for any film the crowd-average backfill has not reached; everything else is
+    unaffected.
     """
 
     profile = require_profile_access(db, user, username)

@@ -72,16 +72,6 @@ function leanFromDelta(value: number | null): RatingComparisonLean {
   return 'aligned';
 }
 
-/**
- * TMDB publishes its averages out of 10 while every other figure on this panel
- * is out of 5. The API converts before differencing in `tmdb_delta`, but ships
- * per-film averages in TMDB's own scale, so they are halved here and the panel
- * says so once at the bottom rather than on every row.
- */
-function tmdbToFiveScale(value: number): number {
-  return value / 2;
-}
-
 function filmLabel(film: { title: string; year: number | null }): string {
   return film.year ? `${film.title} (${film.year})` : film.title;
 }
@@ -131,23 +121,56 @@ function FilmTitle({ film }: { film: { title: string; year: number | null; lette
   );
 }
 
+/**
+ * One crowd this film's rating is read against. The circle and Letterboxd are
+ * drawn as peers: Letterboxd's average is the only outside opinion the panel
+ * carries, so it sits beside the group average rather than trailing it as fine
+ * print.
+ */
+function ReferenceChip({
+  label,
+  value,
+  note,
+  tone,
+}: {
+  label: string;
+  value: number;
+  note?: string;
+  tone: 'circle' | 'letterboxd';
+}) {
+  const styles = tone === 'letterboxd'
+    ? 'border-cinema-400/25 bg-cinema-500/10 text-cinema-200'
+    : 'border-white/10 bg-white/5 text-white/65';
+  return (
+    <span className={`rounded-md border px-1.5 py-0.5 ${styles}`}>
+      <span className="opacity-60">{label}</span>{' '}
+      <span className="font-semibold">{value.toFixed(2)}</span>
+      {note ? <span className="opacity-50">{` · ${note}`}</span> : null}
+    </span>
+  );
+}
+
 function DeltaRow({ film }: { film: RatingComparisonFilm }) {
   const direction = directionOf(film.delta);
-  const references = [
-    `${film.profile_rating.toFixed(1)} vs group ${film.group_average.toFixed(2)}`,
-    raterNote(film.rater_count),
-    film.letterboxd_average === null ? null : `Letterboxd ${film.letterboxd_average.toFixed(2)}`,
-    film.tmdb_average === null ? null : `TMDB ${tmdbToFiveScale(film.tmdb_average).toFixed(2)}`,
-  ].filter((item): item is string => item !== null);
 
   return (
     <li className="flex items-center gap-3 rounded-xl border border-white/5 bg-black/20 px-3 py-2">
       <MoviePoster movie={toMovieSummary(film)} className="h-12 w-8" />
       <div className="min-w-0 flex-1">
         <FilmTitle film={film} />
-        <p className="mt-0.5 text-[11px] leading-4 tabular-nums text-white/40">
-          {references.join(' · ')}
-        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] leading-4 tabular-nums">
+          <span className="font-semibold text-white/80">{film.profile_rating.toFixed(1)}</span>
+          <span className="text-white/30">vs</span>
+          <ReferenceChip
+            label="circle"
+            value={film.group_average}
+            note={raterNote(film.rater_count)}
+            tone="circle"
+          />
+          {film.letterboxd_average === null ? null : (
+            <ReferenceChip label="Letterboxd" value={film.letterboxd_average} tone="letterboxd" />
+          )}
+        </div>
       </div>
       <span
         className={`shrink-0 rounded-lg border px-2 py-1 text-xs font-semibold tabular-nums ${DIRECTION_STYLES[direction].badge}`}
@@ -273,45 +296,22 @@ const RatingComparisonPanel: React.FC<{ username: string; delay?: number }> = ({
 
   const agreement = summary?.agreement ?? null;
 
-  const referenceTiles = [
-    summary?.letterboxd_delta === null || summary?.letterboxd_delta === undefined
-      ? null
-      : {
-          key: 'letterboxd',
-          label: 'vs Letterboxd crowd',
-          value: summary.letterboxd_delta,
-          films: coverage?.letterboxd_average_films ?? 0,
-          noun: "Letterboxd's crowd average",
-        },
-    summary?.tmdb_delta === null || summary?.tmdb_delta === undefined
-      ? null
-      : {
-          key: 'tmdb',
-          label: 'vs TMDB audience',
-          value: summary.tmdb_delta,
-          films: coverage?.tmdb_average_films ?? 0,
-          noun: "TMDB's audience average",
-        },
-  ].filter((tile): tile is {
-    key: string;
-    label: string;
-    value: number;
-    films: number;
-    noun: string;
-  } => tile !== null);
+  // Letterboxd's own crowd average is the sole outside reference point, so it
+  // gets the same treatment as the headline rather than a footnote's worth.
+  const letterboxdDelta = summary?.letterboxd_delta ?? null;
+  const letterboxdFilms = coverage?.letterboxd_average_films ?? 0;
+  const letterboxdDirection: Direction = letterboxdDelta === null
+    ? 'level'
+    : directionOf(letterboxdDelta);
+  const letterboxdStyle = DIRECTION_STYLES[letterboxdDirection];
+  const LetterboxdIcon = DIRECTION_ICONS[letterboxdDirection];
 
   const minRaters = coverage?.min_raters ?? 2;
   const coverageNote = `${formatCount(coverage?.compared_films ?? 0)} of ${formatCount(coverage?.rated_films ?? 0)} rated films could be compared — a film only counts once at least ${formatCount(minRaters)} other tracked ${minRaters === 1 ? 'profile has' : 'profiles have'} rated it too.`;
 
   // One quiet line for the whole panel rather than a caveat on every row.
-  const letterboxdPending = (coverage?.letterboxd_average_films ?? 0) === 0
-    ? 'Letterboxd’s own crowd average has not been fetched for these films yet, so that reference point is missing.'
-    : null;
-  const showsTmdb = referenceTiles.some((tile) => tile.key === 'tmdb')
-    || champions.some((film) => film.tmdb_average !== null)
-    || pans.some((film) => film.tmdb_average !== null);
-  const tmdbNote = showsTmdb
-    ? 'TMDB averages are rescaled from its 10-point scale to match Letterboxd’s five stars.'
+  const letterboxdPending = letterboxdFilms === 0
+    ? 'Letterboxd’s own crowd average has not been fetched for these films yet, so the outside reference point is missing.'
     : null;
 
   return (
@@ -329,7 +329,8 @@ const RatingComparisonPanel: React.FC<{ username: string; delay?: number }> = ({
         </h2>
       </div>
       <p className="mt-1 text-sm text-white/60">
-        Where @{username} sits against the profiles tracked alongside them, film by film.
+        Where @{username} sits against the profiles tracked alongside them — and against
+        Letterboxd’s own crowd — film by film.
       </p>
 
       <div
@@ -355,35 +356,35 @@ const RatingComparisonPanel: React.FC<{ username: string; delay?: number }> = ({
         ) : null}
       </div>
 
-      {referenceTiles.length > 0 ? (
-        <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {referenceTiles.map((tile) => {
-            const direction = directionOf(tile.value);
-            return (
-              <div
-                key={tile.key}
-                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2.5"
-              >
-                <dt className="text-[10px] font-semibold uppercase tracking-wide text-white/45">
-                  {tile.label}
-                </dt>
-                <dd className={`mt-1 text-lg font-bold tabular-nums ${DIRECTION_STYLES[direction].text}`}>
-                  {formatSignedDelta(tile.value)}
-                  <span className="ml-1.5 text-[11px] font-medium">
-                    {direction === 'level'
-                      ? 'in line'
-                      : direction === 'above'
-                        ? 'above'
-                        : 'below'}
-                  </span>
-                </dd>
-                <p className="mt-0.5 text-[10px] leading-4 text-white/35">
-                  {`${formatCount(tile.films)} films carry ${tile.noun}`}
-                </p>
-              </div>
-            );
-          })}
-        </dl>
+      {letterboxdDelta !== null ? (
+        <div
+          className={`mt-3 flex flex-col gap-3 rounded-2xl border px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between ${letterboxdStyle.panel}`}
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <LetterboxdIcon
+              className={`mt-0.5 h-5 w-5 shrink-0 ${letterboxdStyle.text}`}
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-white/45">
+                Against Letterboxd’s crowd
+              </p>
+              <p className={`mt-0.5 text-base font-semibold ${letterboxdStyle.text}`}>
+                {letterboxdDirection === 'level'
+                  ? 'Rates in line with the wider Letterboxd audience'
+                  : `Rates ${Math.abs(letterboxdDelta).toFixed(2)} ${letterboxdDirection} the wider Letterboxd audience`}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-white/45">
+                {`Averaged over the ${formatCount(letterboxdFilms)} of ${formatCount(coverage?.rated_films ?? 0)} rated films that carry Letterboxd’s own average.`}
+              </p>
+            </div>
+          </div>
+          <p
+            className={`shrink-0 text-2xl font-bold tabular-nums sm:text-right ${letterboxdStyle.text}`}
+          >
+            {formatSignedDelta(letterboxdDelta)}
+          </p>
+        </div>
       ) : null}
 
       {hasLists ? (
@@ -420,7 +421,7 @@ const RatingComparisonPanel: React.FC<{ username: string; delay?: number }> = ({
       ) : null}
 
       <p className="mt-5 text-[11px] leading-5 text-white/30">
-        {[coverageNote, letterboxdPending, tmdbNote]
+        {[coverageNote, letterboxdPending]
           .filter((note): note is string => note !== null)
           .join(' ')}
       </p>

@@ -4,8 +4,8 @@ Letterboxd shows a member their own rating beside its site-wide average and
 nothing else. We hold every tracked profile's rating for the same films, so a
 film can also carry a *local* average -- what this member's own circle thought
 of it -- and that is the comparison Letterboxd structurally cannot make. The
-same film therefore gets up to three reference points: the group, Letterboxd's
-crowd, and TMDB's crowd.
+same film therefore gets two reference points: the group, and Letterboxd's own
+crowd.
 
 Two rules keep the local comparison honest.
 
@@ -26,13 +26,13 @@ included, because a film everyone scores 4.5 except one holdout is not the same
 object as a film split down the middle. That needs three raters to mean
 anything, so the floor there is three in total rather than two others.
 
-The two external averages degrade independently and neither is required.
-``movies.letterboxd_average_rating`` is backfilled separately and is null until
-that lands, so every ``letterboxd_*`` field simply reports null and the rest of
-the payload is unaffected. TMDB scores out of ten and is halved onto
-Letterboxd's five-point scale before any subtraction -- comparing the two
-scales directly would silently double every TMDB delta. A TMDB average of 0.0
-with no votes is an absent opinion, not a terrible one, and is discarded.
+The Letterboxd average is the only external reference here, and it is never
+required. ``movies.letterboxd_average_rating`` is backfilled separately and is
+null for any film that backfill has not reached, so the ``letterboxd_*`` fields
+simply report null for it and the rest of the payload is unaffected. It is
+already on Letterboxd's own five-point scale -- the same scale as every rating
+in this module -- so nothing is converted between the two numbers being
+subtracted.
 
 Nothing here extrapolates: a profile that shares no film with anybody returns a
 complete payload of nulls and empty lists rather than zeros.
@@ -65,9 +65,6 @@ LEAN_THRESHOLD = 0.15
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
 
-# TMDB scores out of 10, Letterboxd out of 5.
-TMDB_SCALE_DIVISOR = 2.0
-
 
 @dataclass(frozen=True)
 class _FilmRow:
@@ -77,7 +74,6 @@ class _FilmRow:
     title: str
     profile_rating: Optional[float]
     letterboxd_average: Optional[float]
-    tmdb_average: Optional[float]  # already converted onto the 5-point scale
     other_ratings: Tuple[float, ...]
 
     @property
@@ -115,21 +111,6 @@ def _clamp_limit(limit: Optional[int]) -> int:
     except (TypeError, ValueError):
         return DEFAULT_LIMIT
     return max(1, min(value, MAX_LIMIT))
-
-
-def _tmdb_average_on_five(vote_average: Any, vote_count: Any) -> Optional[float]:
-    """Halve TMDB's /10 score, and treat an unvoted film as having no average.
-
-    TMDB reports ``vote_average`` 0.0 for films nobody has voted on. Taking that
-    at face value would invent a zero-star crowd opinion and hand the profile a
-    fake five-star delta, so it is discarded rather than compared.
-    """
-
-    average = _safe_float(vote_average)
-    votes = _safe_float(vote_count)
-    if average is None or average <= 0 or votes is None or votes < 1:
-        return None
-    return average / TMDB_SCALE_DIVISOR
 
 
 def _letterboxd_average(value: Any) -> Optional[float]:
@@ -175,26 +156,20 @@ def _other_ratings_by_movie(db: Session, profile_id: int) -> Dict[int, List[floa
 
 
 def _library_rows(db: Session, profile_id: int) -> List[_FilmRow]:
-    """Bulk-load the profile's library, its own ratings, and both site averages.
+    """Bulk-load the profile's library, its own ratings, and the site average.
 
-    ``raw_payload`` holds TMDB's entire response -- tens of megabytes across a
-    library -- so the two numbers needed from it are extracted by JSON path in
-    the database instead of shipping the document to Python.
+    Only the columns this comparison reads are selected, so a large library
+    never drags whole ``Movie`` rows into memory to reach four numbers.
     """
 
-    tmdb_vote_average = MovieEnrichment.raw_payload["details"]["vote_average"].as_float()
-    tmdb_vote_count = MovieEnrichment.raw_payload["details"]["vote_count"].as_float()
     rows = (
         db.query(
             ProfileFilm.movie_id,
             ProfileFilm.rating,
             Movie.title,
             Movie.letterboxd_average_rating,
-            tmdb_vote_average.label("tmdb_vote_average"),
-            tmdb_vote_count.label("tmdb_vote_count"),
         )
         .join(Movie, Movie.id == ProfileFilm.movie_id)
-        .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
         .filter(
             ProfileFilm.profile_id == profile_id,
             ProfileFilm.removed_at.is_(None),
@@ -208,10 +183,6 @@ def _library_rows(db: Session, profile_id: int) -> List[_FilmRow]:
             title=row.title or "",
             profile_rating=_safe_float(row.rating),
             letterboxd_average=_letterboxd_average(row.letterboxd_average_rating),
-            tmdb_average=_tmdb_average_on_five(
-                row.tmdb_vote_average,
-                row.tmdb_vote_count,
-            ),
             other_ratings=tuple(others.get(int(row.movie_id), ())),
         )
         for row in rows
@@ -286,7 +257,6 @@ def _film_delta(row: _FilmRow, identity: Dict[str, Any]) -> Dict[str, Any]:
         # which is the number ``coverage.min_raters`` is a floor on.
         "rater_count": len(row.other_ratings),
         "letterboxd_average": _round(row.letterboxd_average, 2),
-        "tmdb_average": _round(row.tmdb_average, 2),
     }
 
 
@@ -311,7 +281,7 @@ def build_rating_comparison(
     *,
     limit: int = DEFAULT_LIMIT,
 ) -> Dict[str, Any]:
-    """Compare one profile's ratings with its circle, Letterboxd and TMDB.
+    """Compare one profile's ratings with its circle and with Letterboxd.
 
     ``summary.group_delta`` is the mean of ``profile rating - group average``
     over every compared film, where each group average is taken over the other
@@ -335,11 +305,6 @@ def build_rating_comparison(
         row.profile_rating - row.letterboxd_average
         for row in rated
         if row.letterboxd_average is not None
-    ]
-    tmdb_pairs = [
-        row.profile_rating - row.tmdb_average
-        for row in rated
-        if row.tmdb_average is not None
     ]
 
     generous = _ordered(
@@ -384,12 +349,10 @@ def build_rating_comparison(
             "compared_films": len(compared),
             "min_raters": MIN_OTHER_RATERS,
             "letterboxd_average_films": len(letterboxd_pairs),
-            "tmdb_average_films": len(tmdb_pairs),
         },
         "summary": {
             "group_delta": rounded_group_delta,
             "letterboxd_delta": _round(_average(letterboxd_pairs), 2),
-            "tmdb_delta": _round(_average(tmdb_pairs), 2),
             "lean": _lean(rounded_group_delta),
             "agreement": _round(_agreement(compared), 2),
         },
