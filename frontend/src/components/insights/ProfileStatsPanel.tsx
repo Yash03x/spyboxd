@@ -327,6 +327,11 @@ function ReviewSection({
 }) {
   const liked = reviews.most_liked ?? [];
   const byYear = reviews.reviews_by_year ?? [];
+  // How much of each year's watching got written about. A rising review count
+  // can just mean a busier year, so the share is the honest trend line.
+  const writingRate = (reviews.writing_rate_by_year ?? []).filter(
+    (row) => row.share !== null,
+  );
   if (reviews.total_reviews === 0) return null;
 
   const subtitle = [
@@ -346,6 +351,33 @@ function ReviewSection({
         <p className="mt-2 text-[11px] leading-4 text-white/40">
           {`Longest: ${reviews.longest.title}${reviews.longest.year ? ` (${reviews.longest.year})` : ''}, ${formatCount(reviews.longest.length_chars)} characters`}
         </p>
+      ) : null}
+
+      {writingRate.length > 1 ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-white/35">
+            How much they write about
+          </p>
+          <div className="mt-2 space-y-1">
+            {writingRate.map((row) => (
+              <div key={row.year} className="flex items-center gap-2 text-[11px]">
+                <span className="w-9 shrink-0 tabular-nums text-white/40">{row.year}</span>
+                <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
+                  <span
+                    className="block h-full rounded-full bg-cinema-500"
+                    style={{ width: `${Math.max(2, (row.share ?? 0) * 100)}%` }}
+                  />
+                </span>
+                <span
+                  className="w-20 shrink-0 text-right tabular-nums text-white/45"
+                  title={`${row.reviews} of ${row.films_watched} films watched`}
+                >
+                  {Math.round((row.share ?? 0) * 100)}% of {row.films_watched}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       ) : null}
 
       {liked.length > 0 ? (
