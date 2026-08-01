@@ -147,8 +147,8 @@ const SpySignals: React.FC = () => {
   return (
     <motion.div
       className="space-y-6"
-      initial={{ opacity: 0, y: 18 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ y: 18 }}
+      animate={{ y: 0 }}
       transition={{ duration: 0.5 }}
     >
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

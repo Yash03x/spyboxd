@@ -358,8 +358,8 @@ const ProfileManager: React.FC = () => {
   return (
     <motion.div
       className="space-y-8"
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ y: 20 }}
+      animate={{ y: 0 }}
       transition={{ duration: 0.6 }}
     >
       <motion.div

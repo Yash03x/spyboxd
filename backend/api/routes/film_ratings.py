@@ -35,7 +35,7 @@ from api.dependencies import get_active_upload_user
 from auth import ClerkUser
 from database.connection import get_db
 from database.models import Movie
-from services.letterboxd_ratings import resolve_slug
+from services.letterboxd_ratings import BUCKET_KEYS, resolve_slug
 
 
 LOGGER = logging.getLogger("spyboxd.film_ratings")
@@ -62,11 +62,38 @@ class FilmRatingEntry(BaseModel):
     slug: str = Field(..., max_length=250)
     average_rating: Optional[float] = None
     rating_count: Optional[int] = None
+    rating_distribution: Optional[Dict[str, int]] = None
     synced_at: Optional[datetime] = None
 
 
 class FilmRatingBatch(BaseModel):
     ratings: List[FilmRatingEntry] = Field(..., min_length=1, max_length=MAX_BATCH_SIZE)
+
+
+def _usable_distribution(
+    distribution: Optional[Dict[str, int]]
+) -> Optional[Dict[str, int]]:
+    """Return the histogram if it is safe to store, otherwise ``None``.
+
+    Every key has to be one of the ten half-star buckets the scraper emits, but
+    *all ten* are not required: Letterboxd omits a bucket nobody has voted in,
+    and films in the tracked library really do come back with nine or seven.
+    Demanding a full ten here would drop those on the floor.
+
+    Sizes are bounded like ``rating_count`` and may not be negative, since the
+    column feeds a crowd-position share whose denominator is their sum. Pydantic
+    has already made every value an ``int`` by the time this runs, so only the
+    range is left to check here.
+    """
+
+    if not distribution:
+        return None
+    for key, size in distribution.items():
+        if key not in BUCKET_KEYS:
+            return None
+        if not 0 <= size <= MAX_RATING_COUNT:
+            return None
+    return dict(distribution)
 
 
 def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
@@ -117,18 +144,32 @@ def ingest_letterboxd_ratings(
     backfill applies in ``services.letterboxd_ratings``. A null ``rating_count``
     likewise leaves the stored count alone. ``synced_at`` records when the
     residential machine read the figure, falling back to the request time.
+
+    ``distributions_written`` and ``distributions_rejected`` are reported
+    alongside, and sit outside the ``received`` identity on purpose: the
+    histogram rides along with the average rather than replacing it, so a film
+    can be ``updated`` while carrying no usable histogram.
     """
 
     received = len(payload.ratings)
     request_time = datetime.now(timezone.utc)
 
-    # (slug, average, count, synced_at) for entries worth writing.
-    prepared: List[Tuple[str, float, Optional[int], datetime]] = []
+    # (slug, average, count, distribution, synced_at) for entries worth writing.
+    prepared: List[
+        Tuple[str, float, Optional[int], Optional[Dict[str, int]], datetime]
+    ] = []
     skipped = 0
+    distributions_rejected = 0
     for entry in payload.ratings:
         slug = resolve_slug(entry.slug, None)
         average = entry.average_rating
         count = entry.rating_count
+        distribution = _usable_distribution(entry.rating_distribution)
+        # A malformed histogram must not cost the film its average, which is the
+        # primary payload and validated separately. Drop the histogram, keep the
+        # average, and report the drop rather than swallowing it.
+        if entry.rating_distribution is not None and distribution is None:
+            distributions_rejected += 1
         usable = (
             slug is not None
             and average is not None
@@ -141,14 +182,21 @@ def ingest_letterboxd_ratings(
             skipped += 1
             continue
         prepared.append(
-            (slug.lower(), float(average), count, _as_utc(entry.synced_at) or request_time)
+            (
+                slug.lower(),
+                float(average),
+                count,
+                distribution,
+                _as_utc(entry.synced_at) or request_time,
+            )
         )
 
-    matches = _movies_by_slug(db, {slug for slug, _, _, _ in prepared})
+    matches = _movies_by_slug(db, {slug for slug, _, _, _, _ in prepared})
 
     updated = 0
     unmatched = 0
-    for slug, average, count, synced_at in prepared:
+    distributions_written = 0
+    for slug, average, count, distribution, synced_at in prepared:
         movies = matches.get(slug)
         if not movies:
             unmatched += 1
@@ -157,7 +205,13 @@ def ingest_letterboxd_ratings(
             movie.letterboxd_average_rating = average
             if count is not None:
                 movie.letterboxd_rating_count = count
+            # A null histogram is "this push carried none", not "the film has
+            # none", so it never clears one production already holds.
+            if distribution is not None:
+                movie.letterboxd_rating_distribution = distribution
             movie.letterboxd_rating_synced_at = synced_at
+        if distribution is not None:
+            distributions_written += 1
         updated += 1
 
     try:
@@ -173,4 +227,6 @@ def ingest_letterboxd_ratings(
         "updated": updated,
         "unmatched": unmatched,
         "skipped": skipped,
+        "distributions_written": distributions_written,
+        "distributions_rejected": distributions_rejected,
     }

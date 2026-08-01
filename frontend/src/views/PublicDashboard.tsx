@@ -48,8 +48,8 @@ export default function PublicDashboard() {
     <>
       <motion.section
         className="space-y-3 py-4"
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
+        initial={{ y: 16 }}
+        animate={{ y: 0 }}
       >
         <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cinema-300">Public dashboard</p>
         <h1 className="max-w-4xl text-4xl font-bold leading-tight text-white text-glow sm:text-5xl">

@@ -58,8 +58,8 @@ export default function Network() {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ y: 12 }}
+      animate={{ y: 0 }}
       transition={{ duration: 0.4 }}
       className="space-y-6"
     >

@@ -897,7 +897,37 @@ export default function FollowNetwork({
     );
   };
 
-  if (networkQuery.error) return null;
+  // Returning nothing here read as a blank page: leaving for a deep dive aborts
+  // the in-flight request, which lands the query in an error state that
+  // ``retry: false`` never leaves, so coming back rendered an empty panel with
+  // no way out. Say what happened and offer the way out instead.
+  if (networkQuery.error) {
+    return (
+      <motion.section
+        aria-label="Follow network"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.1 }}
+        className="panel-insight p-5"
+        data-testid="follow-network"
+      >
+        <header className="flex items-center gap-2.5">
+          <Share2 className="h-4 w-4 text-cinema-300" aria-hidden="true" />
+          <h2 className="text-lg font-bold text-white">Network</h2>
+        </header>
+        <p className="mt-3 text-sm text-white/55">
+          The follow network could not be loaded.
+        </p>
+        <button
+          type="button"
+          onClick={() => networkQuery.refetch()}
+          className="mt-3 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/80 transition hover:bg-white/10"
+        >
+          Try again
+        </button>
+      </motion.section>
+    );
+  }
 
   return (
     <motion.section

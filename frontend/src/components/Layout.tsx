@@ -83,12 +83,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const pathname = usePathname();
   const { isSignedIn } = useAuth();
   const currentUserQuery = useCurrentUser(Boolean(isSignedIn));
-  const [isLoaded, setIsLoaded] = useState(false);
   const [currentTime, setCurrentTime] = useState<Date | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
+  // The clock is client-only so the server and client markup agree.
   useEffect(() => {
-    setIsLoaded(true);
     setCurrentTime(new Date());
   }, []);
 
@@ -99,12 +98,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     : 'Account';
 
   return (
-    <motion.div 
-      className="min-h-screen flex flex-col lg:flex-row"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: isLoaded ? 1 : 0 }}
-      transition={{ duration: 0.8, ease: "easeOut" }}
-    >
+    // Whether the app is visible at all must not depend on a JavaScript
+    // animation finishing. This wrapper used to fade the entire shell in, and
+    // an interrupted route change could strand it part-way -- three nested
+    // opacity animations multiply, so a stranded 0.16 here left the page at
+    // ~2% and read as blank. The entrance is CSS now: it cannot be interrupted
+    // into an invisible resting state.
+    <div className="min-h-screen flex flex-col lg:flex-row animate-fade-in">
       {/* Sidebar Navigation */}
       <motion.nav 
         className="relative z-50 w-full flex-shrink-0 border-b border-white/10 bg-[#081321]/95 backdrop-blur-xl lg:sticky lg:top-0 lg:h-screen lg:w-72 lg:border-b-0 lg:border-r lg:bg-black/20"
@@ -315,25 +315,19 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
         </motion.header>
 
-        {/* Page Content with Animation */}
+        {/* Page content. Keyed on the path so the entrance replays per route.
+            `AnimatePresence mode="wait"` used to hold the incoming page until
+            the outgoing one finished exiting, which is what stranded it on a
+            browser Back: the enter never ran and the page sat at its initial
+            opacity of 0. CSS replaces it, so a route change cannot leave
+            content invisible. */}
         <div className="flex-1 p-4 sm:p-6">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={pathname}
-              initial={{ opacity: 0, y: 20, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -20, scale: 1.02 }}
-              transition={{ 
-                duration: 0.4, 
-                ease: [0.25, 0.46, 0.45, 0.94] 
-              }}
-            >
-              {children}
-            </motion.div>
-          </AnimatePresence>
+          <div key={pathname} className="animate-fade-up">
+            {children}
+          </div>
         </div>
       </main>
-    </motion.div>
+    </div>
   );
 };
 

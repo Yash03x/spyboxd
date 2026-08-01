@@ -147,7 +147,7 @@ def test_matching_slug_writes_the_letterboxd_average(client, database):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"received": 1, "updated": 1, "unmatched": 0, "skipped": 0}
+    assert response.json() == {"received": 1, "updated": 1, "unmatched": 0, "skipped": 0, "distributions_written": 0, "distributions_rejected": 0}
 
     stored = _reload(database, movie)
     assert stored.letterboxd_average_rating == pytest.approx(4.12)
@@ -169,7 +169,7 @@ def test_slug_matching_is_case_insensitive_in_both_directions(client, database):
         ],
     )
 
-    assert response.json() == {"received": 2, "updated": 2, "unmatched": 0, "skipped": 0}
+    assert response.json() == {"received": 2, "updated": 2, "unmatched": 0, "skipped": 0, "distributions_written": 0, "distributions_rejected": 0}
     assert _reload(database, stored_lower).letterboxd_average_rating == pytest.approx(4.12)
     assert _reload(database, stored_mixed).letterboxd_average_rating == pytest.approx(3.87)
 
@@ -186,7 +186,7 @@ def test_unknown_slugs_are_reported_not_fatal(client, database):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"received": 2, "updated": 1, "unmatched": 1, "skipped": 0}
+    assert response.json() == {"received": 2, "updated": 1, "unmatched": 1, "skipped": 0, "distributions_written": 0, "distributions_rejected": 0}
     # The rest of the batch still landed.
     assert _reload(database, known).letterboxd_average_rating == pytest.approx(4.12)
 
@@ -204,7 +204,7 @@ def test_out_of_range_averages_are_skipped_before_the_check_constraint(client, d
     )
 
     assert response.status_code == 200
-    assert response.json() == {"received": 2, "updated": 0, "unmatched": 0, "skipped": 2}
+    assert response.json() == {"received": 2, "updated": 0, "unmatched": 0, "skipped": 2, "distributions_written": 0, "distributions_rejected": 0}
     assert _reload(database, high).letterboxd_average_rating == pytest.approx(3.0)
     assert _reload(database, low).letterboxd_average_rating == pytest.approx(3.0)
 
@@ -223,7 +223,7 @@ def test_non_finite_averages_are_skipped(client, database, literal):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"received": 1, "updated": 0, "unmatched": 0, "skipped": 1}
+    assert response.json() == {"received": 1, "updated": 0, "unmatched": 0, "skipped": 1, "distributions_written": 0, "distributions_rejected": 0}
     assert _reload(database, movie).letterboxd_average_rating == pytest.approx(3.0)
 
 
@@ -239,7 +239,7 @@ def test_impossible_rating_counts_are_skipped(client, database, rating_count):
         ],
     )
 
-    assert response.json() == {"received": 1, "updated": 0, "unmatched": 0, "skipped": 1}
+    assert response.json() == {"received": 1, "updated": 0, "unmatched": 0, "skipped": 1, "distributions_written": 0, "distributions_rejected": 0}
     stored = _reload(database, movie)
     assert stored.letterboxd_average_rating == pytest.approx(3.0)
     assert stored.letterboxd_rating_count == 10
@@ -256,7 +256,7 @@ def test_null_average_never_clobbers_a_known_value(client, database):
 
     response = _post(client, [_entry("the-brutalist", average_rating=None, rating_count=999)])
 
-    assert response.json() == {"received": 1, "updated": 0, "unmatched": 0, "skipped": 1}
+    assert response.json() == {"received": 1, "updated": 0, "unmatched": 0, "skipped": 1, "distributions_written": 0, "distributions_rejected": 0}
     stored = _reload(database, movie)
     assert stored.letterboxd_average_rating == pytest.approx(4.12)
     assert stored.letterboxd_rating_count == 250_000
@@ -270,7 +270,7 @@ def test_null_rating_count_keeps_the_stored_count(client, database):
 
     response = _post(client, [_entry("the-brutalist", average_rating=4.2, rating_count=None)])
 
-    assert response.json() == {"received": 1, "updated": 1, "unmatched": 0, "skipped": 0}
+    assert response.json() == {"received": 1, "updated": 1, "unmatched": 0, "skipped": 0, "distributions_written": 0, "distributions_rejected": 0}
     stored = _reload(database, movie)
     assert stored.letterboxd_average_rating == pytest.approx(4.2)
     assert stored.letterboxd_rating_count == 250_000
@@ -302,7 +302,7 @@ def test_counts_always_account_for_every_submitted_entry(client, database):
     body = response.json()
     assert body["received"] == 4
     assert body["updated"] + body["unmatched"] + body["skipped"] == body["received"]
-    assert body == {"received": 4, "updated": 1, "unmatched": 1, "skipped": 2}
+    assert body == {"received": 4, "updated": 1, "unmatched": 1, "skipped": 2, "distributions_written": 0, "distributions_rejected": 0}
 
 
 def test_oversized_batch_is_rejected_outright(client, database):
@@ -382,3 +382,111 @@ def test_pusher_respects_the_limit_and_chunks_into_batches(database):
 
     assert len(entries) == 3
     assert [len(batch) for batch in batches] == [2, 1]
+
+
+# --- Rating distribution ----------------------------------------------------
+#
+# The histogram is the crowd-position feature's whole input. The migration and
+# the read path shipped before this transport existed, so production held the
+# column and no way to fill it; these pin the delivery.
+
+_HISTOGRAM = {
+    "0.5": 3, "1.0": 31, "1.5": 21, "2.0": 103, "2.5": 75,
+    "3.0": 114, "3.5": 22, "4.0": 16, "4.5": 2, "5.0": 2,
+}
+
+
+def test_a_histogram_reaches_the_column_the_read_path_expects(client, database):
+    movie = _film(database, "the-brutalist")
+
+    response = _post(client, [_entry("the-brutalist", rating_distribution=_HISTOGRAM)])
+
+    assert response.status_code == 200
+    assert response.json()["distributions_written"] == 1
+    assert _reload(database, movie).letterboxd_rating_distribution == _HISTOGRAM
+
+
+def test_a_partial_histogram_is_kept_because_letterboxd_omits_empty_buckets(
+    client, database
+):
+    """Films really do come back with fewer than ten buckets.
+
+    Letterboxd renders no row for a rating nobody has given, so demanding all
+    ten would silently drop real films rather than store what they have.
+    """
+    movie = _film(database, "obscure-short")
+    partial = {"2.0": 4, "3.0": 9, "3.5": 1}
+
+    response = _post(client, [_entry("obscure-short", rating_distribution=partial)])
+
+    assert response.json()["distributions_written"] == 1
+    assert _reload(database, movie).letterboxd_rating_distribution == partial
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param({"6.0": 10}, id="bucket outside the half-star scale"),
+        pytest.param({"3": 10}, id="unpadded key the scraper never emits"),
+        pytest.param({"3.0": -1}, id="negative bucket size"),
+        pytest.param({"3.0": 10**13}, id="impossible bucket size"),
+        pytest.param({"": 5}, id="empty key"),
+    ],
+)
+def test_a_malformed_histogram_is_rejected_without_costing_the_film_its_average(
+    client, database, bad
+):
+    """The average is the primary payload and is validated separately.
+
+    A histogram this endpoint cannot trust must not take a good average down
+    with it, and must be reported rather than dropped in silence.
+    """
+    movie = _film(database, "the-brutalist")
+
+    response = _post(
+        client, [_entry("the-brutalist", average_rating=4.2, rating_distribution=bad)]
+    )
+
+    body = response.json()
+    assert body["updated"] == 1
+    assert body["distributions_written"] == 0
+    assert body["distributions_rejected"] == 1
+    stored = _reload(database, movie)
+    assert stored.letterboxd_average_rating == 4.2
+    assert stored.letterboxd_rating_distribution is None
+
+
+def test_a_push_carrying_no_histogram_never_clears_one_already_stored(client, database):
+    """A null means "this push carried none", not "the film has none"."""
+    movie = _film(database, "the-brutalist")
+    _post(client, [_entry("the-brutalist", rating_distribution=_HISTOGRAM)])
+
+    response = _post(client, [_entry("the-brutalist", average_rating=4.4)])
+
+    body = response.json()
+    assert body["updated"] == 1
+    assert body["distributions_written"] == 0
+    assert body["distributions_rejected"] == 0
+    stored = _reload(database, movie)
+    assert stored.letterboxd_average_rating == 4.4
+    assert stored.letterboxd_rating_distribution == _HISTOGRAM
+
+
+def test_the_pusher_sends_the_histogram_it_holds(database):
+    """collect_ratings must carry the column, or nothing reaches production."""
+    _film(database, "the-brutalist", average=4.1)
+    stored = database.query(Movie).filter(Movie.letterboxd_slug == "the-brutalist").one()
+    stored.letterboxd_rating_distribution = _HISTOGRAM
+    database.commit()
+
+    entries, _ = collect_ratings(database)
+
+    assert [entry["rating_distribution"] for entry in entries] == [_HISTOGRAM]
+
+
+def test_the_pusher_sends_null_for_a_film_with_no_histogram(database):
+    _film(database, "unscraped", average=3.3)
+
+    entries, _ = collect_ratings(database)
+
+    assert entries[0]["rating_distribution"] is None
