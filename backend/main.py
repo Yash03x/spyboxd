@@ -27,7 +27,7 @@ from api.routes.watchlist_insights import router as watchlist_insights_router
 from api.routes.rating_comparison import router as rating_comparison_router
 from auth import ClerkUser, get_admin_user, get_current_user, get_upload_user
 from database.connection import engine, get_db, init_db
-from database.models import Movie, Profile, ProfileFavoriteMovie
+from database.models import Movie, Profile, ProfileFavoriteMovie, WatchEvent
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
@@ -51,6 +51,7 @@ from services.operational_health import (
     readiness_report,
     rss_operational_report,
 )
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -512,7 +513,21 @@ def extract_zip_file(uploaded_file, temp_dir):
 def _serialize_profiles(db: Session, profiles) -> dict:
     rating_repo = RatingRepository(db)
     profile_list = []
-    for profile in (profile for profile in profiles if profile.is_active):
+    active = [profile for profile in profiles if profile.is_active]
+    # Letterboxd does not publish a join date on a public profile page -- it
+    # only appears in an account's own export -- so every scraped profile has
+    # none and the card read "Member Since: Unknown" for all but one. The first
+    # logged diary entry is something we do hold for everyone, and for the one
+    # profile that has both they agree to within a week.
+    first_logged: Dict[int, Any] = {}
+    if active:
+        first_logged = dict(
+            db.query(WatchEvent.profile_id, func.min(WatchEvent.watched_date))
+            .filter(WatchEvent.profile_id.in_([profile.id for profile in active]))
+            .group_by(WatchEvent.profile_id)
+            .all()
+        )
+    for profile in active:
         profile_dict = profile.to_dict()
         all_entries = rating_repo.get_ratings_by_profile(profile.id)
         
@@ -532,6 +547,8 @@ def _serialize_profiles(db: Session, profiles) -> dict:
             profile_dict['avg_rating'] = 0
 
         profile_dict['data_coverage'] = extract_data_coverage(profile.enhanced_metrics)
+        earliest = first_logged.get(profile.id)
+        profile_dict['first_logged_date'] = earliest.isoformat() if earliest else None
             
         profile_list.append(profile_dict)
     

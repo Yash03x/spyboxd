@@ -54,6 +54,10 @@ export interface DataCoverage {
 }
 
 export interface ProfileInfo {
+  /** Earliest diary entry we hold, derived from watch events, so it exists for
+   *  every synced profile. `join_date` is the real answer but appears only in
+   *  an account's own export, never on a public profile page. */
+  first_logged_date?: string | null;
   username: string;
   display_name?: string | null;
   profile_image_url?: string | null;

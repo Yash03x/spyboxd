@@ -138,8 +138,22 @@ export default function RecentChangesCard({
           </div>
         )}
 
-        <button type="button" onClick={() => router.push('/spy-signals')} className="btn-ghost flex shrink-0 items-center justify-center gap-2 border-white/10 px-3 py-2 text-xs">
-          Investigate <ArrowRight className="h-3.5 w-3.5" />
+        {/* This card is about what changed, so "Investigate" opens the deep
+            dive for the profile that changed most recently. It used to push to
+            /spy-signals -- the same destination as the button beside it, and a
+            different question entirely: co-watch timing rather than this
+            profile's own new activity. */}
+        <button
+          type="button"
+          onClick={() => {
+            const latest = changes[0]?.username;
+            router.push(latest ? `/analysis?profile=${encodeURIComponent(latest)}` : '/analysis');
+          }}
+          disabled={changes.length === 0}
+          className="btn-ghost flex shrink-0 items-center justify-center gap-2 border-white/10 px-3 py-2 text-xs disabled:opacity-40"
+        >
+          {changes[0] ? `Investigate @${changes[0].username}` : 'Investigate'}
+          <ArrowRight className="h-3.5 w-3.5" />
         </button>
       </div>
     </div>
