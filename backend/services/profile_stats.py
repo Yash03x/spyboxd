@@ -22,10 +22,10 @@ reviewing changes a rating.
 """
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -479,16 +479,109 @@ def _distinct(buckets: Mapping[str, Dict[str, Any]]) -> Optional[int]:
 # --- rewatches --------------------------------------------------------------
 
 
+def _median(values: Sequence[int]) -> Optional[int]:
+    """Middle value, so one very old revisit cannot drag the typical one."""
+
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return int(round((ordered[middle - 1] + ordered[middle]) / 2))
+
+
+def build_return_journeys(
+    events: Sequence[Tuple[int, date, Optional[float]]]
+) -> Dict[str, Any]:
+    """How long before somebody goes back to a film, and whether the score moves.
+
+    ``events`` is (movie_id, watched_date, rating). Unlike the two averages
+    below this IS a paired measurement: the same person rating the same film on
+    two separate viewings, so the difference is the effect of the revisit rather
+    than a difference between two sets of films.
+
+    Only films whose viewings fall on different dates count. A rewatch logged on
+    the same day as the first viewing carries no interval and says nothing about
+    returning to something later.
+    """
+
+    by_movie: Dict[int, List[Tuple[date, Optional[float]]]] = defaultdict(list)
+    for movie_id, watched, rating in events:
+        if watched is not None:
+            by_movie[movie_id].append((watched, rating))
+
+    gaps: List[int] = []
+    rose = 0
+    fell = 0
+    held = 0
+    deltas: List[float] = []
+    for viewings in by_movie.values():
+        if len(viewings) < 2:
+            continue
+        viewings.sort(key=lambda item: item[0])
+        first_date, _ = viewings[0]
+        last_date, _ = viewings[-1]
+        if last_date <= first_date:
+            continue
+        gaps.append((last_date - first_date).days)
+
+        rated = [(day, rating) for day, rating in viewings if rating is not None]
+        if len(rated) < 2:
+            continue
+        first_rating = rated[0][1]
+        last_rating = rated[-1][1]
+        delta = round(last_rating - first_rating, 2)
+        deltas.append(delta)
+        if delta > 0:
+            rose += 1
+        elif delta < 0:
+            fell += 1
+        else:
+            held += 1
+
+    return {
+        "revisited_films": len(gaps),
+        "median_days_to_return": _median(gaps) if gaps else None,
+        # The paired half: only films this profile rated on two separate
+        # viewings, which is a far smaller set than the one above.
+        "rated_twice": len(deltas),
+        "rating_rose": rose,
+        "rating_fell": fell,
+        "rating_held": held,
+        "average_change": _round(_average(deltas), 2) if deltas else None,
+    }
+
+
+def _return_events(db: Session, profile_id: int) -> List[Tuple[int, date, Optional[float]]]:
+    """(movie_id, watched_date, rating) for every active dated watch event."""
+
+    return [
+        (int(movie_id), watched, float(rating) if rating is not None else None)
+        for movie_id, watched, rating in db.query(
+            WatchEvent.movie_id, WatchEvent.watched_date, WatchEvent.rating
+        )
+        .filter(
+            WatchEvent.profile_id == profile_id,
+            WatchEvent.superseded_at.is_(None),
+            WatchEvent.watched_date.isnot(None),
+        )
+        .all()
+    ]
+
+
 def _rewatch_block(films: Sequence[_FilmRow]) -> Dict[str, Any]:
     """What a profile returns to, and how it rates the films it returns to.
 
     ``average_rating_rewatched`` and ``average_rating_once`` are two ordinary
     averages over two disjoint halves of the same profile's library -- the
     films carrying at least one rewatch, and the films seen exactly once. They
-    are not a paired measurement: nobody rated the same film twice here, the
-    films someone chooses to revisit are self-selected, and each side ignores
-    the films that profile never rated. A gap between them describes which
-    films get revisited, not what revisiting does to a rating.
+    are not a paired measurement: they compare two self-selected sets of films
+    and each side ignores the films that profile never rated, so a gap between
+    them describes which films get revisited, not what revisiting does to a
+    rating. ``return_journeys`` answers that question properly, from the
+    per-viewing ratings on watch events -- the same person, the same film,
+    twice.
 
     ``most_rewatched`` ranks by ``watch_count`` because that is the figure it
     reports, and lists only films with a rewatch -- a film seen once is not a
@@ -792,6 +885,9 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
             "director": _highest_rated(directors, label_key="name"),
         },
         "rewatches": _rewatch_block(films),
+        # A genuine paired measurement, unlike the two averages inside
+        # ``rewatches``: the same person, the same film, two viewings.
+        "return_journeys": build_return_journeys(_return_events(db, profile.id)),
         "reviews": _review_block(reviews, films),
         "letterboxd_reported": profile.stats_snapshot,
     }

@@ -276,6 +276,8 @@ export const profileAnalysis = {
         year: 1999,
         poster_url: null,
         letterboxd_url: 'https://letterboxd.com/film/favourite-one/',
+        in_library: true,
+        own_rating: 5,
       },
       {
         position: 2,
@@ -283,6 +285,8 @@ export const profileAnalysis = {
         year: 2004,
         poster_url: null,
         letterboxd_url: 'https://letterboxd.com/film/favourite-two/',
+        in_library: false,
+        own_rating: null,
       },
     ],
     synced_films: 1_200,
@@ -412,6 +416,17 @@ export const profileStats = {
   },
   // Folded into the same panel. One rewatched film is unrated and one review
   // has no publication date, so both omission branches render.
+  // Paired: the same person, the same film, two viewings. A much smaller set
+  // than the revisit count, because both viewings have to carry a rating.
+  return_journeys: {
+    revisited_films: 12,
+    median_days_to_return: 674,
+    rated_twice: 12,
+    rating_rose: 5,
+    rating_fell: 1,
+    rating_held: 6,
+    average_change: 0.38,
+  },
   rewatches: {
     total_rewatches: 64,
     films_rewatched: 41,

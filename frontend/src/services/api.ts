@@ -148,6 +148,11 @@ export interface ProfileFavoriteFilm {
   year: number | null;
   poster_url: string | null;
   letterboxd_url: string | null;
+  /** Whether the film appears in this profile's own library at all. A stated
+   *  favourite that was never logged is a different claim from a logged one. */
+  in_library: boolean;
+  /** Their own rating, or null when logged without one. */
+  own_rating: number | null;
 }
 
 /**
@@ -1417,6 +1422,17 @@ export interface ProfileStatsResponse {
    * say "none yet" instead of guessing whether the block failed to compute.
    */
   rewatches: ProfileStatsRewatches;
+  /** A paired measurement, unlike the averages inside `rewatches`: the same
+   *  person rating the same film on two separate viewings. */
+  return_journeys: {
+    revisited_films: number;
+    median_days_to_return: number | null;
+    rated_twice: number;
+    rating_rose: number;
+    rating_fell: number;
+    rating_held: number;
+    average_change: number | null;
+  };
   reviews: ProfileStatsReviews;
   /**
    * Letterboxd's own stats-page figures, verbatim, for side-by-side
