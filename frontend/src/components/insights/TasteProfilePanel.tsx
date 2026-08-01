@@ -93,8 +93,18 @@ const TasteProfilePanel: React.FC<{ username: string; delay?: number }> = ({
                         style={{ width: `${Math.max(2, score)}%` }}
                       />
                     </span>
-                    <span className="w-9 shrink-0 text-right text-xs tabular-nums text-white/45">
+                    {/* Without the sample size a trait built from two films
+                        reads exactly like one built from twenty-five, and for a
+                        single profile the score tops out at 100% on two
+                        five-star films. */}
+                    <span
+                      className="w-9 shrink-0 text-right text-xs tabular-nums text-white/45"
+                      title={`${score}% from ${trait.sample_size} ${trait.sample_size === 1 ? 'film' : 'films'}`}
+                    >
                       {score}%
+                    </span>
+                    <span className="w-12 shrink-0 text-right text-[10px] tabular-nums text-white/30">
+                      {trait.sample_size} {trait.sample_size === 1 ? 'film' : 'films'}
                     </span>
                   </li>
                 );

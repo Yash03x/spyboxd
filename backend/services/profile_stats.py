@@ -316,6 +316,10 @@ def _entry(
     if include_code:
         entry["code"] = bucket["code"]
     entry["count"] = bucket["count"]
+    # `count` is every film in the bucket; the average is over the rated ones
+    # only. Presenting them together read as "4.6 average across 12 films" when
+    # the average came from three, so the rated count travels with it.
+    entry["rated_count"] = len(bucket["ratings"])
     entry["average_rating"] = _round(_average(bucket["ratings"]), 2)
     return entry
 

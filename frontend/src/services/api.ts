@@ -1282,12 +1282,16 @@ export interface ProfileStatsTotals {
 export interface ProfileStatsPerson {
   name: string;
   count: number;
+  /** Films in this bucket that carry a rating — the average's real denominator. */
+  rated_count: number;
   average_rating: number | null;
 }
 
 export interface ProfileStatsBucket {
   label: string;
   count: number;
+  /** Films in this bucket that carry a rating — the average's real denominator. */
+  rated_count: number;
   average_rating: number | null;
 }
 
@@ -1301,9 +1305,10 @@ export interface ProfileStatsCountryBucket extends ProfileStatsBucket {
  * always present here even though it is nullable in the plain buckets.
  */
 export interface ProfileStatsHighestRated {
-  genre: { label: string; count: number; average_rating: number } | null;
-  decade: { label: string; count: number; average_rating: number } | null;
-  director: { name: string; count: number; average_rating: number } | null;
+  /** `count` is every film in the bucket; `rated_count` is the average's denominator. */
+  genre: { label: string; count: number; rated_count: number; average_rating: number } | null;
+  decade: { label: string; count: number; rated_count: number; average_rating: number } | null;
+  director: { name: string; count: number; rated_count: number; average_rating: number } | null;
 }
 
 export interface ProfileStatsRewatchedFilm {
@@ -1457,7 +1462,10 @@ export interface RatingComparisonDivisiveFilm {
   letterboxd_url: string | null;
   /** Widest gap between any two ratings of this film across all profiles. */
   rating_spread: number;
+  /** Everyone who rated it — the spread's denominator, including this profile. */
   rater_count: number;
+  /** The others only — the group average's denominator. */
+  group_rater_count: number;
   group_average: number;
   /** Null when this profile has not rated a film the rest of the group split over. */
   profile_rating: number | null;

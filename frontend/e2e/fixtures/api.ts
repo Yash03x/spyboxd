@@ -389,10 +389,12 @@ export const profileStats = {
     { label: '1990s', count: 260, average_rating: 3.9 },
     { label: '2000s', count: 310, average_rating: 3.6 },
   ],
+  // `count` is the bucket; `rated_count` is what the average was built from.
+  // They differ in real data, so the fixture makes them differ here too.
   highest_rated: {
-    genre: { label: 'Documentary', count: 34, average_rating: 4.15 },
-    decade: { label: '1970s', count: 90, average_rating: 4 },
-    director: { name: 'Akira Kurosawa', count: 18, average_rating: 4.3 },
+    genre: { label: 'Documentary', count: 34, rated_count: 29, average_rating: 4.15 },
+    decade: { label: '1970s', count: 90, rated_count: 71, average_rating: 4 },
+    director: { name: 'Akira Kurosawa', count: 18, rated_count: 12, average_rating: 4.3 },
   },
   // Folded into the same panel. One rewatched film is unrated and one review
   // has no publication date, so both omission branches render.
@@ -650,6 +652,7 @@ export const ratingComparison = {
       letterboxd_url: 'https://letterboxd.com/film/divisive-fixture-film/',
       rating_spread: 3,
       rater_count: 6,
+      group_rater_count: 5,
       group_average: 3.08,
       profile_rating: 4.5,
     },
@@ -660,6 +663,7 @@ export const ratingComparison = {
       letterboxd_url: null,
       rating_spread: 2.5,
       rater_count: 4,
+      group_rater_count: 3,
       group_average: 2.88,
       profile_rating: null,
     },

@@ -383,6 +383,7 @@ def test_studios_come_from_the_raw_payload_production_companies(database: Sessio
     assert stats["top_studios"][0] == {
         "name": "A24",
         "count": 2,
+        "rated_count": 0,
         "average_rating": None,
     }
     assert stats["totals"]["distinct_studios"] == 2
@@ -409,6 +410,7 @@ def test_highest_rated_ignores_buckets_below_three_rated_films(database: Session
     assert stats["highest_rated"]["genre"] == {
         "label": "Drama",
         "count": 3,
+        "rated_count": 3,
         "average_rating": 4.0,
     }
 
@@ -424,7 +426,7 @@ def test_highest_rated_is_null_when_nothing_clears_the_floor(database: Session) 
     assert stats["highest_rated"] == {"genre": None, "decade": None, "director": None}
     # The genre still appears in the distribution, with its honest average.
     assert stats["genres"] == [
-        {"label": "Horror", "count": 2, "average_rating": 5.0}
+        {"label": "Horror", "count": 2, "rated_count": 1, "average_rating": 5.0}
     ]
 
 
@@ -437,7 +439,7 @@ def test_bucket_averages_use_only_rated_films(database: Session) -> None:
     stats = build_profile_stats(database, profile)
 
     assert stats["genres"] == [
-        {"label": "Comedy", "count": 3, "average_rating": 4.0}
+        {"label": "Comedy", "count": 3, "rated_count": 2, "average_rating": 4.0}
     ]
     assert stats["coverage"]["rated_films"] == 2
     assert stats["totals"]["average_rating"] == 4.0
@@ -475,7 +477,7 @@ def test_a_profile_with_no_enrichment_returns_nulls_not_zeros(database: Session)
     ):
         assert totals[dimension] is None, dimension
     # Decade survives without TMDB: the release year comes from the film row.
-    assert stats["decades"] == [{"label": "2000s", "count": 1, "average_rating": 4.5}]
+    assert stats["decades"] == [{"label": "2000s", "count": 1, "rated_count": 1, "average_rating": 4.5}]
     assert stats["top_directors"] == []
     assert stats["highest_rated"]["director"] is None
     assert stats["letterboxd_reported"] is None
@@ -526,7 +528,7 @@ def test_malformed_enrichment_payloads_never_crash(database: Session) -> None:
 
     stats = build_profile_stats(database, profile)
 
-    assert stats["genres"] == [{"label": "Drama", "count": 1, "average_rating": None}]
+    assert stats["genres"] == [{"label": "Drama", "count": 1, "rated_count": 0, "average_rating": None}]
     assert stats["top_directors"] == []
     assert stats["top_studios"] == []
     assert stats["decades"] == []
@@ -558,8 +560,8 @@ def test_countries_carry_their_iso_code_and_languages_are_named(database: Sessio
     stats = build_profile_stats(database, profile)
 
     assert stats["countries"] == [
-        {"label": "Latvia", "code": "LV", "count": 1, "average_rating": None},
-        {"label": "South Korea", "code": "KR", "count": 1, "average_rating": None},
+        {"label": "Latvia", "code": "LV", "count": 1, "rated_count": 0, "average_rating": None},
+        {"label": "South Korea", "code": "KR", "count": 1, "rated_count": 0, "average_rating": None},
     ]
     # A code the payload never names falls back to the uppercased code itself.
     assert sorted(entry["label"] for entry in stats["languages"]) == ["Korean", "LV"]
@@ -1128,3 +1130,29 @@ def test_route_refuses_an_untracked_profile(database: Session, client) -> None:
     response = client(user).get(f"/api/profiles/{profile.username}/stats")
 
     assert response.status_code == 403
+
+
+def test_a_bucket_reports_the_denominator_its_average_was_built_from(database):
+    """`count` is every film in the bucket; the average covers the rated ones.
+
+    The highlight card read "{average} average across {count} films", so a
+    director with twelve films and three ratings advertised a three-rating
+    average over twelve. The rated count now travels with the average.
+    """
+    profile = _profile(database, "viewer")
+    for index in range(4):
+        _film(
+            database,
+            profile,
+            title=f"Horror {index}",
+            # Only the first two carry a rating.
+            rating=5.0 if index < 2 else None,
+            genres=["Horror"],
+        )
+
+    stats = build_profile_stats(database, profile)
+    horror = next(entry for entry in stats["genres"] if entry["label"] == "Horror")
+
+    assert horror["count"] == 4
+    assert horror["rated_count"] == 2
+    assert horror["average_rating"] == 5.0
