@@ -2109,45 +2109,53 @@ class InsightsService:
         influence_paths: List[Dict[str, Any]] = []
         direction_counts: Dict[str, int] = defaultdict(int)
         for movie_id, movie_events in events_by_movie.items():
-            by_profile: Dict[int, List[EventRow]] = defaultdict(list)
-            for event in movie_events:
-                by_profile[event.profile_id].append(event)
-            if len(by_profile) < 2:
+            # One observation per person per film, taken from their EARLIEST
+            # viewing. This used to be a cross product over raw watch events,
+            # and 4,948 (profile, film) pairs in the tracked library carry more
+            # than one event, so a film someone had rewatched six times cast six
+            # votes for who leads while the other person's single viewing cast
+            # one. `directional_leader` was measuring rewatching, not sequence.
+            # A rewatch also cannot make anyone earlier, so first viewings are
+            # the only ones that answer the question being asked.
+            earliest_by_profile = self._earliest_event_per_profile(movie_events)
+            if len(earliest_by_profile) < 2:
                 continue
-            for left in by_profile[ordered_profile_ids[0]]:
-                for right in by_profile[ordered_profile_ids[1]]:
-                    delta = (right.watched_date - left.watched_date).days
-                    if delta == 0 or abs(delta) > gap_days:
-                        continue
-                    leader, follower = (left, right) if delta > 0 else (right, left)
-                    direction_counts[leader.username] += 1
-                    influence_paths.append(
-                        {
-                            "leader": leader.username,
-                            "follower": follower.username,
-                            "movie": self._movie_summary(
-                                leader.movie,
-                                next(
-                                    (
-                                        row.enrichment
-                                        for row in states_by_movie.get(movie_id, [])
-                                        if row.enrichment is not None
-                                    ),
-                                    None,
-                                ),
+            left = earliest_by_profile.get(ordered_profile_ids[0])
+            right = earliest_by_profile.get(ordered_profile_ids[1])
+            if left is None or right is None:
+                continue
+            delta = (right.watched_date - left.watched_date).days
+            if delta == 0 or abs(delta) > gap_days:
+                continue
+            leader, follower = (left, right) if delta > 0 else (right, left)
+            direction_counts[leader.username] += 1
+            influence_paths.append(
+                {
+                    "leader": leader.username,
+                    "follower": follower.username,
+                    "movie": self._movie_summary(
+                        leader.movie,
+                        next(
+                            (
+                                row.enrichment
+                                for row in states_by_movie.get(movie_id, [])
+                                if row.enrichment is not None
                             ),
-                            "leader_date": leader.watched_date.isoformat(),
-                            "follower_date": follower.watched_date.isoformat(),
-                            "gap_days": abs(delta),
-                            # `leader`/`follower` here are watch order, not the
-                            # social graph. This field is the social question:
-                            # was the later watcher already following the
-                            # earlier one? None when that is unobservable.
-                            "follows_earlier_watcher": follow_graph.follows(
-                                follower.profile_id, leader.profile_id
-                            ),
-                        }
-                    )
+                            None,
+                        ),
+                    ),
+                    "leader_date": leader.watched_date.isoformat(),
+                    "follower_date": follower.watched_date.isoformat(),
+                    "gap_days": abs(delta),
+                    # `leader`/`follower` here are watch order, not the social
+                    # graph. This field is the social question: was the later
+                    # watcher already following the earlier one? None when that
+                    # is unobservable.
+                    "follows_earlier_watcher": follow_graph.follows(
+                        follower.profile_id, leader.profile_id
+                    ),
+                }
+            )
         influence_paths.sort(key=lambda item: (item["gap_days"], item["leader_date"], item["movie"]["title"]))
 
         monthly: Dict[str, Dict[str, Any]] = defaultdict(
@@ -2442,6 +2450,27 @@ class InsightsService:
             entry.pop("_rank", None)
             deduped.append(entry)
         return deduped[:limit]
+
+    @staticmethod
+    def _earliest_event_per_profile(events: Sequence[EventRow]) -> Dict[int, EventRow]:
+        """One event per profile: the first time each of them saw this film.
+
+        Watch history is not one row per person per film. 4,948 (profile, film)
+        pairs in the tracked library carry more than one event -- rewatches, and
+        several diary entries on a single date -- and pairing the raw rows made
+        a film someone had rewatched six times cast six votes for who watched
+        first, against one from the other person's single viewing.
+
+        A rewatch cannot make anyone earlier, so the earliest event is the only
+        one that speaks to sequence.
+        """
+
+        earliest: Dict[int, EventRow] = {}
+        for event in events:
+            current = earliest.get(event.profile_id)
+            if current is None or event.watched_date < current.watched_date:
+                earliest[event.profile_id] = event
+        return earliest
 
     @staticmethod
     def _alignment_sort_key(trait: Dict[str, Any], profile_count: int) -> Tuple:

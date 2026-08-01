@@ -1745,3 +1745,60 @@ class SurfaceScoreTests(unittest.TestCase):
         self.assertEqual(
             InsightsService._surface_score({"status": "partial", "ratio": None}), 0.5
         )
+
+
+class EarliestEventPerProfileTests(unittest.TestCase):
+    """Who watched first is a question about first viewings.
+
+    `influence_paths` used to pair raw watch events, so a film one profile had
+    rewatched six times cast six votes for `directional_leader` against the
+    other profile's single viewing. It was measuring rewatching, not sequence.
+    """
+
+    def _event(self, event_id: int, profile_id: int, day: int) -> EventRow:
+        movie = Movie(
+            id=1,
+            canonical_key="letterboxd:1",
+            title="Film",
+            normalized_title="film",
+            release_year=2024,
+            letterboxd_slug="film",
+        )
+        return event(
+            event_id=event_id,
+            profile_id=profile_id,
+            username=f"p{profile_id}",
+            watched_date=date(2026, 7, day),
+            movie=movie,
+        )
+
+    def test_a_rewatcher_contributes_one_observation_not_one_per_rewatch(self) -> None:
+        rows = [
+            self._event(1, 1, 10),
+            self._event(2, 1, 12),
+            self._event(3, 1, 14),
+            self._event(4, 2, 11),
+        ]
+
+        earliest = InsightsService._earliest_event_per_profile(rows)
+
+        self.assertEqual(set(earliest), {1, 2})
+        self.assertEqual(earliest[1].watched_date, date(2026, 7, 10))
+
+    def test_the_earliest_viewing_wins_regardless_of_row_order(self) -> None:
+        rows = [self._event(1, 1, 20), self._event(2, 1, 3), self._event(3, 1, 11)]
+
+        earliest = InsightsService._earliest_event_per_profile(rows)
+
+        self.assertEqual(earliest[1].watched_date, date(2026, 7, 3))
+
+    def test_a_rewatch_cannot_make_someone_the_later_watcher(self) -> None:
+        """p1 saw it first, then rewatched after p2's only viewing."""
+        rows = [self._event(1, 1, 1), self._event(2, 1, 30), self._event(3, 2, 5)]
+
+        earliest = InsightsService._earliest_event_per_profile(rows)
+
+        self.assertLess(earliest[1].watched_date, earliest[2].watched_date)
+
+    def test_no_events_yields_no_observations(self) -> None:
+        self.assertEqual(InsightsService._earliest_event_per_profile([]), {})
