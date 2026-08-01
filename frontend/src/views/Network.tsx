@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { Trophy, Waypoints } from 'lucide-react';
@@ -10,6 +11,11 @@ import { followGraphApi } from '../services/api';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
 
 export default function Network() {
+  // `?focus=` lets another page hand off to one profile's corner of the graph.
+  // My Profiles links here rather than claiming to draw a graph of its own.
+  const searchParams = useSearchParams();
+  const requestedFocus = searchParams.get('focus');
+
   // The graph reports which profile is centred so the ranking can follow the
   // selection instead of sitting underneath it contradicting the view.
   const [focusedUsername, setFocusedUsername] = useState<string | null>(null);
@@ -73,7 +79,11 @@ export default function Network() {
         </p>
       </header>
 
-      <FollowNetwork profiles={completedProfiles} onFocusChange={handleFocusChange} />
+      <FollowNetwork
+        profiles={completedProfiles}
+        onFocusChange={handleFocusChange}
+        initialFocus={requestedFocus}
+      />
 
       {ranking.length > 0 && (
         <section className="rounded-xl border border-white/10 bg-white/5 p-4">
