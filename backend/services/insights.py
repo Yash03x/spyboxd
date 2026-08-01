@@ -63,6 +63,43 @@ WATCH_TOGETHER_MODES = {
     "collective_blind_spots",
     "list_mission",
 }
+# Semantic neighbours: two people watching *different* films that are contextually
+# the same thing, close together in time. Only high-signal dimensions qualify --
+# "both watched a drama" is not a contextual match, it is a coincidence, and a
+# panel that says otherwise is noise. Ordered strongest first; the first
+# dimension that matches a pair of films wins, so the stated reason is the
+# strongest true one rather than the last one checked.
+SEMANTIC_NEIGHBOR_DIMENSIONS = (
+    ("director", "Both watched {article} {label} film"),
+    ("keyword", "Both explored {label}"),
+    ("actor", "Both watched {label}"),
+)
+SEMANTIC_NEIGHBOR_GAP_DAYS = 21
+# TMDB keywords mix themes with production trivia. "Both explored
+# duringcreditsstinger" is not an observation about anyone's taste, so the
+# non-thematic ones are dropped rather than shown as one.
+SEMANTIC_NEIGHBOR_KEYWORD_STOPLIST = {
+    "aftercreditsstinger",
+    "duringcreditsstinger",
+    "woman director",
+    "women directors",
+    "female director",
+    "based on novel or book",
+    "based on true story",
+    "based on comic",
+    "based on young adult novel",
+    "live action remake",
+    "remake",
+    "sequel",
+    "prequel",
+    "imax",
+    "3d",
+    "silent film",
+}
+# A trait shared by this many films across the group is a category, not a
+# connection, and pairing every film in it would be quadratic for no insight.
+SEMANTIC_NEIGHBOR_MAX_TRAIT_SIZE = 60
+
 SEASON_ORDER = ("winter", "spring", "summer", "autumn")
 SEASON_MONTHS = {
     "winter": (12, 1, 2),
@@ -2300,6 +2337,101 @@ class InsightsService:
             )
         return []
 
+    def _semantic_neighbors(
+        self,
+        profiles: Sequence[Profile],
+        states: Sequence[StateRow],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Different films, watched by different people, that are the same thing.
+
+        The panel's promise is "contextual matches, not exact-title co-watches",
+        so a pair sharing a ``movie_id`` is excluded by construction: that is an
+        ordinary co-watch and every other surface already reports it.
+
+        Needs at least two profiles to be a match between anyone, and a date on
+        both sides to claim they happened close together.
+        """
+
+        if len(profiles) < 2:
+            return []
+
+        best: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        for rank, (dimension, template) in enumerate(SEMANTIC_NEIGHBOR_DIMENSIONS):
+            buckets: Dict[str, Tuple[str, List[StateRow]]] = {}
+            for row in states:
+                if row.latest_watched_date is None:
+                    continue
+                for label in self._trait_values(row, dimension):
+                    key = label.casefold()
+                    if dimension == "keyword" and key in SEMANTIC_NEIGHBOR_KEYWORD_STOPLIST:
+                        continue
+                    if key not in buckets:
+                        buckets[key] = (label, [])
+                    buckets[key][1].append(row)
+
+            for label, rows in buckets.values():
+                if len(rows) > SEMANTIC_NEIGHBOR_MAX_TRAIT_SIZE:
+                    continue
+                for index, left in enumerate(rows):
+                    for right in rows[index + 1 :]:
+                        if left.profile_id == right.profile_id:
+                            continue
+                        if left.movie_id == right.movie_id:
+                            continue
+                        gap = abs(
+                            (left.latest_watched_date - right.latest_watched_date).days
+                        )
+                        if gap > SEMANTIC_NEIGHBOR_GAP_DAYS:
+                            continue
+                        pair = (min(left.movie_id, right.movie_id), max(left.movie_id, right.movie_id))
+                        existing = best.get(pair)
+                        # Strongest dimension wins; within one dimension the
+                        # closest pair in time is the better illustration.
+                        if existing is not None and (
+                            existing["_rank"] < rank
+                            or (existing["_rank"] == rank and existing["day_gap"] <= gap)
+                        ):
+                            continue
+                        later, earlier = (
+                            (left, right)
+                            if left.latest_watched_date >= right.latest_watched_date
+                            else (right, left)
+                        )
+                        best[pair] = {
+                            "movie": self._movie_summary(later.movie, later.enrichment),
+                            # "a Alex Garland film" is the sort of thing a reader
+                            # notices instead of the insight.
+                            "reason": template.format(
+                                label=label,
+                                article="an" if label[:1].lower() in "aeiou" else "a",
+                            ),
+                            # Ordered by who got there first, which is the only
+                            # claim the dates support.
+                            "watched_by": [earlier.username, later.username],
+                            "day_gap": gap,
+                            "_rank": rank,
+                        }
+
+        ordered = sorted(
+            best.values(),
+            key=lambda entry: (entry["_rank"], entry["day_gap"], entry["movie"]["title"]),
+        )
+        # One card per film. Two different pairs can share a displayed film --
+        # two Park Chan-wook matches both surface "Decision to Leave" -- and the
+        # panel renders posters, so that reads as the same entry twice. The
+        # first survivor is already the strongest by the sort above.
+        deduped: List[Dict[str, Any]] = []
+        seen_titles: set = set()
+        for entry in ordered:
+            identity = entry["movie"].get("movie_id") or entry["movie"].get("title")
+            if identity in seen_titles:
+                continue
+            seen_titles.add(identity)
+            entry.pop("_rank", None)
+            deduped.append(entry)
+        return deduped[:limit]
+
     @staticmethod
     def _alignment_sort_key(trait: Dict[str, Any], profile_count: int) -> Tuple:
         """Order a dimension by how much the profiles actually agree.
@@ -2474,7 +2606,7 @@ class InsightsService:
             "shared_signature": signature_candidates[:limit],
             "contrasts": [item[1] for item in contrast_candidates[:limit]],
             "dimensions": dimension_payloads,
-            "semantic_neighbors": [],
+            "semantic_neighbors": self._semantic_neighbors(profiles, states, limit),
         }
 
     @staticmethod
