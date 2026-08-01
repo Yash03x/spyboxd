@@ -319,6 +319,18 @@ export default function WatchTogether() {
         <FeatureState title="Choose a public list" message="Select a list mission above, then find movies to rank its unseen entries for this group." />
       ) : recommendationsQuery.isLoading ? (
         <FeatureState title="Ranking group picks" message="Combining watchlists, ratings, unseen status, metadata, and availability." loading />
+      ) : recommendationsQuery.error ? (
+        // A failure used to fall through to the results panel with no data,
+        // which then said "the recommendation service did not return group
+        // candidates" -- indistinguishable from an empty but successful search,
+        // and it swallowed whatever the API actually reported.
+        <FeatureState
+          title="Group picks could not be loaded"
+          message={
+            (recommendationsQuery.error as { message?: string })?.message
+            ?? 'The request failed. Adjust the selection or filters and try again.'
+          }
+        />
       ) : (
         <WatchTogetherResults
           data={recommendationsQuery.data}

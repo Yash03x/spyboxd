@@ -1044,7 +1044,9 @@ class ProfileFollowEdge(Base):
     counterpart_profile_id = Column(
         Integer, ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
     )
-    # Source page order approximates recency; Letterboxd does not guarantee it.
+    # Letterboxd's follow lists default to a sort the UI labels "WHEN
+    # FOLLOWED", so this order is recency, newest first. It carries no dates --
+    # the rows expose no timestamp of any kind -- so the order is all there is.
     position = Column(Integer, nullable=True)
     first_seen_profile_sync_id = Column(
         BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
