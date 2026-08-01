@@ -1188,4 +1188,86 @@ export const memberArchiveApi = {
   },
 };
 
+/** How much of the profile the stats below could actually be computed from. */
+export interface ProfileStatsCoverage {
+  films_total: number;
+  films_enriched: number;
+  /** 0..1 share of synced films carrying TMDB metadata. */
+  enrichment_ratio: number;
+  dated_events: number;
+  rated_films: number;
+}
+
+export interface ProfileStatsTotals {
+  films: number;
+  /** Null when no film in the profile has a known runtime. */
+  hours_watched: number | null;
+  /** 0..1 share of films that contributed runtime to `hours_watched`. */
+  runtime_coverage: number;
+  distinct_directors: number | null;
+  distinct_actors: number | null;
+  distinct_countries: number | null;
+  distinct_languages: number | null;
+  distinct_studios: number | null;
+  longest_streak_weeks: number | null;
+  multi_film_days: number | null;
+  rewatches: number;
+  average_rating: number | null;
+}
+
+export interface ProfileStatsPerson {
+  name: string;
+  count: number;
+  average_rating: number | null;
+}
+
+export interface ProfileStatsBucket {
+  label: string;
+  count: number;
+  average_rating: number | null;
+}
+
+export interface ProfileStatsCountryBucket extends ProfileStatsBucket {
+  code: string | null;
+}
+
+/**
+ * Buckets the API judged large enough to call a favourite. The server only
+ * fills these once a bucket has at least three films, so `average_rating` is
+ * always present here even though it is nullable in the plain buckets.
+ */
+export interface ProfileStatsHighestRated {
+  genre: { label: string; count: number; average_rating: number } | null;
+  decade: { label: string; count: number; average_rating: number } | null;
+  director: { name: string; count: number; average_rating: number } | null;
+}
+
+export interface ProfileStatsResponse {
+  username: string;
+  coverage: ProfileStatsCoverage;
+  totals: ProfileStatsTotals;
+  top_directors: ProfileStatsPerson[];
+  top_actors: ProfileStatsPerson[];
+  top_studios: ProfileStatsPerson[];
+  genres: ProfileStatsBucket[];
+  countries: ProfileStatsCountryBucket[];
+  languages: ProfileStatsBucket[];
+  /** Ascending by decade, labelled like "1990s". */
+  decades: ProfileStatsBucket[];
+  highest_rated: ProfileStatsHighestRated;
+  /**
+   * Letterboxd's own stats-page figures, verbatim, for side-by-side
+   * comparison. Null when that Patron-only page was never scraped, and the
+   * key set varies by account, so read it defensively.
+   */
+  letterboxd_reported: Record<string, number | string | null> | null;
+}
+
+export const profileStatsApi = {
+  getStats: async (username: string): Promise<ProfileStatsResponse> => {
+    const response = await api.get(`/api/profiles/${encodeURIComponent(username)}/stats`);
+    return response.data;
+  },
+};
+
 export default api;

@@ -247,6 +247,69 @@ export const profileAnalysis = {
   ],
 };
 
+export const profileStats = {
+  username: 'alpha',
+  coverage: {
+    films_total: 1_200,
+    films_enriched: 1_020,
+    enrichment_ratio: 0.85,
+    dated_events: 2_000,
+    rated_films: 900,
+  },
+  totals: {
+    films: 1_200,
+    hours_watched: 2_118.5,
+    runtime_coverage: 0.94,
+    distinct_directors: 640,
+    distinct_actors: 5_400,
+    distinct_countries: 48,
+    distinct_languages: 31,
+    distinct_studios: 410,
+    longest_streak_weeks: 17,
+    multi_film_days: 88,
+    rewatches: 64,
+    average_rating: 3.72,
+  },
+  top_directors: [
+    { name: 'Akira Kurosawa', count: 18, average_rating: 4.3 },
+    { name: 'Agnès Varda', count: 12, average_rating: 4.1 },
+    { name: 'Mani Ratnam', count: 9, average_rating: null },
+  ],
+  top_actors: [
+    { name: 'Toshiro Mifune', count: 14, average_rating: 4.2 },
+    { name: 'Tilda Swinton', count: 11, average_rating: 3.9 },
+  ],
+  top_studios: [{ name: 'Studio Ghibli', count: 16, average_rating: 4.4 }],
+  genres: [
+    { label: 'Drama', count: 420, average_rating: 3.9 },
+    { label: 'Comedy', count: 210, average_rating: 3.4 },
+    { label: 'Horror', count: 95, average_rating: null },
+  ],
+  countries: [
+    { label: 'United States', code: 'US', count: 520, average_rating: 3.6 },
+    { label: 'Japan', code: 'JP', count: 180, average_rating: 4.1 },
+    { label: 'India', code: null, count: 120, average_rating: 3.8 },
+  ],
+  languages: [
+    { label: 'English', count: 700, average_rating: 3.6 },
+    { label: 'Japanese', count: 160, average_rating: 4.1 },
+  ],
+  decades: [
+    { label: '1970s', count: 90, average_rating: 4 },
+    { label: '1980s', count: 140, average_rating: 3.8 },
+    { label: '1990s', count: 260, average_rating: 3.9 },
+    { label: '2000s', count: 310, average_rating: 3.6 },
+  ],
+  highest_rated: {
+    genre: { label: 'Documentary', count: 34, average_rating: 4.15 },
+    decade: { label: '1970s', count: 90, average_rating: 4 },
+    director: { name: 'Akira Kurosawa', count: 18, average_rating: 4.3 },
+  },
+  // Deliberately overlaps our figures: `directors` agrees, `hours` and
+  // `longest_streak` do not, so both comparison branches render.
+  letterboxd_reported: { hours: 2_130, directors: 640, longest_streak: 19 },
+};
+
 const dataCoverage = {
   generated_at: '2026-07-29T12:00:00Z',
   overall_score: 100,
@@ -614,6 +677,15 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   if (path === '/api/follow-graph/suggestions') return json(route, { suggestions: [] });
   if (path === '/api/follow-graph/mutuals') {
     return json(route, { profiles: [], pairs: [], rollups: {} });
+  }
+  {
+    // Patron-only stats, computed for everyone. Contract-shaped so the
+    // Analysis panel renders (and its Letterboxd comparison fires) without
+    // console noise from an unmocked request.
+    const statsMatch = path.match(/^\/api\/profiles\/([^/]+)\/stats$/);
+    if (statsMatch) {
+      return json(route, { ...profileStats, username: decodeURIComponent(statsMatch[1]) });
+    }
   }
   {
     const archiveMatch = path.match(/^\/api\/profiles\/([^/]+)\/archive$/);
