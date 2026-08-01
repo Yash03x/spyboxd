@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink } from 'lucide-react';
+import Link from 'next/link';
+import { ExternalLink, Waypoints } from 'lucide-react';
 
 import { followGraphApi, type FollowGraphEdge } from '../services/api';
 import { ProfileAvatar } from './insights/InsightUI';
@@ -63,7 +64,7 @@ export default function ProfileFollowGraph({ username }: { username: string }) {
 
   return (
     <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3" data-testid={`follow-graph-${username}`}>
-      <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/20 p-1" role="tablist" aria-label={`Follow graph for ${username}`}>
+      <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/20 p-1" role="tablist" aria-label={`Who ${username} follows and is followed by`}>
         {(['following', 'followers'] as const).map((option) => {
           const count = option === 'following' ? data?.following_count : data?.followers_count;
           const selected = direction === option;
@@ -86,7 +87,7 @@ export default function ProfileFollowGraph({ username }: { username: string }) {
       </div>
 
       {graphQuery.isLoading ? (
-        <p className="mt-3 text-xs text-white/45">Loading follow graph…</p>
+        <p className="mt-3 text-xs text-white/45">Loading follows…</p>
       ) : graphQuery.error || edges.length === 0 ? (
         <p className="mt-3 rounded-lg border border-white/[0.06] bg-black/15 p-3 text-xs text-white/45">
           No social data synced yet.
@@ -105,6 +106,15 @@ export default function ProfileFollowGraph({ username }: { username: string }) {
           )}
         </>
       )}
+      {/* The actual graph is drawn on the Network page. Linking there is what
+          makes the promise good, rather than a list under a graph heading. */}
+      <Link
+        href={`/network?focus=${encodeURIComponent(username)}`}
+        className="mt-3 flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold text-white/55 transition-colors hover:bg-white/10 hover:text-white"
+      >
+        <Waypoints className="h-3 w-3" aria-hidden="true" />
+        See @{username} in the network graph
+      </Link>
     </div>
   );
 }
