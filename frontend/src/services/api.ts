@@ -1526,6 +1526,12 @@ export interface WatchlistRecommendation {
   group_raters: number;
   liked_by: number;
   letterboxd_average: number | null;
+  /** Share of Letterboxd's crowd that rated it 4.5+ — how much room the film has
+   *  to become a favourite. Null when no histogram has been imported, which is
+   *  not the same as nobody rating it highly. */
+  crowd_ceiling: number | null;
+  /** Share that rated it 2.0 or below. */
+  crowd_floor: number | null;
   added_date: string | null;
   /** Null when the import carried no added date: an unknown wait, not a zero-day one. */
   days_waiting: number | null;
