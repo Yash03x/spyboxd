@@ -1,7 +1,7 @@
 """Profile stats: honest arithmetic over whatever enrichment we actually hold."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from itertools import count
 from typing import Any, Optional
 
@@ -27,6 +27,7 @@ from database.models import (
 )
 from services.profile_stats import (
     build_profile_stats,
+    build_return_journeys,
     longest_streak_weeks,
     median_length_chars,
     multi_film_days,
@@ -1082,6 +1083,8 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "decades",
         "highest_rated",
         "rewatches",
+        # The paired half: same person, same film, two viewings.
+        "return_journeys",
         "reviews",
         "letterboxd_reported",
     }
@@ -1218,3 +1221,61 @@ def test_a_profile_with_no_recorded_director_gender_reports_no_share(database):
 
     assert split["measured_films"] == 0
     assert split["women_share"] is None
+
+
+# Unlike the two averages in the rewatch block, this is a paired measurement:
+# the same person rating the same film on two separate viewings, so a
+# difference is the effect of the revisit rather than a difference between two
+# self-selected sets of films.
+
+
+def test_a_revisit_records_how_long_it_took_and_which_way_the_rating_moved():
+    events = [
+        (1, date(2024, 1, 1), 4.0),
+        (1, date(2026, 1, 1), 5.0),
+        (2, date(2025, 1, 1), 4.0),
+        (2, date(2025, 3, 1), 2.0),
+    ]
+
+    journeys = build_return_journeys(events)
+
+    assert journeys["revisited_films"] == 2
+    assert journeys["rated_twice"] == 2
+    assert journeys["rating_rose"] == 1
+    assert journeys["rating_fell"] == 1
+    assert journeys["average_change"] == -0.5
+
+
+def test_a_rewatch_logged_on_the_first_viewing_s_own_day_is_not_a_return():
+    """Two entries on one date carry no interval and say nothing about returning."""
+    events = [(1, date(2026, 1, 1), 4.0), (1, date(2026, 1, 1), 4.0)]
+
+    assert build_return_journeys(events)["revisited_films"] == 0
+
+
+def test_a_revisit_without_two_ratings_still_counts_as_a_return():
+    """The interval is knowable even when the score is not."""
+    events = [(1, date(2024, 1, 1), None), (1, date(2026, 1, 1), 5.0)]
+
+    journeys = build_return_journeys(events)
+
+    assert journeys["revisited_films"] == 1
+    assert journeys["rated_twice"] == 0
+    assert journeys["average_change"] is None
+
+
+def test_the_typical_return_is_the_median_not_the_mean():
+    """One revisit after a decade must not become everybody's typical wait."""
+    events = []
+    for movie_id, gap in enumerate([30, 40, 50, 4000], start=1):
+        events.append((movie_id, date(2020, 1, 1), 4.0))
+        events.append((movie_id, date(2020, 1, 1) + timedelta(days=gap), 4.0))
+
+    assert build_return_journeys(events)["median_days_to_return"] == 45
+
+
+def test_a_profile_that_never_returns_reports_nothing_rather_than_zero():
+    journeys = build_return_journeys([(1, date(2026, 1, 1), 4.0)])
+
+    assert journeys["revisited_films"] == 0
+    assert journeys["median_days_to_return"] is None

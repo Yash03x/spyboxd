@@ -1417,6 +1417,17 @@ export interface ProfileStatsResponse {
    * say "none yet" instead of guessing whether the block failed to compute.
    */
   rewatches: ProfileStatsRewatches;
+  /** A paired measurement, unlike the averages inside `rewatches`: the same
+   *  person rating the same film on two separate viewings. */
+  return_journeys: {
+    revisited_films: number;
+    median_days_to_return: number | null;
+    rated_twice: number;
+    rating_rose: number;
+    rating_fell: number;
+    rating_held: number;
+    average_change: number | null;
+  };
   reviews: ProfileStatsReviews;
   /**
    * Letterboxd's own stats-page figures, verbatim, for side-by-side

@@ -12,6 +12,7 @@ import type {
   ProfileStatsCoverage,
   ProfileStatsPerson,
   ProfileStatsReviews,
+  ProfileStatsResponse,
   ProfileStatsRewatches,
 } from '../../services/api';
 import { FilmTitle, MoviePoster, formatCalendarDate, toMovieSummary } from './InsightUI';
@@ -267,7 +268,13 @@ function PairedAverages({
  * What this member returns to. Films seen once are not listed: a film with no
  * rewatch is not a quiet entry at the bottom of a rewatch list.
  */
-function RewatchSection({ rewatches }: { rewatches: ProfileStatsRewatches }) {
+function RewatchSection({
+  rewatches,
+  journeys,
+}: {
+  rewatches: ProfileStatsRewatches;
+  journeys?: ProfileStatsResponse['return_journeys'];
+}) {
   const films = rewatches.most_rewatched ?? [];
   if (rewatches.total_rewatches === 0 && films.length === 0) return null;
 
@@ -282,6 +289,29 @@ function RewatchSection({ rewatches }: { rewatches: ProfileStatsRewatches }) {
 
   return (
     <SubSection title="Rewatches" subtitle={subtitle}>
+      {journeys && journeys.revisited_films > 0 ? (
+        <p className="mt-2 rounded-lg border border-white/[0.07] bg-black/15 px-3 py-2 text-[11px] leading-5 text-white/50">
+          Typically returns after{' '}
+          <strong className="text-white/80">
+            {formatCount(journeys.median_days_to_return ?? 0)} days
+          </strong>{' '}
+          across {formatCount(journeys.revisited_films)} revisited{' '}
+          {journeys.revisited_films === 1 ? 'film' : 'films'}.
+          {/* The paired half, and a much smaller set: only films rated on two
+              separate viewings can say what the revisit did to the score. */}
+          {journeys.rated_twice > 0 ? (
+            <>
+              {' '}Of the {formatCount(journeys.rated_twice)} rated on both viewings,{' '}
+              {journeys.rating_rose} went up, {journeys.rating_fell} down and{' '}
+              {journeys.rating_held} held
+              {journeys.average_change !== null
+                ? ` (${journeys.average_change > 0 ? '+' : ''}${journeys.average_change.toFixed(2)} on average)`
+                : ''}
+              .
+            </>
+          ) : null}
+        </p>
+      ) : null}
       {films.length > 0 ? (
         <ul className="mt-2 space-y-1.5">
           {films.map((film, index) => (
@@ -714,7 +744,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
 
       {hasRewatchSection || hasReviewSection ? (
         <div className="mt-6 grid gap-6 border-t border-white/10 pt-5 lg:grid-cols-2">
-          {hasRewatchSection && rewatches ? <RewatchSection rewatches={rewatches} /> : null}
+          {hasRewatchSection && rewatches ? <RewatchSection rewatches={rewatches} journeys={stats.return_journeys} /> : null}
           {hasReviewSection && reviews ? (
             <ReviewSection reviews={reviews} coverage={coverage} />
           ) : null}

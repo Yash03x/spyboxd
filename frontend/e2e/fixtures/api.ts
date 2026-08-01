@@ -412,6 +412,17 @@ export const profileStats = {
   },
   // Folded into the same panel. One rewatched film is unrated and one review
   // has no publication date, so both omission branches render.
+  // Paired: the same person, the same film, two viewings. A much smaller set
+  // than the revisit count, because both viewings have to carry a rating.
+  return_journeys: {
+    revisited_films: 12,
+    median_days_to_return: 674,
+    rated_twice: 12,
+    rating_rose: 5,
+    rating_fell: 1,
+    rating_held: 6,
+    average_change: 0.38,
+  },
   rewatches: {
     total_rewatches: 64,
     films_rewatched: 41,
