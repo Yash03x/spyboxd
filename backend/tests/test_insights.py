@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 import unittest
 from unittest.mock import MagicMock
 
-from sqlalchemy import create_engine, inspect as sqlalchemy_inspect
+from sqlalchemy import create_engine, event as sqlalchemy_event, inspect as sqlalchemy_inspect
 from sqlalchemy.orm import sessionmaker
 
 from backend.database.models import (
@@ -22,11 +22,13 @@ from database.models import (
     MovieEnrichment as ServiceMovieEnrichment,
     Profile as ServiceProfile,
     ProfileFilm as ServiceProfileFilm,
+    ProfileFollowEdge as ServiceProfileFollowEdge,
     ProfileSync as ServiceProfileSync,
     SyncDataset as ServiceSyncDataset,
 )
 from backend.services.insights import (
     EventRow,
+    FollowGraph,
     InsightsService,
     ProviderAvailability,
     StateRow,
@@ -67,6 +69,27 @@ def event(
         tags=[],
         source_kind="diary_csv",
         movie=movie,
+    )
+
+
+def follow_graph(
+    profiles,
+    *,
+    following=(),
+    followers=(),
+    authoritative_following=(),
+    authoritative_followers=(),
+) -> FollowGraph:
+    """Build a graph directly so annotation logic is testable without a session."""
+    return FollowGraph(
+        active_following=frozenset(following),
+        active_followers=frozenset(followers),
+        authoritative_following=frozenset(authoritative_following),
+        authoritative_followers=frozenset(authoritative_followers),
+        normalized_username_by_profile_id={
+            profile.id: profile.username.casefold() for profile in profiles
+        },
+        username_by_profile_id={profile.id: profile.username for profile in profiles},
     )
 
 
@@ -287,6 +310,61 @@ class InsightCalculationTests(unittest.TestCase):
                 by_kind["first_known_watch"]["classification_basis"],
                 "earliest_observed_unmarked_event",
             )
+
+    def test_rewatch_echoes_carry_the_follow_reading_and_its_coverage(self) -> None:
+        profiles = [
+            Profile(id=1, username="leader", is_active=True, scraping_status="completed"),
+            Profile(id=2, username="follower", is_active=True, scraping_status="completed"),
+        ]
+        rows = [
+            event(
+                event_id=1,
+                profile_id=1,
+                username="leader",
+                watched_date=date(2026, 7, 10),
+                movie=self.movie,
+                rewatch=True,
+            ),
+            event(
+                event_id=2,
+                profile_id=2,
+                username="follower",
+                watched_date=date(2026, 7, 11),
+                movie=self.movie,
+            ),
+        ]
+        self.service._resolve_profiles = lambda *_args, **_kwargs: profiles
+        self.service._event_rows = lambda *_args, **_kwargs: rows
+        self.service._state_rows = lambda *_args, **_kwargs: []
+        self.service._feature_coverage = lambda *_args, **_kwargs: {
+            "status": "ready",
+            "score": 100,
+            "dated_watch_events": len(rows),
+            "total_watch_events": len(rows),
+            "blockers": [],
+            "warnings": [],
+            "last_updated": None,
+        }
+        self.service._follow_graph = lambda _profiles: follow_graph(
+            profiles,
+            following=[(2, "leader")],
+            authoritative_following=[2],
+        )
+
+        payload = self.service.rewatch_echoes(
+            [profile.username for profile in profiles],
+            gap_days=1,
+            limit=10,
+        )
+
+        echo = payload["echoes"][0]
+        self.assertTrue(echo["follows_earlier_watcher"])
+        self.assertTrue(echo["follow_relationship"]["b_follows_a"])
+        self.assertEqual(echo["follow_relationship"]["earlier_watcher"], "leader")
+        self.assertEqual(payload["follow_graph"]["follow_backed_gap_events"], 1)
+        self.assertEqual(payload["follow_graph"]["coincidental_gap_events"], 0)
+        self.assertEqual(payload["follow_graph"]["profiles_with_social_sync"], ["follower"])
+        self.assertEqual(payload["follow_graph"]["social_sync_coverage_ratio"], 0.5)
 
     def test_taste_timeline_groups_december_into_following_winter(self) -> None:
         profiles = [
@@ -1033,6 +1111,399 @@ class InsightCalculationTests(unittest.TestCase):
         )
         self.assertAlmostEqual(_pearson([1, 2, 3], [2, 4, 6]), 1.0)
         self.assertIsNone(_pearson([1], [1]))
+
+
+class FollowAwareSignalTests(unittest.TestCase):
+    """The social graph annotates co-watch events without asserting influence."""
+
+    def setUp(self) -> None:
+        self.service = InsightsService(db=None)
+        self.movie = Movie(
+            id=10,
+            canonical_key="letterboxd:test-film",
+            title="Test Film",
+            normalized_title="test film",
+            release_year=2026,
+            letterboxd_slug="test-film",
+        )
+        self.profiles = [
+            Profile(id=1, username="Leader", is_active=True, scraping_status="completed"),
+            Profile(id=2, username="Follower", is_active=True, scraping_status="completed"),
+        ]
+        self.gap_rows = [
+            event(
+                event_id=1,
+                profile_id=1,
+                username="Leader",
+                watched_date=date(2026, 7, 1),
+                movie=self.movie,
+            ),
+            event(
+                event_id=2,
+                profile_id=2,
+                username="Follower",
+                watched_date=date(2026, 7, 2),
+                movie=self.movie,
+            ),
+        ]
+
+    def _gap_event(self, graph: FollowGraph) -> dict:
+        matches = self.service._matched_events(
+            self.gap_rows,
+            gap_days=1,
+            follow_graph=graph,
+        )
+        return next(match for match in matches if match["day_gap"] == 1)
+
+    def test_events_without_a_graph_report_unknown_rather_than_no_follow(self) -> None:
+        match = self._gap_event(follow_graph(self.profiles))
+
+        relationship = match["follow_relationship"]
+        self.assertFalse(relationship["known"])
+        self.assertIsNone(relationship["a_follows_b"])
+        self.assertIsNone(relationship["b_follows_a"])
+        self.assertIsNone(relationship["mutual"])
+        self.assertEqual(relationship["observed_by"], [])
+        self.assertIsNone(match["follows_earlier_watcher"])
+        self.assertIsNone(match["follow_backed"])
+
+    def test_later_watcher_following_the_earlier_one_is_the_directional_read(self) -> None:
+        match = self._gap_event(
+            follow_graph(
+                self.profiles,
+                following=[(2, "leader")],
+                authoritative_following=[2],
+            )
+        )
+
+        relationship = match["follow_relationship"]
+        self.assertEqual(relationship["earlier_watcher"], "Leader")
+        self.assertEqual(relationship["later_watcher"], "Follower")
+        self.assertTrue(relationship["b_follows_a"])
+        self.assertFalse(relationship["a_follows_b"])
+        self.assertFalse(relationship["mutual"])
+        self.assertTrue(relationship["known"])
+        self.assertTrue(match["follows_earlier_watcher"])
+        self.assertTrue(match["follow_backed"])
+
+    def test_follow_pointing_the_other_way_is_not_a_follow_backed_gap(self) -> None:
+        match = self._gap_event(
+            follow_graph(
+                self.profiles,
+                following=[(1, "follower")],
+                authoritative_following=[1, 2],
+            )
+        )
+
+        relationship = match["follow_relationship"]
+        self.assertTrue(relationship["a_follows_b"])
+        self.assertFalse(relationship["b_follows_a"])
+        self.assertFalse(match["follows_earlier_watcher"])
+        self.assertFalse(match["follow_backed"])
+
+    def test_a_followers_page_corroborates_the_same_edge(self) -> None:
+        # Only the earlier watcher was synced, and their followers page lists
+        # the later watcher: the same edge, observed from the other side.
+        match = self._gap_event(
+            follow_graph(
+                self.profiles,
+                followers=[(1, "follower")],
+                authoritative_followers=[1],
+            )
+        )
+
+        self.assertTrue(match["follow_relationship"]["b_follows_a"])
+        self.assertTrue(match["follows_earlier_watcher"])
+
+    def test_authoritative_absence_reads_false_and_silence_reads_unknown(self) -> None:
+        authoritative = self._gap_event(
+            follow_graph(self.profiles, authoritative_following=[1, 2])
+        )
+        silent = self._gap_event(follow_graph(self.profiles))
+
+        self.assertTrue(authoritative["follow_relationship"]["known"])
+        self.assertFalse(authoritative["follow_relationship"]["b_follows_a"])
+        self.assertFalse(authoritative["follow_backed"])
+        self.assertFalse(silent["follow_relationship"]["known"])
+        self.assertIsNone(silent["follow_backed"])
+
+    def test_mutual_stays_unknown_until_both_directions_are_observable(self) -> None:
+        match = self._gap_event(
+            follow_graph(
+                self.profiles,
+                following=[(2, "leader")],
+                authoritative_following=[2],
+            )
+        )
+        # The earlier watcher has no social import, so "does Leader follow
+        # Follower?" is unanswered; a one-way observation cannot settle mutual.
+        self.assertIsNone(match["follow_relationship"]["a_follows_b"])
+        self.assertIsNone(match["follow_relationship"]["mutual"])
+
+    def test_same_day_events_carry_the_edge_but_no_directional_read(self) -> None:
+        rows = [
+            event(
+                event_id=1,
+                profile_id=1,
+                username="Leader",
+                watched_date=date(2026, 7, 1),
+                movie=self.movie,
+            ),
+            event(
+                event_id=2,
+                profile_id=2,
+                username="Follower",
+                watched_date=date(2026, 7, 1),
+                movie=self.movie,
+            ),
+        ]
+        graph = follow_graph(
+            self.profiles,
+            following=[(2, "leader")],
+            authoritative_following=[2],
+        )
+
+        match = self.service._matched_events(rows, gap_days=1, follow_graph=graph)[0]
+
+        # Same-day pairs sort by username, so the later watcher is `a` here.
+        relationship = match["follow_relationship"]
+        self.assertEqual((relationship["a"], relationship["b"]), ("Follower", "Leader"))
+        self.assertTrue(relationship["a_follows_b"])
+        self.assertIsNone(match["follow_relationship"]["earlier_watcher"])
+        self.assertIsNone(match["follows_earlier_watcher"])
+        self.assertIsNone(match["follow_backed"])
+
+    def test_group_events_keep_every_pair_instead_of_one_relationship(self) -> None:
+        profiles = [
+            *self.profiles,
+            Profile(id=3, username="Third", is_active=True, scraping_status="completed"),
+        ]
+        rows = [
+            *self.gap_rows,
+            event(
+                event_id=3,
+                profile_id=3,
+                username="Third",
+                watched_date=date(2026, 7, 2),
+                movie=self.movie,
+            ),
+        ]
+        graph = follow_graph(
+            profiles,
+            following=[(2, "leader")],
+            authoritative_following=[2],
+        )
+
+        match = next(
+            item
+            for item in self.service._matched_events(rows, gap_days=1, follow_graph=graph)
+            if item["profile_count"] == 3
+        )
+
+        self.assertIsNone(match["follow_relationship"])
+        self.assertIsNone(match["follows_earlier_watcher"])
+        self.assertEqual(len(match["follow_relationships"]), 3)
+        self.assertEqual(
+            {
+                (item["a"], item["b"], item["follows_earlier_watcher"])
+                for item in match["follow_relationships"]
+            },
+            {
+                ("Leader", "Follower", True),
+                ("Leader", "Third", None),
+                ("Follower", "Third", None),
+            },
+        )
+        # One observed edge is enough to call the event follow-backed, but the
+        # unresolved pairs are still reported rather than assumed absent.
+        self.assertTrue(match["follow_backed"])
+
+    def test_summary_splits_follow_backed_from_coincidental_and_undetermined(self) -> None:
+        summary = self.service._follow_graph_summary(
+            follow_graph(self.profiles, authoritative_following=[1]),
+            self.profiles,
+            [
+                {"day_gap": 1, "follow_backed": True},
+                {"day_gap": 2, "follow_backed": False},
+                {"day_gap": 3, "follow_backed": None},
+                {"day_gap": 0, "follow_backed": None},
+            ],
+        )
+
+        self.assertEqual(summary["gap_events"], 3)
+        self.assertEqual(summary["follow_backed_gap_events"], 1)
+        self.assertEqual(summary["coincidental_gap_events"], 1)
+        self.assertEqual(summary["undetermined_gap_events"], 1)
+        self.assertEqual(summary["same_day_events"], 1)
+        self.assertEqual(summary["social_sync_coverage_ratio"], 0.5)
+        self.assertTrue(
+            any("not evidence" in warning for warning in summary["warnings"])
+        )
+        self.assertTrue(
+            any("undetermined" in warning for warning in summary["warnings"])
+        )
+
+    def test_pair_dossier_annotates_paths_and_keeps_existing_fields(self) -> None:
+        self.service._resolve_profiles = lambda *_args, **_kwargs: self.profiles
+        self.service._event_rows = lambda *_args, **_kwargs: self.gap_rows
+        self.service._state_rows = lambda *_args, **_kwargs: []
+        self.service._feature_coverage = lambda *_args, **_kwargs: {
+            "status": "ready",
+            "score": 100,
+            "dated_watch_events": 2,
+            "total_watch_events": 2,
+            "blockers": [],
+            "warnings": [],
+            "last_updated": None,
+        }
+        self.service._follow_graph = lambda _profiles: follow_graph(
+            self.profiles,
+            following=[(2, "leader")],
+            authoritative_following=[2],
+        )
+        self.service.db = MagicMock()
+        self.service.db.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
+
+        payload = self.service.pair_dossier(["Leader", "Follower"], gap_days=1)
+
+        path = payload["influence_paths"][0]
+        self.assertEqual(path["leader"], "Leader")
+        self.assertEqual(path["follower"], "Follower")
+        self.assertTrue(path["follows_earlier_watcher"])
+        self.assertEqual(payload["follow_graph"]["follow_backed_gap_events"], 1)
+        self.assertEqual(payload["follow_graph"]["coincidental_gap_events"], 0)
+        self.assertTrue(payload["follow_graph"]["relationship"]["b_follows_a"])
+        # The pair's own relationship is not tied to any single event.
+        self.assertIsNone(payload["follow_graph"]["relationship"]["later_watcher"])
+        self.assertEqual(payload["summary"]["directional_leader"], "Leader")
+
+    def test_edges_and_authority_load_in_bounded_queries(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        ServiceBase.metadata.create_all(
+            engine,
+            tables=[
+                ServiceProfile.__table__,
+                ServiceProfileSync.__table__,
+                ServiceSyncDataset.__table__,
+                ServiceProfileFollowEdge.__table__,
+            ],
+        )
+        db = sessionmaker(bind=engine)()
+        statements: list[str] = []
+
+        def record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        try:
+            leader = ServiceProfile(id=1, username="leader", scraping_status="completed")
+            watcher = ServiceProfile(id=2, username="watcher", scraping_status="completed")
+            bystander = ServiceProfile(id=3, username="bystander", scraping_status="completed")
+            sync = ServiceProfileSync(
+                id=10,
+                profile_id=watcher.id,
+                source_kind="uploaded_csv_bundle",
+                source_fingerprint="bundle",
+                importer_version="test",
+                status="completed",
+                completed_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+                manifest={},
+                coverage={},
+                stats={},
+            )
+            db.add_all(
+                [
+                    leader,
+                    watcher,
+                    bystander,
+                    sync,
+                    ServiceSyncDataset(
+                        id=100,
+                        profile_sync_id=sync.id,
+                        dataset_name="following",
+                        source_row_count=2,
+                        imported_row_count=2,
+                        is_authoritative=True,
+                        metadata_payload={},
+                    ),
+                    ServiceProfileFollowEdge(
+                        id=200,
+                        profile_id=watcher.id,
+                        direction="following",
+                        counterpart_username="Leader",
+                        counterpart_username_normalized="leader",
+                    ),
+                    ServiceProfileFollowEdge(
+                        id=201,
+                        profile_id=watcher.id,
+                        direction="following",
+                        counterpart_username="Unrelated",
+                        counterpart_username_normalized="unrelated",
+                    ),
+                    ServiceProfileFollowEdge(
+                        id=202,
+                        profile_id=watcher.id,
+                        direction="following",
+                        counterpart_username="Bystander",
+                        counterpart_username_normalized="bystander",
+                        removed_at=datetime(2026, 7, 29, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
+            db.commit()
+
+            profiles = db.query(ServiceProfile).order_by(ServiceProfile.id).all()
+            sqlalchemy_event.listen(engine, "before_cursor_execute", record)
+            graph = InsightsService(db)._follow_graph(profiles)
+            sqlalchemy_event.remove(engine, "before_cursor_execute", record)
+
+            edge_queries = [
+                statement
+                for statement in statements
+                if "profile_follow_edges" in statement
+            ]
+            self.assertEqual(len(edge_queries), 1)
+            # Edges, latest syncs, the legacy-sync fallback and datasets: four
+            # bounded statements, and the count does not grow with the group.
+            self.assertLessEqual(len(statements), 4)
+
+            self.assertTrue(graph.follows(watcher.id, leader.id))
+            # An unfollow is soft-removed, so it must not read as an edge, and
+            # the watcher's authoritative following list makes that a real no.
+            self.assertFalse(graph.follows(watcher.id, bystander.id))
+            # Nobody imported the leader's or bystander's social surfaces.
+            self.assertIsNone(graph.follows(leader.id, watcher.id))
+            self.assertIsNone(graph.follows(bystander.id, leader.id))
+            self.assertTrue(graph.has_authoritative_social_sync(watcher.id))
+            self.assertFalse(graph.has_authoritative_social_sync(leader.id))
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_an_unavailable_social_surface_never_becomes_authoritative_absence(self) -> None:
+        service = InsightsService(db=MagicMock())
+        service.db.query.return_value.filter.return_value.all.return_value = []
+        profiles = [
+            Profile(id=1, username="left", is_active=True, scraping_status="completed"),
+            Profile(id=2, username="right", is_active=True, scraping_status="completed"),
+        ]
+        sync = ProfileSync(id=10, profile_id=1, status="completed")
+        blocked = SyncDataset(
+            profile_sync_id=sync.id,
+            dataset_name="following",
+            source_row_count=0,
+            imported_row_count=0,
+            is_authoritative=True,
+            metadata_payload={"unavailable_reason": "forbidden/private"},
+        )
+        service._latest_sync_context = lambda _profiles: {
+            1: (sync, {"following": blocked}),
+            2: (None, {}),
+        }
+
+        graph = service._follow_graph(profiles)
+
+        self.assertFalse(graph.has_authoritative_social_sync(1))
+        self.assertIsNone(graph.follows(1, 2))
 
 
 if __name__ == "__main__":

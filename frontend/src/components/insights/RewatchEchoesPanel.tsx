@@ -4,11 +4,29 @@ import React, { useState } from 'react';
 import { ArrowRight, History, RefreshCw, Repeat2 } from 'lucide-react';
 
 import type { RewatchEcho, RewatchEchoesResponse } from '../../services/api';
-import { CoverageBanner, FeatureState, formatCalendarDate, MoviePoster, ProfileAvatar } from './InsightUI';
+import {
+  CoverageBanner,
+  FeatureState,
+  FollowsEarlierWatcherMarker,
+  formatCalendarDate,
+  MoviePoster,
+  ProfileAvatar,
+} from './InsightUI';
 
 function echoLabel(echo: RewatchEcho): string {
   if (echo.pattern === 'rewatch_plus_rewatch') return 'Both revisited it';
   return 'First watch met a rewatch';
+}
+
+/**
+ * Whether this echo carries the one social reading the data supports: the later
+ * watcher already followed the earlier one. Same-day echoes have no later
+ * watcher, and an unobservable follow stays off rather than reading as an
+ * absence.
+ */
+function followsEarlierWatcher(echo: RewatchEcho): boolean {
+  if (echo.day_gap <= 0) return false;
+  return echo.follows_earlier_watcher === true || echo.follow_backed === true;
 }
 
 function echoExplanation(echo: RewatchEcho): string {
@@ -50,6 +68,14 @@ function EchoRow({ echo }: { echo: RewatchEcho }) {
           {echo.day_gap === 0 ? 'Same day' : `${echo.day_gap} day${echo.day_gap === 1 ? '' : 's'} apart`}
         </p>
         <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-white/40">{echoExplanation(echo)}</p>
+        {followsEarlierWatcher(echo) ? (
+          <p className="mt-1.5 flex lg:justify-end">
+            <FollowsEarlierWatcherMarker
+              earlierWatcher={echo.follow_relationship?.earlier_watcher}
+              laterWatcher={echo.follow_relationship?.later_watcher}
+            />
+          </p>
+        ) : null}
       </div>
     </article>
   );
@@ -90,6 +116,19 @@ export default function RewatchEchoesPanel({
   const echoes = data.echoes ?? [];
   const visibleEchoes = expanded ? echoes : echoes.slice(0, 6);
 
+  // Said once for the panel rather than beside every marker.
+  const followGraph = data.follow_graph;
+  const followNote = followGraph && followGraph.follow_backed_gap_events > 0
+    ? [
+        `A follow marker appears on ${followGraph.follow_backed_gap_events} of the ${followGraph.gap_events} echoes with a day between them: the later watcher already followed the earlier one. That is an observed social link, not evidence that one watch caused another.`,
+        followGraph.undetermined_gap_events > 0
+          ? `${followGraph.undetermined_gap_events} stay undetermined because no authoritative following import covers them.`
+          : null,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(' ')
+    : null;
+
   return (
     <section className="space-y-4" aria-labelledby="rewatch-echoes-title">
       <CoverageBanner coverage={data.coverage} />
@@ -114,6 +153,12 @@ export default function RewatchEchoesPanel({
             </div>
           </div>
         </header>
+
+        {followNote ? (
+          <p className="border-b border-white/10 px-4 py-2.5 text-[11px] leading-5 text-white/40">
+            {followNote}
+          </p>
+        ) : null}
 
         {data.coverage.status === 'blocked' ? (
           <FeatureState title="Rewatch history is unavailable" message={data.coverage.blockers[0] ?? 'Occurrence-level rewatch data is required for this view.'} />

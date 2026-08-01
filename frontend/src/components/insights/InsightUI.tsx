@@ -2,9 +2,124 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { AlertTriangle, CheckCircle2, CircleSlash, Film, Info, Loader2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CircleSlash, Film, Info, Loader2, UserCheck } from 'lucide-react';
 
 import type { FeatureCoverage, MovieSummary, ProfileInfo } from '../../services/api';
+
+/** A film as the flat panel endpoints ship it, before it reaches a poster. */
+type FilmShell = {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+};
+
+export function formatInsightCount(value: number): string {
+  return value.toLocaleString();
+}
+
+/**
+ * Big audience numbers, shortened. A film with six million ratings and one
+ * with two hundred sit in the same column, and the exact figure is kept in the
+ * caller's `title` where it still matters.
+ */
+export function formatCompactCount(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+export function filmLabel(film: { title: string; year: number | null }): string {
+  return film.year ? `${film.title} (${film.year})` : film.title;
+}
+
+/**
+ * The panel endpoints return flat film shells rather than the full
+ * `MovieSummary` the shared poster expects; only the artwork is read from it.
+ */
+export function toMovieSummary(film: FilmShell): MovieSummary {
+  return {
+    movie_id: null,
+    tmdb_id: null,
+    letterboxd_slug: null,
+    letterboxd_url: film.letterboxd_url,
+    title: film.title,
+    year: film.year,
+    poster_url: film.poster_url,
+  };
+}
+
+export function FilmTitle({ film }: {
+  film: { title: string; year: number | null; letterboxd_url: string | null };
+}) {
+  const label = filmLabel(film);
+  return (
+    <p className="truncate text-sm font-medium text-white/85" title={label}>
+      {film.letterboxd_url ? (
+        <a
+          href={film.letterboxd_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-cinema-200 hover:underline"
+        >
+          {label}
+        </a>
+      ) : (
+        label
+      )}
+    </p>
+  );
+}
+
+/** A titled list inside a panel, so every panel's lists read the same way. */
+export function ListSection({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-wide text-white/45">{title}</p>
+      {subtitle ? <p className="mt-0.5 text-[11px] text-white/30">{subtitle}</p> : null}
+      <ul className="mt-2 space-y-1.5">{children}</ul>
+    </div>
+  );
+}
+
+/**
+ * The marker for a gap co-watch where the later watcher already followed the
+ * earlier one.
+ *
+ * The wording is the ceiling the data supports and must not be raised: a follow
+ * edge is an observed social link, never evidence that one member's watch
+ * caused another's. Nothing here says "influenced", "picked up from", or
+ * "because of".
+ */
+export function FollowsEarlierWatcherMarker({
+  earlierWatcher,
+  laterWatcher,
+}: {
+  earlierWatcher?: string | null;
+  laterWatcher?: string | null;
+}) {
+  const who = earlierWatcher && laterWatcher
+    ? `@${laterWatcher} watched after @${earlierWatcher}, whom they already follow. `
+    : '';
+  return (
+    <span
+      title={`${who}A follow is an observed social link, not evidence that one member's watch caused another's.`}
+      className="inline-flex items-center gap-1.5 rounded-full border border-cinema-400/30 bg-cinema-500/10 px-2.5 py-1 text-[11px] font-semibold text-cinema-200"
+    >
+      <UserCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      Watched after someone they follow
+    </span>
+  );
+}
 
 export function formatCalendarDate(value: string | null | undefined): string {
   if (!value) return 'Date unavailable';

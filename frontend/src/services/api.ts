@@ -407,6 +407,44 @@ export interface GroupSignalParticipant {
   is_rewatch: boolean;
 }
 
+/**
+ * The observed social link between two members of a co-watch, as annotated on
+ * the event itself. Every direction is three-valued: `null` means no
+ * authoritative following/followers import covers it, which is not the same as
+ * an observed absence.
+ *
+ * `follows_earlier_watcher` is the strongest reading available — the later
+ * watcher already followed the earlier one when these diary entries landed. It
+ * is never evidence that one watch caused the other, and any copy built on it
+ * must stay at "watched after someone they follow".
+ */
+export interface CoWatchFollowRelationship {
+  a: string;
+  b: string;
+  a_follows_b: boolean | null;
+  b_follows_a: boolean | null;
+  mutual: boolean | null;
+  /** Whether either direction was observable at all. */
+  known: boolean;
+  /** Whose own social import the reading is sourced from. */
+  observed_by: string[];
+  earlier_watcher: string | null;
+  later_watcher: string | null;
+  follows_earlier_watcher: boolean | null;
+}
+
+/** How much of a co-watch feed could be read against the follow graph. */
+export interface CoWatchFollowGraphSummary {
+  gap_events: number;
+  follow_backed_gap_events: number;
+  coincidental_gap_events: number;
+  undetermined_gap_events: number;
+  same_day_events: number;
+  profiles_with_social_sync: string[];
+  social_sync_coverage_ratio: number | null;
+  warnings: string[];
+}
+
 export interface GroupSignalEvent {
   title: string;
   year: number | null;
@@ -420,6 +458,16 @@ export interface GroupSignalEvent {
   max_rating_gap: number | null;
   rewatch_count: number;
   day_gap?: number;
+  /**
+   * Follow annotations. Optional because only the event feeds built from the
+   * social-aware insights service carry them; a feed without them must render
+   * exactly as it did before rather than as an absence of follows.
+   */
+  follow_relationship?: CoWatchFollowRelationship | null;
+  follow_relationships?: CoWatchFollowRelationship[];
+  follows_earlier_watcher?: boolean | null;
+  /** True when any later watcher in the event already followed an earlier one. */
+  follow_backed?: boolean | null;
 }
 
 export interface GroupSignalPair {
@@ -502,6 +550,10 @@ export interface RewatchEcho {
   end_date: string;
   day_gap: number;
   participants: RewatchEchoParticipant[];
+  /** Social context for the echo; see `CoWatchFollowRelationship`. */
+  follow_relationship?: CoWatchFollowRelationship | null;
+  follows_earlier_watcher?: boolean | null;
+  follow_backed?: boolean | null;
 }
 
 export interface RewatchEchoesResponse {
@@ -517,6 +569,8 @@ export interface RewatchEchoesResponse {
     rewatch_plus_rewatch: number;
     date_coverage_ratio: number | null;
   };
+  /** Absent from responses produced before the echoes were read against follows. */
+  follow_graph?: CoWatchFollowGraphSummary;
   echoes: RewatchEcho[];
 }
 
@@ -1196,6 +1250,12 @@ export interface ProfileStatsCoverage {
   enrichment_ratio: number;
   dated_events: number;
   rated_films: number;
+  reviews_total: number;
+  /**
+   * Reviews that resolved to a film in the library. Only these can place a
+   * rating on either side of the reviewed/unreviewed split.
+   */
+  reviews_matched_to_films: number;
 }
 
 export interface ProfileStatsTotals {
@@ -1242,6 +1302,71 @@ export interface ProfileStatsHighestRated {
   director: { name: string; count: number; average_rating: number } | null;
 }
 
+export interface ProfileStatsRewatchedFilm {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+  /**
+   * Watches as the diary holds them. A count of 1 beside a rewatch is real:
+   * Letterboxd allows a rewatch flag when the original viewing was never
+   * logged, and that missing viewing is not invented here.
+   */
+  watch_count: number;
+  rating: number | null;
+}
+
+/**
+ * What a profile returns to. `average_rating_rewatched` and
+ * `average_rating_once` are two averages over two self-selected halves of the
+ * same library — never a before-and-after of what rewatching does to a rating.
+ */
+export interface ProfileStatsRewatches {
+  total_rewatches: number;
+  films_rewatched: number;
+  /** 0..1. Null for an empty library, which has no rate rather than a rate of zero. */
+  rewatch_rate: number | null;
+  most_rewatched: ProfileStatsRewatchedFilm[];
+  average_rating_rewatched: number | null;
+  average_rating_once: number | null;
+}
+
+export interface ProfileStatsLongestReview {
+  title: string;
+  year: number | null;
+  length_chars: number;
+}
+
+export interface ProfileStatsLikedReview {
+  title: string;
+  year: number | null;
+  likes_count: number;
+  published_date: string | null;
+}
+
+/** Reviews published in a given calendar year; undated reviews belong to none. */
+export interface ProfileStatsReviewYear {
+  year: number;
+  count: number;
+}
+
+/**
+ * Writing habits. As with rewatches, the two averages describe which films get
+ * written about, not what writing does to a rating.
+ */
+export interface ProfileStatsReviews {
+  total_reviews: number;
+  /** Reviews carrying prose; a rating logged bare has no length, not a length of 0. */
+  with_text: number;
+  spoiler_reviews: number;
+  median_length_chars: number | null;
+  longest: ProfileStatsLongestReview | null;
+  most_liked: ProfileStatsLikedReview[];
+  reviews_by_year: ProfileStatsReviewYear[];
+  average_rating_reviewed: number | null;
+  average_rating_unreviewed: number | null;
+}
+
 export interface ProfileStatsResponse {
   username: string;
   coverage: ProfileStatsCoverage;
@@ -1255,6 +1380,13 @@ export interface ProfileStatsResponse {
   /** Ascending by decade, labelled like "1990s". */
   decades: ProfileStatsBucket[];
   highest_rated: ProfileStatsHighestRated;
+  /**
+   * Always present, even for a profile with neither: counts fall to zero and
+   * every average, median and headline film falls to null, so the client can
+   * say "none yet" instead of guessing whether the block failed to compute.
+   */
+  rewatches: ProfileStatsRewatches;
+  reviews: ProfileStatsReviews;
   /**
    * Letterboxd's own stats-page figures, verbatim, for side-by-side
    * comparison. Null when that Patron-only page was never scraped, and the
@@ -1340,6 +1472,141 @@ export const ratingComparisonApi = {
   getComparison: async (username: string, limit = 10): Promise<RatingComparisonResponse> => {
     const response = await api.get(
       `/api/profiles/${encodeURIComponent(username)}/rating-comparison`,
+      { params: { limit } },
+    );
+    return response.data;
+  },
+};
+
+/**
+ * How much of the watchlist the queue below stands on. `watchlist_films` counts
+ * only *unwatched* rows and is the denominator for everything else here, so a
+ * client can say how much of the list the circle can actually speak to.
+ */
+export interface WatchlistInsightsCoverage {
+  watchlist_films: number;
+  /** Unwatched films at least one other tracked profile has rated. */
+  rated_by_group: number;
+  /** Unwatched films carrying Letterboxd's own crowd average. */
+  with_letterboxd_average: number;
+}
+
+export interface WatchlistRater {
+  username: string;
+  rating: number;
+}
+
+export interface WatchlistRecommendation {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+  /** Averaged over *other* tracked profiles only — never this member's own rating. */
+  group_average: number | null;
+  group_raters: number;
+  liked_by: number;
+  letterboxd_average: number | null;
+  added_date: string | null;
+  /** Null when the import carried no added date: an unknown wait, not a zero-day one. */
+  days_waiting: number | null;
+  /** Up to a handful of the members behind the average, best rating first. */
+  raters: WatchlistRater[];
+}
+
+export interface WatchlistWaitingFilm {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+  added_date: string | null;
+  days_waiting: number | null;
+}
+
+export interface WatchlistGenreCount {
+  label: string;
+  count: number;
+}
+
+export interface WatchlistInsightsResponse {
+  username: string;
+  coverage: WatchlistInsightsCoverage;
+  recommendations: WatchlistRecommendation[];
+  longest_waiting: WatchlistWaitingFilm[];
+  genre_skew: WatchlistGenreCount[];
+  totals: {
+    /** Both read dated rows only; null when nothing on the list carried a date. */
+    median_days_waiting: number | null;
+    oldest_days_waiting: number | null;
+  };
+}
+
+export const watchlistInsightsApi = {
+  getInsights: async (username: string, limit = 20): Promise<WatchlistInsightsResponse> => {
+    const response = await api.get(
+      `/api/profiles/${encodeURIComponent(username)}/watchlist-insights`,
+      { params: { limit } },
+    );
+    return response.data;
+  },
+};
+
+/**
+ * The rated films the obscurity index could be computed over. Films the
+ * crowd-rating backfill has not reached are excluded rather than counted as an
+ * audience of zero, so this pair is the caveat for the median.
+ */
+export interface ObscurityCoverage {
+  rated_films: number;
+  films_with_rating_count: number;
+}
+
+/** Which way this profile's audience sizes lean against the rest of the circle. */
+export type ObscurityLean = 'obscure' | 'balanced' | 'mainstream';
+
+export interface ObscurityIndex {
+  /** Audience size of the typical rated film. A median: audience sizes are wildly skewed. */
+  median_rating_count: number | null;
+  mean_rating_count: number | null;
+  /** 100 means every other tracked profile watches bigger films. Null with no one to compare to. */
+  percentile_vs_group: number | null;
+  /** Read straight off the percentile, so label and number can never disagree. */
+  lean: ObscurityLean | null;
+}
+
+export interface ObscurityFilm {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+  rating_count: number | null;
+  profile_rating: number;
+}
+
+export interface ObscurityCrowdPosition {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+  profile_rating: number;
+  /** 0..1 share of the crowd's own histogram sitting at or below this rating. */
+  share_at_or_below: number;
+  crowd_average: number | null;
+}
+
+export interface ObscurityResponse {
+  username: string;
+  coverage: ObscurityCoverage;
+  index: ObscurityIndex;
+  most_obscure: ObscurityFilm[];
+  most_mainstream: ObscurityFilm[];
+  /** Empty — never null — until the rating-distribution backfill has been run. */
+  crowd_position: ObscurityCrowdPosition[];
+}
+
+export const obscurityApi = {
+  getObscurity: async (username: string, limit = 10): Promise<ObscurityResponse> => {
+    const response = await api.get(
+      `/api/profiles/${encodeURIComponent(username)}/obscurity`,
       { params: { limit } },
     );
     return response.data;

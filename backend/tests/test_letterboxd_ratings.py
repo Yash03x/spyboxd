@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.database.models import Movie, Profile, ProfileSync
 from backend.services.letterboxd_ratings import (
+    BUCKET_KEYS,
     LetterboxdRatingError,
     LetterboxdRatingFetcher,
     LetterboxdRatingParseError,
+    parse_rating_buckets,
     parse_rating_histogram,
     resolve_slug,
     sync_letterboxd_ratings,
@@ -83,6 +85,82 @@ EMPTY_INCLUDE = "\n\n\n"
 
 
 # ---------------------------------------------------------------------------
+# The full ten-bucket document, from a live capture of
+# letterboxd.com/csi/film/the-dark-knight/rating-histogram/ on 2026-08-01.
+# Every figure, star label and abbreviation below is verbatim from that
+# response; only whitespace between tags has been collapsed.
+#
+# Note what the two labels on each row disagree about: the ``title`` attribute
+# carries the exact size, the visible ``_sr-only`` span carries an abbreviation
+# ("2.2M" for 2,230,960 -- 30,960 ratings short). The parser prefers the exact
+# one, and expanding the abbreviation is only a fallback.
+# ---------------------------------------------------------------------------
+
+REAL_CAPTURE = (
+    # (star label, href fragment, exact count, visible abbreviated label)
+    ("half-★", "%C2%BD", 2_789, "2,789"),
+    ("★", "1", 7_099, "7,099"),
+    ("★½", "1%C2%BD", 4_180, "4,180"),
+    ("★★", "2", 27_619, "27.6K"),
+    ("★★½", "2%C2%BD", 27_402, "27.4K"),
+    ("★★★", "3", 198_521, "199K"),
+    ("★★★½", "3%C2%BD", 238_110, "238K"),
+    ("★★★★", "4", 1_049_276, "1M"),
+    ("★★★★½", "4%C2%BD", 824_314, "824K"),
+    ("★★★★★", "5", 2_230_960, "2.2M"),
+)
+
+REAL_DISTRIBUTION = {
+    "0.5": 2_789,
+    "1.0": 7_099,
+    "1.5": 4_180,
+    "2.0": 27_619,
+    "2.5": 27_402,
+    "3.0": 198_521,
+    "3.5": 238_110,
+    "4.0": 1_049_276,
+    "4.5": 824_314,
+    "5.0": 2_230_960,
+}
+
+REAL_RATING_COUNT = 4_610_270
+
+
+def _real_row(stars: str, href: str, count: int, visible: str, *, titled: bool = True) -> str:
+    title = f' title="{count:,} {stars} ratings (1%)"' if titled else ""
+    return (
+        '<tr class="column" style="--value: 0.5;">'
+        f'<th scope="row" class="_sr-only">{stars}</th>'
+        '<td class="cell">'
+        f'<a href="/film/the-dark-knight/ratings/rated/{href}/by/rating/"'
+        f' class="barcolumn tooltip"{title}>'
+        f'<span class="_sr-only">{visible} (1%)</span>'
+        '<span class="bar"><span class="fill"></span></span>'
+        "</a></td></tr>"
+    )
+
+
+def _real_histogram(*, titled: bool = True, average: bool = True) -> str:
+    rows = "".join(_real_row(*bucket, titled=titled) for bucket in REAL_CAPTURE)
+    anchor = (
+        '<a href="/film/the-dark-knight/ratings/" class="averagerating tooltip"'
+        f' title="Weighted average of 4.50 based on {REAL_RATING_COUNT:,} ratings"> 4.5 </a>'
+        if average
+        else ""
+    )
+    return (
+        '<div class="rating-histogram"> <div class="layout">'
+        '<table class="chart"><caption class="_sr-only">Rating Distribution</caption>'
+        '<thead class="_sr-only"><tr><th scope="col">Rating</th>'
+        '<th scope="col">Count</th></tr></thead>'
+        f'<tbody class="plot">{rows}</tbody></table>{anchor}</div> </div>'
+    )
+
+
+REAL_HISTOGRAM = _real_histogram()
+
+
+# ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
 
@@ -147,6 +225,111 @@ def test_out_of_scale_average_is_loud_markup_drift():
     )
     with pytest.raises(LetterboxdRatingParseError):
         parse_rating_histogram(document)
+
+
+# ---------------------------------------------------------------------------
+# The ten half-star buckets
+# ---------------------------------------------------------------------------
+
+
+def test_the_real_capture_yields_all_ten_half_star_buckets():
+    parsed = parse_rating_histogram(REAL_HISTOGRAM)
+
+    assert parsed.distribution == REAL_DISTRIBUTION
+    assert list(parsed.distribution) == list(BUCKET_KEYS)
+    assert (parsed.average, parsed.count) == (4.5, REAL_RATING_COUNT)
+
+
+def test_the_exact_bucket_figure_is_preferred_over_the_abbreviated_label():
+    # The 5-star row says "2,230,960" in its title and "2.2M" in its visible
+    # label. Storing the abbreviation would throw away 30,960 ratings, and the
+    # ten abbreviated labels together would miss the real total by 80,202.
+    parsed = parse_rating_histogram(REAL_HISTOGRAM)
+
+    assert parsed.distribution["5.0"] == 2_230_960
+    assert parsed.distribution["5.0"] != 2_200_000
+    assert parsed.distribution["2.0"] == 27_619 and parsed.distribution["2.0"] != 27_600
+    assert sum(parsed.distribution.values()) == REAL_RATING_COUNT
+
+
+def test_an_abbreviated_label_round_trips_when_the_exact_figure_is_gone():
+    # Same document with the title attribute stripped from every bar: the
+    # visible labels are all that is left, so they are expanded. "2.2M" must
+    # become 2,200,000 rather than 2.2, 22, or a discarded bucket.
+    document = _real_histogram(titled=False)
+
+    distribution = parse_rating_buckets(document)
+
+    assert distribution["5.0"] == 2_200_000
+    assert distribution["4.0"] == 1_000_000
+    assert distribution["3.0"] == 199_000
+    assert distribution["2.0"] == 27_600
+    assert distribution["2.5"] == 27_400
+    assert distribution["0.5"] == 2_789  # small buckets are never abbreviated
+    assert list(distribution) == list(BUCKET_KEYS)
+
+
+def test_the_bucket_sum_is_never_used_as_the_rating_count():
+    # The abbreviated labels sum to 4,530,068 -- 80,202 short of the real
+    # total. Even at full precision the buckets are only ever a shape; the
+    # count comes from the weighted-average phrase.
+    abbreviated = parse_rating_buckets(_real_histogram(titled=False))
+    assert sum(abbreviated.values()) == 4_530_068
+    assert sum(abbreviated.values()) != REAL_RATING_COUNT
+
+    parsed = parse_rating_histogram(_real_histogram(titled=False))
+    assert parsed.count == REAL_RATING_COUNT
+
+
+def test_buckets_are_read_even_when_letterboxd_withholds_the_average():
+    parsed = parse_rating_histogram(_real_histogram(average=False))
+
+    assert (parsed.average, parsed.count) == (None, None)
+    assert parsed.is_known is False
+    assert parsed.distribution == REAL_DISTRIBUTION
+
+
+def test_a_histogram_with_no_buckets_is_null_not_an_empty_dict():
+    for document in (EMPTY_INCLUDE, "", None):
+        assert parse_rating_buckets(document) is None
+        assert parse_rating_histogram(document).distribution is None
+
+    # A document that renders the table but plots nothing is still "no shape".
+    plotted_nothing = (
+        '<div class="rating-histogram"><table class="chart">'
+        '<tbody class="plot"></tbody></table></div>'
+    )
+    assert parse_rating_buckets(plotted_nothing) is None
+
+
+def test_the_header_row_is_not_mistaken_for_a_bucket():
+    # <thead> carries <th scope="col">Rating</th> but no class="column" row and
+    # no barcolumn anchor, so it must never enter the distribution.
+    assert len(parse_rating_buckets(REAL_HISTOGRAM)) == 10
+
+
+def test_an_unreadable_bucket_label_is_loud_markup_drift():
+    drifted = (
+        '<div class="rating-histogram"><table class="chart"><tbody class="plot">'
+        '<tr class="column"><th scope="row" class="_sr-only">six stars</th>'
+        '<td class="cell"><a class="barcolumn tooltip" title="10 six stars ratings (1%)">'
+        '<span class="_sr-only">10 (1%)</span></a></td></tr>'
+        "</tbody></table></div>"
+    )
+    with pytest.raises(LetterboxdRatingParseError):
+        parse_rating_buckets(drifted)
+
+
+def test_a_bucket_with_no_readable_size_is_loud_markup_drift():
+    drifted = (
+        '<div class="rating-histogram"><table class="chart"><tbody class="plot">'
+        '<tr class="column"><th scope="row" class="_sr-only">★★★</th>'
+        '<td class="cell"><a class="barcolumn tooltip">'
+        '<span class="_sr-only">plenty (1%)</span></a></td></tr>'
+        "</tbody></table></div>"
+    )
+    with pytest.raises(LetterboxdRatingParseError):
+        parse_rating_buckets(drifted)
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +481,74 @@ def test_successful_sync_writes_average_count_and_stamp(database):
     assert movie.letterboxd_rating_count == 4_609_944
     assert movie.letterboxd_rating_synced_at is not None
     assert (stats.selected, stats.updated, stats.failed) == (1, 1, 0)
+
+
+def test_successful_sync_persists_the_ten_bucket_distribution(database):
+    _add_movie(database, 1, "The Dark Knight", letterboxd_slug="the-dark-knight")
+    fetcher = ScriptedFetcher({"the-dark-knight": REAL_HISTOGRAM})
+
+    sync_letterboxd_ratings(database, fetcher, sleeper=lambda _: None)
+
+    movie = database.get(Movie, 1)
+    assert movie.letterboxd_rating_distribution == REAL_DISTRIBUTION
+    # The stored total still comes from the weighted-average phrase.
+    assert movie.letterboxd_rating_count == REAL_RATING_COUNT
+
+
+def test_refresh_backfills_the_distribution_behind_an_existing_average(database):
+    # The state every already-synced row is in today: an average and a count,
+    # and a distribution column that was thrown away at parse time.
+    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    _add_movie(
+        database,
+        1,
+        "The Dark Knight",
+        letterboxd_slug="the-dark-knight",
+        letterboxd_average_rating=4.5,
+        letterboxd_rating_count=REAL_RATING_COUNT,
+        letterboxd_rating_distribution=None,
+        letterboxd_rating_synced_at=now - timedelta(days=1),
+    )
+    fetcher = ScriptedFetcher({"the-dark-knight": REAL_HISTOGRAM})
+
+    stats = sync_letterboxd_ratings(
+        database, fetcher, refresh=True, now=now, sleeper=lambda _: None
+    )
+
+    movie = database.get(Movie, 1)
+    assert movie.letterboxd_rating_distribution == REAL_DISTRIBUTION
+    assert movie.letterboxd_average_rating == 4.5
+    assert stats.updated == 1
+
+
+def test_a_missing_distribution_never_clears_a_stored_one(database):
+    _add_movie(
+        database,
+        1,
+        "The Dark Knight",
+        letterboxd_slug="the-dark-knight",
+        letterboxd_rating_distribution=REAL_DISTRIBUTION,
+    )
+    # Letterboxd served the include but plotted nothing this time.
+    fetcher = ScriptedFetcher({"the-dark-knight": EMPTY_INCLUDE})
+
+    sync_letterboxd_ratings(database, fetcher, sleeper=lambda _: None)
+
+    assert database.get(Movie, 1).letterboxd_rating_distribution == REAL_DISTRIBUTION
+
+
+def test_buckets_are_stored_even_when_the_average_is_withheld(database):
+    _add_movie(database, 1, "Barely Rated", letterboxd_slug="barely-rated")
+    fetcher = ScriptedFetcher({"barely-rated": _real_histogram(average=False)})
+
+    stats = sync_letterboxd_ratings(database, fetcher, sleeper=lambda _: None)
+
+    movie = database.get(Movie, 1)
+    assert movie.letterboxd_rating_distribution == REAL_DISTRIBUTION
+    assert movie.letterboxd_average_rating is None
+    assert movie.letterboxd_rating_count is None
+    # The headline is what is unavailable, so that is what the stat reports.
+    assert stats.unavailable == 1
 
 
 def test_confirmed_absence_stamps_the_attempt_so_dead_films_are_not_retried(database):

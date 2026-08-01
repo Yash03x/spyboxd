@@ -1,7 +1,7 @@
 """Profile stats: honest arithmetic over whatever enrichment we actually hold."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from itertools import count
 from typing import Any, Optional
 
@@ -21,12 +21,14 @@ from database.models import (
     Profile,
     ProfileAccessRequest,
     ProfileFilm,
+    Review,
     UserTrackedProfile,
     WatchEvent,
 )
 from services.profile_stats import (
     build_profile_stats,
     longest_streak_weeks,
+    median_length_chars,
     multi_film_days,
 )
 
@@ -42,6 +44,7 @@ TABLES = (
     ProfileFilm.__table__,
     WatchEvent.__table__,
     MovieEnrichment.__table__,
+    Review.__table__,
     AppUser.__table__,
     UserTrackedProfile.__table__,
     ProfileAccessRequest.__table__,
@@ -95,6 +98,9 @@ def _film(
     year: Optional[int] = 2000,
     rating: Optional[float] = None,
     rewatch_count: int = 0,
+    watch_count: Optional[int] = None,
+    poster_url: Optional[str] = None,
+    letterboxd_url: Optional[str] = None,
     enrich: bool = True,
     runtime: Optional[int] = 100,
     genres: Optional[list[str]] = None,
@@ -112,6 +118,8 @@ def _film(
         title=title,
         normalized_title=title.casefold(),
         release_year=year,
+        poster_url=poster_url,
+        letterboxd_url=letterboxd_url,
     )
     database.add(movie)
     database.add(
@@ -120,7 +128,9 @@ def _film(
             movie_id=movie_id,
             rating=rating,
             tags=[],
-            watch_count=max(1, rewatch_count + 1),
+            watch_count=(
+                watch_count if watch_count is not None else max(1, rewatch_count + 1)
+            ),
             rewatch_count=rewatch_count,
         )
     )
@@ -160,6 +170,37 @@ def _watch(database: Session, profile: Profile, movie: Movie, watched: date) -> 
         )
     )
     database.commit()
+
+
+def _review(
+    database: Session,
+    profile: Profile,
+    *,
+    movie: Optional[Movie] = None,
+    title: str = "Unmatched Film",
+    year: Optional[int] = None,
+    text: Optional[str] = "A fine watch.",
+    spoilers: bool = False,
+    likes: int = 0,
+    published: Optional[date] = None,
+    removed: bool = False,
+) -> Review:
+    review = Review(
+        profile_id=profile.id,
+        movie_id=movie.id if movie is not None else None,
+        movie_title=movie.title if movie is not None else title,
+        movie_year=movie.release_year if movie is not None else year,
+        review_text=text,
+        contains_spoilers=spoilers,
+        likes_count=likes,
+        comments_count=0,
+        published_date=published,
+        tags=[],
+        removed_at=datetime(2026, 6, 1, tzinfo=timezone.utc) if removed else None,
+    )
+    database.add(review)
+    database.commit()
+    return review
 
 
 # --- streak and multi-film-day arithmetic -----------------------------------
@@ -418,6 +459,8 @@ def test_a_profile_with_no_enrichment_returns_nulls_not_zeros(database: Session)
         "enrichment_ratio": 0.0,
         "dated_events": 1,
         "rated_films": 1,
+        "reviews_total": 0,
+        "reviews_matched_to_films": 0,
     }
     totals = stats["totals"]
     assert totals["films"] == 1
@@ -572,6 +615,400 @@ def test_letterboxd_reported_snapshot_is_returned_verbatim(database: Session) ->
     }
 
 
+# --- rewatches --------------------------------------------------------------
+
+
+def test_the_rewatch_block_counts_returns_and_averages_both_sides(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    _film(database, profile, title="Returned To", rating=5.0, rewatch_count=2)
+    _film(database, profile, title="Revisited", rating=4.5, rewatch_count=1)
+    _film(database, profile, title="Seen Once", rating=3.0)
+    _film(database, profile, title="Also Once", rating=4.0)
+    _film(database, profile, title="Once, Unrated")
+
+    rewatches = build_profile_stats(database, profile)["rewatches"]
+
+    assert rewatches["total_rewatches"] == 3
+    assert rewatches["films_rewatched"] == 2
+    # Two of five films, never rounded up to "most of the library".
+    assert rewatches["rewatch_rate"] == 0.4
+    assert rewatches["average_rating_rewatched"] == 4.75
+    # The unrated film sits in neither average; 3.0 and 4.0 make 3.5.
+    assert rewatches["average_rating_once"] == 3.5
+
+
+def test_most_rewatched_ranks_by_watch_count_and_omits_films_seen_once(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    _film(
+        database,
+        profile,
+        title="Comfort Film",
+        year=1994,
+        rating=4.5,
+        rewatch_count=1,
+        watch_count=5,
+        poster_url="https://image.example/comfort.jpg",
+        letterboxd_url="https://letterboxd.com/film/comfort/",
+    )
+    _film(database, profile, title="Second Favourite", rewatch_count=3, watch_count=4)
+    _film(database, profile, title="Seen Once", watch_count=1)
+
+    most_rewatched = build_profile_stats(database, profile)["rewatches"]["most_rewatched"]
+
+    assert [entry["title"] for entry in most_rewatched] == [
+        "Comfort Film",
+        "Second Favourite",
+    ]
+    assert most_rewatched[0] == {
+        "title": "Comfort Film",
+        "year": 1994,
+        "poster_url": "https://image.example/comfort.jpg",
+        "letterboxd_url": "https://letterboxd.com/film/comfort/",
+        "watch_count": 5,
+        "rating": 4.5,
+    }
+
+
+def test_equal_watch_counts_fall_back_to_the_deeper_rewatch(database: Session) -> None:
+    profile = _profile(database)
+    _film(database, profile, title="Shallow", rewatch_count=1, watch_count=4)
+    _film(database, profile, title="Deep", rewatch_count=3, watch_count=4)
+
+    most_rewatched = build_profile_stats(database, profile)["rewatches"]["most_rewatched"]
+
+    assert [entry["title"] for entry in most_rewatched] == ["Deep", "Shallow"]
+
+
+def test_a_rewatch_whose_first_viewing_was_never_logged_still_counts(
+    database: Session,
+) -> None:
+    # Letterboxd lets a diary entry be marked "rewatch" without the original
+    # watch ever being logged, so watch_count can be 1 alongside a rewatch.
+    # The count is reported as held, not nudged up to the viewing nobody logged.
+    profile = _profile(database)
+    _film(database, profile, title="Rewatch Only", rating=4.0, rewatch_count=1, watch_count=1)
+    _film(database, profile, title="Seen Once", rating=2.0, watch_count=1)
+
+    rewatches = build_profile_stats(database, profile)["rewatches"]
+
+    assert rewatches["films_rewatched"] == 1
+    assert rewatches["most_rewatched"] == [
+        {
+            "title": "Rewatch Only",
+            "year": 2000,
+            "poster_url": None,
+            "letterboxd_url": None,
+            "watch_count": 1,
+            "rating": 4.0,
+        }
+    ]
+    assert rewatches["average_rating_rewatched"] == 4.0
+    assert rewatches["average_rating_once"] == 2.0
+
+
+def test_most_rewatched_is_capped_at_ten_films(database: Session) -> None:
+    profile = _profile(database)
+    for index in range(14):
+        _film(
+            database,
+            profile,
+            title=f"Rewatch {index:02d}",
+            rewatch_count=1,
+            watch_count=index + 2,
+        )
+
+    most_rewatched = build_profile_stats(database, profile)["rewatches"]["most_rewatched"]
+
+    assert len(most_rewatched) == 10
+    assert most_rewatched[0]["title"] == "Rewatch 13"
+    assert most_rewatched[-1]["title"] == "Rewatch 04"
+
+
+def test_a_profile_that_never_rewatches_reports_zero_and_nulls_not_absence(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    _film(database, profile, title="Only Watch", rating=4.0)
+
+    rewatches = build_profile_stats(database, profile)["rewatches"]
+
+    assert rewatches["total_rewatches"] == 0
+    assert rewatches["films_rewatched"] == 0
+    assert rewatches["rewatch_rate"] == 0.0
+    assert rewatches["most_rewatched"] == []
+    # Nothing was rewatched, so there is no rewatched average to report -- but
+    # the one-time average is perfectly knowable.
+    assert rewatches["average_rating_rewatched"] is None
+    assert rewatches["average_rating_once"] == 4.0
+
+
+def test_an_empty_library_has_no_rewatch_rate_rather_than_a_rate_of_zero(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+
+    rewatches = build_profile_stats(database, profile)["rewatches"]
+
+    assert rewatches["total_rewatches"] == 0
+    assert rewatches["films_rewatched"] == 0
+    assert rewatches["rewatch_rate"] is None
+    assert rewatches["most_rewatched"] == []
+    assert rewatches["average_rating_rewatched"] is None
+    assert rewatches["average_rating_once"] is None
+
+
+def test_the_rewatch_totals_agree_with_the_existing_totals_block(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    _film(database, profile, title="Twice", rewatch_count=1)
+    _film(database, profile, title="Thrice", rewatch_count=2)
+
+    stats = build_profile_stats(database, profile)
+
+    assert stats["rewatches"]["total_rewatches"] == stats["totals"]["rewatches"] == 3
+
+
+# --- reviews ----------------------------------------------------------------
+
+
+def test_median_length_is_the_middle_review_and_unknown_without_reviews() -> None:
+    assert median_length_chars([]) is None
+    assert median_length_chars([42]) == 42
+    assert median_length_chars([30, 10, 20]) == 20
+    # No single middle review: the two middle lengths average out, floored,
+    # because a review is never half a character long.
+    assert median_length_chars([10, 20, 30, 41]) == 25
+
+
+def test_the_review_block_counts_text_spoilers_and_median_length(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    movie = _film(database, profile, title="Reviewed", rating=4.0)
+    _review(database, profile, movie=movie, text="x" * 100)
+    _review(database, profile, movie=movie, text="y" * 300, spoilers=True)
+    _review(database, profile, movie=movie, text="z" * 500)
+    # A rating logged with no prose is still a review row, but not writing.
+    _review(database, profile, movie=movie, text="   ")
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["total_reviews"] == 4
+    assert reviews["with_text"] == 3
+    assert reviews["spoiler_reviews"] == 1
+    assert reviews["median_length_chars"] == 300
+
+
+def test_the_longest_review_names_its_film(database: Session) -> None:
+    profile = _profile(database)
+    short = _film(database, profile, title="Short Take", year=2011)
+    essay = _film(database, profile, title="The Essay", year=1999)
+    _review(database, profile, movie=short, text="Fun.")
+    _review(database, profile, movie=essay, text="w" * 4000)
+
+    longest = build_profile_stats(database, profile)["reviews"]["longest"]
+
+    assert longest == {"title": "The Essay", "year": 1999, "length_chars": 4000}
+
+
+def test_review_length_ignores_surrounding_whitespace(database: Session) -> None:
+    profile = _profile(database)
+    movie = _film(database, profile, title="Padded")
+    _review(database, profile, movie=movie, text="\n\n  four  \n\n")
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["longest"]["length_chars"] == 4
+    assert reviews["median_length_chars"] == 4
+
+
+def test_most_liked_is_capped_at_five_and_skips_reviews_nobody_liked(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    movie = _film(database, profile, title="Popular", year=2004)
+    for likes in range(8):
+        _review(
+            database,
+            profile,
+            movie=movie,
+            likes=likes,
+            published=date(2026, 1, 1 + likes),
+        )
+
+    most_liked = build_profile_stats(database, profile)["reviews"]["most_liked"]
+
+    assert [entry["likes_count"] for entry in most_liked] == [7, 6, 5, 4, 3]
+    assert most_liked[0] == {
+        "title": "Popular",
+        "year": 2004,
+        "likes_count": 7,
+        "published_date": "2026-01-08",
+    }
+
+
+def test_a_profile_whose_reviews_were_never_liked_gets_an_empty_shortlist(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    movie = _film(database, profile, title="Quiet")
+    _review(database, profile, movie=movie, likes=0)
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["total_reviews"] == 1
+    assert reviews["most_liked"] == []
+
+
+def test_reviews_by_year_is_ascending_and_leaves_out_undated_reviews(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    movie = _film(database, profile, title="Dated")
+    for published in (
+        date(2024, 5, 1),
+        date(2022, 2, 2),
+        date(2024, 8, 9),
+        date(2023, 1, 1),
+        date(2024, 12, 25),
+    ):
+        _review(database, profile, movie=movie, published=published)
+    # No publication date: this review belongs to no year and is not guessed
+    # into one, though it still counts in the total.
+    _review(database, profile, movie=movie, published=None)
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["reviews_by_year"] == [
+        {"year": 2022, "count": 1},
+        {"year": 2023, "count": 1},
+        {"year": 2024, "count": 3},
+    ]
+    assert reviews["total_reviews"] == 6
+
+
+def test_reviewed_and_unreviewed_averages_split_the_same_library(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    moved = _film(database, profile, title="Moved Me", rating=5.0)
+    also_moved = _film(database, profile, title="Also Moved Me", rating=4.5)
+    _film(database, profile, title="Just Watched", rating=3.0)
+    _film(database, profile, title="Also Just Watched", rating=2.0)
+    _film(database, profile, title="Unrated")
+    _review(database, profile, movie=moved)
+    _review(database, profile, movie=also_moved)
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["average_rating_reviewed"] == 4.75
+    assert reviews["average_rating_unreviewed"] == 2.5
+
+
+def test_two_reviews_of_one_film_move_that_film_across_the_split_once(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    twice_reviewed = _film(database, profile, title="Written Up Twice", rating=5.0)
+    _film(database, profile, title="Never Written Up", rating=3.0)
+    _review(database, profile, movie=twice_reviewed, text="First pass.")
+    _review(database, profile, movie=twice_reviewed, text="Second pass.")
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["total_reviews"] == 2
+    # One film either side, however many times it was written about.
+    assert reviews["average_rating_reviewed"] == 5.0
+    assert reviews["average_rating_unreviewed"] == 3.0
+
+
+def test_a_review_that_matched_no_film_counts_but_moves_no_rating(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    _film(database, profile, title="In The Library", rating=4.0)
+    _review(database, profile, movie=None, title="Never Matched", year=1975)
+
+    stats = build_profile_stats(database, profile)
+
+    assert stats["reviews"]["total_reviews"] == 1
+    assert stats["reviews"]["longest"]["title"] == "Never Matched"
+    # It resolved to no film, so it cannot place one on the reviewed side.
+    assert stats["reviews"]["average_rating_reviewed"] is None
+    assert stats["reviews"]["average_rating_unreviewed"] == 4.0
+    # ...and the coverage block says so rather than leaving the gap silent.
+    assert stats["coverage"]["reviews_total"] == 1
+    assert stats["coverage"]["reviews_matched_to_films"] == 0
+
+
+def test_a_review_prefers_the_canonical_film_title_over_its_own_copy(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+    movie = _film(database, profile, title="Renamed Since", year=2018)
+    review = _review(database, profile, movie=movie)
+    review.movie_title = "Stale Scraped Title"
+    review.movie_year = 1900
+    database.commit()
+
+    longest = build_profile_stats(database, profile)["reviews"]["longest"]
+
+    assert longest["title"] == "Renamed Since"
+    assert longest["year"] == 2018
+
+
+def test_removed_reviews_are_not_counted(database: Session) -> None:
+    profile = _profile(database)
+    movie = _film(database, profile, title="Deleted Take", rating=4.0)
+    _review(database, profile, movie=movie, text="Kept.", likes=3)
+    _review(database, profile, movie=movie, text="Deleted." * 50, likes=99, removed=True)
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["total_reviews"] == 1
+    assert reviews["longest"]["length_chars"] == len("Kept.")
+    assert [entry["likes_count"] for entry in reviews["most_liked"]] == [3]
+
+
+def test_another_profiles_reviews_never_leak_in(database: Session) -> None:
+    profile = _profile(database)
+    other = _profile(database, username="stranger")
+    movie = _film(database, profile, title="Shared Film", rating=4.0)
+    _review(database, other, movie=movie, text="Not theirs.", likes=50)
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews["total_reviews"] == 0
+    assert reviews["most_liked"] == []
+    assert reviews["average_rating_reviewed"] is None
+    assert reviews["average_rating_unreviewed"] == 4.0
+
+
+def test_a_profile_with_no_reviews_returns_the_block_with_nulls_not_absence(
+    database: Session,
+) -> None:
+    profile = _profile(database)
+
+    reviews = build_profile_stats(database, profile)["reviews"]
+
+    assert reviews == {
+        "total_reviews": 0,
+        "with_text": 0,
+        "spoiler_reviews": 0,
+        "median_length_chars": None,
+        "longest": None,
+        "most_liked": [],
+        "reviews_by_year": [],
+        "average_rating_reviewed": None,
+        "average_rating_unreviewed": None,
+    }
+
+
 # --- route ------------------------------------------------------------------
 
 
@@ -607,7 +1044,15 @@ def _tracked_user(database: Session, profile: Optional[Profile]) -> ClerkUser:
 
 def test_route_serves_the_payload_for_a_tracked_profile(database: Session, client) -> None:
     profile = _profile(database)
-    _film(database, profile, title="Tracked Film", rating=4.0, runtime=120)
+    movie = _film(
+        database,
+        profile,
+        title="Tracked Film",
+        rating=4.0,
+        runtime=120,
+        rewatch_count=1,
+    )
+    _review(database, profile, movie=movie, text="Worth returning to.", likes=2)
     user = _tracked_user(database, profile)
     backend_main.app.dependency_overrides[backend_main.get_current_user] = lambda: user
 
@@ -629,8 +1074,50 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "languages",
         "decades",
         "highest_rated",
+        "rewatches",
+        "reviews",
         "letterboxd_reported",
     }
+    assert set(payload["rewatches"]) == {
+        "total_rewatches",
+        "films_rewatched",
+        "rewatch_rate",
+        "most_rewatched",
+        "average_rating_rewatched",
+        "average_rating_once",
+    }
+    assert set(payload["reviews"]) == {
+        "total_reviews",
+        "with_text",
+        "spoiler_reviews",
+        "median_length_chars",
+        "longest",
+        "most_liked",
+        "reviews_by_year",
+        "average_rating_reviewed",
+        "average_rating_unreviewed",
+    }
+    assert payload["rewatches"]["most_rewatched"][0]["title"] == "Tracked Film"
+    assert payload["reviews"]["total_reviews"] == 1
+
+
+def test_the_route_serves_both_blocks_for_a_profile_with_neither(
+    database: Session, client
+) -> None:
+    profile = _profile(database)
+    _film(database, profile, title="Watched Once, Never Written Up", rating=3.5)
+    user = _tracked_user(database, profile)
+    backend_main.app.dependency_overrides[backend_main.get_current_user] = lambda: user
+
+    response = client(user).get(f"/api/profiles/{profile.username}/stats")
+
+    payload = response.json()
+    # Present and empty, so a client can render "none yet" rather than having
+    # to tell a missing block from a failed one.
+    assert payload["rewatches"]["most_rewatched"] == []
+    assert payload["rewatches"]["average_rating_rewatched"] is None
+    assert payload["reviews"]["total_reviews"] == 0
+    assert payload["reviews"]["longest"] is None
 
 
 def test_route_refuses_an_untracked_profile(database: Session, client) -> None:

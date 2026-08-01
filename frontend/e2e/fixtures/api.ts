@@ -93,25 +93,66 @@ const signalEvent = {
   day_gap: 0,
 };
 
+// The pair's social link as the event feeds annotate it: bravo already followed
+// alpha when these entries landed, which is what a follow marker may say and
+// the ceiling of what it may claim.
+const followRelationship = {
+  a: 'alpha',
+  b: 'bravo',
+  a_follows_b: false,
+  b_follows_a: true,
+  mutual: false,
+  known: true,
+  observed_by: ['alpha', 'bravo'],
+  earlier_watcher: 'alpha',
+  later_watcher: 'bravo',
+  follows_earlier_watcher: true,
+};
+
+// A gap event, so the follow marker has something to attach to. The same-day
+// event above deliberately carries no annotation: with no later watcher there
+// is nothing to say.
+const gapSignalEvent = {
+  title: 'Echoed Fixture Film',
+  year: 2022,
+  start_date: '2026-07-26',
+  end_date: '2026-07-27',
+  profile_count: 2,
+  pair_count: 1,
+  profiles: ['alpha', 'bravo'],
+  participants: [
+    { username: 'alpha', rating: 4, watched_date: '2026-07-26', is_rewatch: false },
+    { username: 'bravo', rating: 3.5, watched_date: '2026-07-27', is_rewatch: false },
+  ],
+  average_rating: 3.75,
+  max_rating_gap: 0.5,
+  rewatch_count: 0,
+  day_gap: 1,
+  follow_relationship: followRelationship,
+  follow_relationships: [followRelationship],
+  follows_earlier_watcher: true,
+  follow_backed: true,
+};
+
 const groupSignals = {
   summary: {
     profiles_analyzed: profiles.length,
     profiles_with_diary_dates: profiles.length,
     shared_titles: 42,
     same_day_events: 1,
-    one_day_gap_events: 0,
+    one_day_gap_events: 1,
     same_day_pair_hits: 1,
-    one_day_gap_pair_hits: 0,
+    one_day_gap_pair_hits: 1,
     gap_days: 1,
-    gap_events: 1,
-    gap_pair_hits: 1,
+    gap_events: 2,
+    gap_pair_hits: 2,
     most_shared_title: sharedMovie,
     strongest_alignment_pair: pair,
     most_divisive_title: sharedMovie,
   },
   same_day_events: [signalEvent],
-  one_day_gap_events: [],
-  gap_events: [signalEvent],
+  one_day_gap_events: [gapSignalEvent],
+  gap_events: [signalEvent, gapSignalEvent],
   most_shared_titles: [sharedMovie],
   consensus_hits: [sharedMovie],
   divisive_titles: [sharedMovie],
@@ -255,6 +296,9 @@ export const profileStats = {
     enrichment_ratio: 0.85,
     dated_events: 2_000,
     rated_films: 900,
+    // Deliberately unequal, so the panel's "matched to a film" qualifier renders.
+    reviews_total: 42,
+    reviews_matched_to_films: 39,
   },
   totals: {
     films: 1_200,
@@ -305,9 +349,198 @@ export const profileStats = {
     decade: { label: '1970s', count: 90, average_rating: 4 },
     director: { name: 'Akira Kurosawa', count: 18, average_rating: 4.3 },
   },
+  // Folded into the same panel. One rewatched film is unrated and one review
+  // has no publication date, so both omission branches render.
+  rewatches: {
+    total_rewatches: 64,
+    films_rewatched: 41,
+    rewatch_rate: 0.0341,
+    most_rewatched: [
+      {
+        title: 'Rewatched Fixture Film',
+        year: 2001,
+        poster_url: null,
+        letterboxd_url: 'https://letterboxd.com/film/rewatched-fixture-film/',
+        watch_count: 5,
+        rating: 4.5,
+      },
+      {
+        title: 'Unrated Rewatch',
+        year: null,
+        poster_url: null,
+        letterboxd_url: null,
+        watch_count: 3,
+        rating: null,
+      },
+    ],
+    average_rating_rewatched: 4.12,
+    average_rating_once: 3.65,
+  },
+  reviews: {
+    total_reviews: 42,
+    with_text: 38,
+    spoiler_reviews: 6,
+    median_length_chars: 640,
+    longest: { title: 'Longest Fixture Review', year: 2015, length_chars: 4_210 },
+    most_liked: [
+      {
+        title: 'Most Liked Fixture Review',
+        year: 2018,
+        likes_count: 96,
+        published_date: '2026-03-14',
+      },
+      { title: 'Undated Fixture Review', year: null, likes_count: 12, published_date: null },
+    ],
+    reviews_by_year: [
+      { year: 2024, count: 12 },
+      { year: 2025, count: 18 },
+      { year: 2026, count: 9 },
+    ],
+    average_rating_reviewed: 4.02,
+    average_rating_unreviewed: 3.61,
+  },
   // Deliberately overlaps our figures: `directors` agrees, `hours` and
   // `longest_streak` do not, so both comparison branches render.
   letterboxd_reported: { hours: 2_130, directors: 640, longest_streak: 19 },
+};
+
+// The unwatched watchlist ranked by the circle. One recommendation has no
+// Letterboxd average and one waiting row has no added date, so both null
+// branches render as omissions rather than zeros.
+export const watchlistInsights = {
+  username: 'alpha',
+  coverage: {
+    watchlist_films: 310,
+    rated_by_group: 74,
+    with_letterboxd_average: 268,
+  },
+  recommendations: [
+    {
+      title: 'Queued Fixture Film',
+      year: 2016,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/queued-fixture-film/',
+      group_average: 4.42,
+      group_raters: 4,
+      liked_by: 3,
+      letterboxd_average: 4.11,
+      added_date: '2024-02-11',
+      days_waiting: 871,
+      raters: [
+        { username: 'bravo', rating: 4.5 },
+        { username: 'charlie', rating: 4.5 },
+        { username: 'delta', rating: 4.5 },
+        { username: 'echo', rating: 4 },
+      ],
+    },
+    {
+      title: 'Undated Queue Entry',
+      year: null,
+      poster_url: null,
+      letterboxd_url: null,
+      group_average: 4.25,
+      group_raters: 2,
+      liked_by: 0,
+      letterboxd_average: null,
+      added_date: null,
+      days_waiting: null,
+      raters: [
+        { username: 'bravo', rating: 4.5 },
+        { username: 'foxtrot', rating: 4 },
+      ],
+    },
+  ],
+  longest_waiting: [
+    {
+      title: 'Oldest Fixture Wait',
+      year: 2009,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/oldest-fixture-wait/',
+      added_date: '2019-05-02',
+      days_waiting: 2_646,
+    },
+    {
+      title: 'Undated Fixture Wait',
+      year: 2011,
+      poster_url: null,
+      letterboxd_url: null,
+      added_date: null,
+      days_waiting: null,
+    },
+  ],
+  genre_skew: [
+    { label: 'Drama', count: 96 },
+    { label: 'Documentary', count: 41 },
+    { label: 'Horror', count: 22 },
+  ],
+  totals: {
+    median_days_waiting: 412,
+    oldest_days_waiting: 2_646,
+  },
+};
+
+// Audience size across the rated library. `crowd_position` is populated here,
+// but the panel omits that section entirely when the backfill has not run.
+export const obscurity = {
+  username: 'alpha',
+  coverage: {
+    rated_films: 900,
+    films_with_rating_count: 742,
+  },
+  index: {
+    median_rating_count: 12_480,
+    mean_rating_count: 240_115,
+    percentile_vs_group: 78.5,
+    lean: 'obscure',
+  },
+  most_obscure: [
+    {
+      title: 'Obscure Fixture Film',
+      year: 1978,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/obscure-fixture-film/',
+      rating_count: 205,
+      profile_rating: 4,
+    },
+    {
+      title: 'Second Obscure Fixture',
+      year: 1985,
+      poster_url: null,
+      letterboxd_url: null,
+      rating_count: 613,
+      profile_rating: 3.5,
+    },
+  ],
+  most_mainstream: [
+    {
+      title: 'Mainstream Fixture Film',
+      year: 2014,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/mainstream-fixture-film/',
+      rating_count: 6_110_855,
+      profile_rating: 4.5,
+    },
+  ],
+  crowd_position: [
+    {
+      title: 'Contrarian Fixture Film',
+      year: 2019,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/contrarian-fixture-film/',
+      profile_rating: 2,
+      share_at_or_below: 0.0412,
+      crowd_average: 4.03,
+    },
+    {
+      title: 'Unaveraged Crowd Fixture',
+      year: 2020,
+      poster_url: null,
+      letterboxd_url: null,
+      profile_rating: 5,
+      share_at_or_below: 0.9821,
+      crowd_average: null,
+    },
+  ],
 };
 
 // Ratings against the rest of the tracked circle. Deliberately mixed: one
@@ -695,15 +928,70 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
       gap_days: Number(url.searchParams.get('gap_days') ?? 1),
       coverage: readyCoverage,
       summary: {
-        echoes: 0,
-        movies: 0,
+        echoes: 1,
+        movies: 1,
         same_day: 0,
-        within_gap: 0,
-        first_known_plus_rewatch: 0,
+        within_gap: 1,
+        first_known_plus_rewatch: 1,
         rewatch_plus_rewatch: 0,
         date_coverage_ratio: 1,
       },
-      echoes: [],
+      follow_graph: {
+        gap_events: 1,
+        follow_backed_gap_events: 1,
+        coincidental_gap_events: 0,
+        undetermined_gap_events: 0,
+        same_day_events: 0,
+        profiles_with_social_sync: ['alpha', 'bravo'],
+        social_sync_coverage_ratio: 1,
+        warnings: [
+          'A follow edge is an observed social link, not evidence that one member\'s watch caused another\'s.',
+        ],
+      },
+      echoes: [
+        {
+          echo_id: 'echo0000fixture1',
+          movie: {
+            movie_id: 4_242,
+            tmdb_id: null,
+            letterboxd_slug: 'echoed-fixture-film',
+            letterboxd_url: 'https://letterboxd.com/film/echoed-fixture-film/',
+            title: 'Echoed Fixture Film',
+            year: 2022,
+            poster_url: null,
+          },
+          pattern: 'first_known_plus_rewatch',
+          timing: 'within_gap',
+          start_date: '2026-07-26',
+          end_date: '2026-07-27',
+          day_gap: 1,
+          participants: [
+            {
+              username: 'alpha',
+              rating: 4,
+              watched_date: '2026-07-26',
+              is_rewatch: true,
+              liked: true,
+              watch_kind: 'rewatch',
+              classification_basis: 'letterboxd_rewatch_flag',
+              timing_role: 'leader',
+            },
+            {
+              username: 'bravo',
+              rating: 3.5,
+              watched_date: '2026-07-27',
+              is_rewatch: false,
+              liked: false,
+              watch_kind: 'first_known_watch',
+              classification_basis: 'earliest_observed_unmarked_event',
+              timing_role: 'follower',
+            },
+          ],
+          follow_relationship: followRelationship,
+          follows_earlier_watcher: true,
+          follow_backed: true,
+        },
+      ],
     });
   }
   if (path === '/api/data-coverage') return json(route, dataCoverage);
@@ -774,6 +1062,22 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         ...ratingComparison,
         username: decodeURIComponent(comparisonMatch[1]),
       });
+    }
+  }
+  {
+    // The unwatched watchlist ranked by the circle, and how mainstream the
+    // rated library is. Both are Analysis panels, so an unmocked request would
+    // 404 into the smoke suite's console-error assertion.
+    const watchlistMatch = path.match(/^\/api\/profiles\/([^/]+)\/watchlist-insights$/);
+    if (watchlistMatch) {
+      return json(route, {
+        ...watchlistInsights,
+        username: decodeURIComponent(watchlistMatch[1]),
+      });
+    }
+    const obscurityMatch = path.match(/^\/api\/profiles\/([^/]+)\/obscurity$/);
+    if (obscurityMatch) {
+      return json(route, { ...obscurity, username: decodeURIComponent(obscurityMatch[1]) });
     }
   }
   {

@@ -19,6 +19,7 @@ import type {
   GroupSignalPair,
   GroupSignals,
 } from '../services/api';
+import { FollowsEarlierWatcherMarker } from './insights/InsightUI';
 import type { SignalGapDays } from './SpySignalsControls';
 
 interface SpySignalsResultsProps {
@@ -57,6 +58,20 @@ function getWindowDays(event: GroupSignalEvent): number {
   const start = Date.UTC(startParts[0], startParts[1] - 1, startParts[2]);
   const end = Date.UTC(endParts[0], endParts[1] - 1, endParts[2]);
   return Math.max(0, Math.round((end - start) / 86_400_000));
+}
+
+/**
+ * Whether this match carries the one social reading the data supports: the
+ * later watcher already followed the earlier one.
+ *
+ * Same-day matches are excluded because there is no later watcher to speak of,
+ * and an unobservable follow (no authoritative social import either way) stays
+ * off rather than reading as an absence. A true here is a social link that
+ * existed, never a claim that one watch produced the other.
+ */
+function followsEarlierWatcher(event: GroupSignalEvent, windowDays: number): boolean {
+  if (windowDays <= 0) return false;
+  return event.follows_earlier_watcher === true || event.follow_backed === true;
 }
 
 function eventKey(event: GroupSignalEvent): string {
@@ -136,6 +151,8 @@ function SignalStrength({ event }: { event: GroupSignalEvent }) {
 
 const SignalEventCard: React.FC<{ event: GroupSignalEvent; index: number }> = ({ event, index }) => {
   const windowDays = getWindowDays(event);
+  const followMarked = followsEarlierWatcher(event, windowDays);
+  const relationship = event.follow_relationship ?? null;
   return (
     <motion.article
       className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.035] transition-colors hover:border-cinema-400/25 hover:bg-white/[0.055]"
@@ -176,7 +193,15 @@ const SignalEventCard: React.FC<{ event: GroupSignalEvent; index: number }> = ({
                   {event.profile_count} profiles · {event.pair_count} pair {event.pair_count === 1 ? 'match' : 'matches'}
                 </p>
               </div>
-              <SignalStrength event={event} />
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {followMarked ? (
+                  <FollowsEarlierWatcherMarker
+                    earlierWatcher={relationship?.earlier_watcher}
+                    laterWatcher={relationship?.later_watcher}
+                  />
+                ) : null}
+                <SignalStrength event={event} />
+              </div>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-2">
@@ -345,6 +370,9 @@ const SpySignalsResults: React.FC<SpySignalsResultsProps> = ({
 
   const strongestPair = summary.strongest_alignment_pair ?? groupSignals.aligned_pairs[0] ?? null;
   const mostDivisive = summary.most_divisive_title ?? groupSignals.divisive_titles[0] ?? null;
+  const followMarkedEvents = events.filter(
+    (event) => followsEarlierWatcher(event, getWindowDays(event)),
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -401,6 +429,9 @@ const SpySignalsResults: React.FC<SpySignalsResultsProps> = ({
 
           <p className="mb-4 rounded-lg border border-white/10 bg-white/[0.025] px-3 py-2 text-xs leading-5 text-white/45">
             Coverage note: profiles with an authoritative diary use occurrence-level watch history; other profiles fall back to one stored date per title.
+            {followMarkedEvents > 0
+              ? ` A follow marker appears on ${followMarkedEvents} of these matches, meaning the later watcher already followed the earlier one — an observed social link, not evidence that one watch caused another. A match without the marker either had no follow between its watchers or no authoritative social import to read one from.`
+              : ''}
           </p>
 
           {events.length > 0 ? (

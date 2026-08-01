@@ -7,12 +7,11 @@ import { Minus, Scale, TrendingDown, TrendingUp } from 'lucide-react';
 
 import { ratingComparisonApi } from '../../services/api';
 import type {
-  MovieSummary,
   RatingComparisonDivisiveFilm,
   RatingComparisonFilm,
   RatingComparisonLean,
 } from '../../services/api';
-import { MoviePoster } from './InsightUI';
+import { FilmTitle, ListSection, MoviePoster, toMovieSummary } from './InsightUI';
 
 /** The band the API documents for calling a profile generous or harsh. */
 const LEAN_BAND = 0.15;
@@ -72,53 +71,8 @@ function leanFromDelta(value: number | null): RatingComparisonLean {
   return 'aligned';
 }
 
-function filmLabel(film: { title: string; year: number | null }): string {
-  return film.year ? `${film.title} (${film.year})` : film.title;
-}
-
-/**
- * The comparison endpoints return flat film shells rather than the full
- * `MovieSummary` the shared poster expects; only the artwork is read from it.
- */
-function toMovieSummary(film: {
-  title: string;
-  year: number | null;
-  poster_url: string | null;
-  letterboxd_url: string | null;
-}): MovieSummary {
-  return {
-    movie_id: null,
-    tmdb_id: null,
-    letterboxd_slug: null,
-    letterboxd_url: film.letterboxd_url,
-    title: film.title,
-    year: film.year,
-    poster_url: film.poster_url,
-  };
-}
-
 function raterNote(count: number): string {
   return `${formatCount(count)} ${count === 1 ? 'rater' : 'raters'}`;
-}
-
-function FilmTitle({ film }: { film: { title: string; year: number | null; letterboxd_url: string | null } }) {
-  const label = filmLabel(film);
-  return (
-    <p className="truncate text-sm font-medium text-white/85" title={label}>
-      {film.letterboxd_url ? (
-        <a
-          href={film.letterboxd_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hover:text-cinema-200 hover:underline"
-        >
-          {label}
-        </a>
-      ) : (
-        label
-      )}
-    </p>
-  );
 }
 
 /**
@@ -210,24 +164,6 @@ function DivisiveRow({ film, username }: { film: RatingComparisonDivisiveFilm; u
         </span>
       </span>
     </li>
-  );
-}
-
-function ListSection({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <p className="text-xs font-semibold uppercase tracking-wide text-white/45">{title}</p>
-      <p className="mt-0.5 text-[11px] text-white/30">{subtitle}</p>
-      <ul className="mt-2 space-y-1.5">{children}</ul>
-    </div>
   );
 }
 

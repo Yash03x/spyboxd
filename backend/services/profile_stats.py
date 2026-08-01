@@ -12,6 +12,13 @@ that was, so a client can qualify the number instead of presenting a partial
 sum as a total. Where enrichment supplies no evidence at all, the payload says
 ``null`` rather than ``0`` -- an unenriched profile has an unknown director
 count, not zero directors.
+
+The ``rewatches`` and ``reviews`` blocks read rows nothing else analysed:
+``profile_films.rewatch_count`` and the ``reviews`` table. Both offer a pair
+of averages -- rewatched against watched-once, reviewed against unreviewed --
+and both pairs are averages over two disjoint, self-selected sets of one
+profile's films. Neither is a paired test, and neither says that rewatching or
+reviewing changes a rating.
 """
 from __future__ import annotations
 
@@ -22,13 +29,16 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Opt
 
 from sqlalchemy.orm import Session
 
-from database.models import Movie, MovieEnrichment, Profile, ProfileFilm, WatchEvent
+from database.models import Movie, MovieEnrichment, Profile, ProfileFilm, Review, WatchEvent
 from services.insights import _as_string_list, _average, _round, _safe_float
 
 
 # Every list surface is a "top" list, not an export: a stats page that renders
 # 800 directors is a database dump, not a summary.
 MAX_LIST_ENTRIES = 10
+
+# The most-liked reviews are a shortlist next to the counts, not a leaderboard.
+MAX_LIKED_REVIEWS = 5
 
 # A single five-star film is not a favourite genre. "Highest rated" needs
 # enough rated films behind the average for the number to mean anything.
@@ -51,7 +61,12 @@ class _Value(NamedTuple):
 class _FilmRow:
     """One active profile_films row, joined to whatever enrichment exists."""
 
+    movie_id: int
+    title: str
+    poster_url: Optional[str]
+    letterboxd_url: Optional[str]
     rating: Optional[float]
+    watch_count: int
     rewatch_count: int
     release_year: Optional[int]
     enriched: bool
@@ -162,9 +177,14 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
     rows = (
         db.query(
             ProfileFilm.rating,
+            ProfileFilm.watch_count,
             ProfileFilm.rewatch_count,
+            Movie.id.label("movie_id"),
+            Movie.title,
+            Movie.poster_url,
+            Movie.letterboxd_url,
             Movie.release_year,
-            MovieEnrichment.movie_id,
+            MovieEnrichment.movie_id.label("enrichment_movie_id"),
             MovieEnrichment.runtime_minutes,
             MovieEnrichment.original_language,
             MovieEnrichment.release_date,
@@ -185,14 +205,19 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
 
     films: List[_FilmRow] = []
     for row in rows:
-        enriched = row.movie_id is not None
+        enriched = row.enrichment_movie_id is not None
         release_year = row.release_year
         if not release_year and row.release_date is not None:
             release_year = row.release_date.year
         credits = row.credits if isinstance(row.credits, Mapping) else {}
         films.append(
             _FilmRow(
+                movie_id=int(row.movie_id),
+                title=row.title,
+                poster_url=row.poster_url,
+                letterboxd_url=row.letterboxd_url,
                 rating=_safe_float(row.rating),
+                watch_count=int(row.watch_count or 0),
                 rewatch_count=int(row.rewatch_count or 0),
                 release_year=int(release_year) if release_year else None,
                 enriched=enriched,
@@ -351,6 +376,237 @@ def _distinct(buckets: Mapping[str, Dict[str, Any]]) -> Optional[int]:
     return len(buckets) or None
 
 
+# --- rewatches --------------------------------------------------------------
+
+
+def _rewatch_block(films: Sequence[_FilmRow]) -> Dict[str, Any]:
+    """What a profile returns to, and how it rates the films it returns to.
+
+    ``average_rating_rewatched`` and ``average_rating_once`` are two ordinary
+    averages over two disjoint halves of the same profile's library -- the
+    films carrying at least one rewatch, and the films seen exactly once. They
+    are not a paired measurement: nobody rated the same film twice here, the
+    films someone chooses to revisit are self-selected, and each side ignores
+    the films that profile never rated. A gap between them describes which
+    films get revisited, not what revisiting does to a rating.
+
+    ``most_rewatched`` ranks by ``watch_count`` because that is the figure it
+    reports, and lists only films with a rewatch -- a film seen once is not a
+    quiet entry at the bottom of a rewatch list. Deeper rewatches break ties,
+    because equal watch counts do not mean equal returning.
+
+    A ``watch_count`` of 1 next to a rewatch is real: Letterboxd lets a diary
+    entry be flagged as a rewatch when the original viewing was never logged,
+    and 166 rows in the current database look exactly like that. The count
+    stays as the column holds it rather than being nudged up to two, which
+    would be inventing a viewing nobody recorded.
+    """
+
+    rewatched = [film for film in films if film.rewatch_count > 0]
+    watched_once = [film for film in films if film.rewatch_count == 0]
+    ranked = sorted(
+        rewatched,
+        key=lambda film: (
+            -film.watch_count,
+            -film.rewatch_count,
+            film.title.casefold(),
+            film.title,
+        ),
+    )[:MAX_LIST_ENTRIES]
+
+    return {
+        "total_rewatches": sum(film.rewatch_count for film in films),
+        "films_rewatched": len(rewatched),
+        # An empty library has no rewatch rate; it does not have a rate of zero.
+        "rewatch_rate": _round(len(rewatched) / len(films), 4) if films else None,
+        "most_rewatched": [
+            {
+                "title": film.title,
+                "year": film.release_year,
+                "poster_url": film.poster_url,
+                "letterboxd_url": film.letterboxd_url,
+                "watch_count": film.watch_count,
+                "rating": _round(film.rating, 2),
+            }
+            for film in ranked
+        ],
+        "average_rating_rewatched": _round(
+            _average([film.rating for film in rewatched]), 2
+        ),
+        "average_rating_once": _round(
+            _average([film.rating for film in watched_once]), 2
+        ),
+    }
+
+
+# --- reviews ----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ReviewRow:
+    """One active review, resolved to a display title where a film matched."""
+
+    movie_id: Optional[int]
+    title: str
+    year: Optional[int]
+    length_chars: Optional[int]
+    contains_spoilers: bool
+    likes_count: int
+    published_date: Optional[date]
+
+
+def _review_rows(db: Session, profile_id: int) -> List[_ReviewRow]:
+    """Bulk-load one profile's active reviews in a single query.
+
+    A review row carries its own ``movie_title``/``movie_year`` because a
+    review can exist without ever resolving to a film in ``movies``, so the
+    canonical row wins where the match exists and the review's own copy is the
+    fallback. Review text is short enough to read in full -- unlike the TMDB
+    payloads above -- so lengths are measured in Python, where stripping
+    trailing whitespace means the same thing it does everywhere else.
+    """
+
+    rows = (
+        db.query(
+            Review.movie_id,
+            Review.movie_title,
+            Review.movie_year,
+            Review.review_text,
+            Review.contains_spoilers,
+            Review.likes_count,
+            Review.published_date,
+            Movie.title.label("canonical_title"),
+            Movie.release_year.label("canonical_year"),
+        )
+        .outerjoin(Movie, Movie.id == Review.movie_id)
+        .filter(
+            Review.profile_id == profile_id,
+            Review.removed_at.is_(None),
+        )
+        .all()
+    )
+
+    reviews: List[_ReviewRow] = []
+    for row in rows:
+        text = (row.review_text or "").strip()
+        year = row.canonical_year if row.canonical_year is not None else row.movie_year
+        reviews.append(
+            _ReviewRow(
+                movie_id=int(row.movie_id) if row.movie_id is not None else None,
+                title=(row.canonical_title or row.movie_title or "").strip(),
+                year=int(year) if year else None,
+                # A rating logged without prose has no length, not a length of 0.
+                length_chars=len(text) if text else None,
+                contains_spoilers=bool(row.contains_spoilers),
+                likes_count=int(row.likes_count or 0),
+                published_date=row.published_date,
+            )
+        )
+    return reviews
+
+
+def median_length_chars(lengths: Sequence[int]) -> Optional[int]:
+    """The middle review length, in whole characters.
+
+    An even-sized sample has no single middle review, so the two middle
+    lengths are averaged and floored: the answer is a character count, and a
+    half-character would be a fiction of the arithmetic.
+    """
+
+    if not lengths:
+        return None
+    ordered = sorted(lengths)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) // 2
+
+
+def _review_block(
+    reviews: Sequence[_ReviewRow],
+    films: Sequence[_FilmRow],
+) -> Dict[str, Any]:
+    """Writing habits, and how a profile rates the films it writes about.
+
+    ``average_rating_reviewed`` and ``average_rating_unreviewed`` both read
+    ``profile_films.rating`` -- the profile's own rating of the film, not the
+    rating attached to the review -- so the two sides are the same scale over
+    the same library, split by whether a review resolved to that film. Reviews
+    that never matched a film cannot place one on either side and are counted
+    only in the totals. As with rewatches, these are two averages over two
+    self-selected sets, not a before-and-after.
+
+    ``reviews_by_year`` counts only reviews carrying a publication date; a
+    review with no date belongs to no year and is left out of the series
+    rather than being assigned to one.
+    """
+
+    written = [review for review in reviews if review.length_chars is not None]
+    longest = min(
+        written,
+        key=lambda review: (-(review.length_chars or 0), review.title.casefold()),
+        default=None,
+    )
+    # A review nobody liked is not one of the most-liked reviews.
+    ranked = sorted(
+        (review for review in reviews if review.likes_count > 0),
+        key=lambda review: (
+            -review.likes_count,
+            -(review.published_date.toordinal() if review.published_date else 0),
+            review.title.casefold(),
+        ),
+    )[:MAX_LIKED_REVIEWS]
+    per_year = Counter(
+        review.published_date.year
+        for review in reviews
+        if review.published_date is not None
+    )
+
+    reviewed_movie_ids = {
+        review.movie_id for review in reviews if review.movie_id is not None
+    }
+    reviewed = [film.rating for film in films if film.movie_id in reviewed_movie_ids]
+    unreviewed = [
+        film.rating for film in films if film.movie_id not in reviewed_movie_ids
+    ]
+
+    return {
+        "total_reviews": len(reviews),
+        "with_text": len(written),
+        "spoiler_reviews": sum(1 for review in reviews if review.contains_spoilers),
+        "median_length_chars": median_length_chars(
+            [review.length_chars for review in written if review.length_chars is not None]
+        ),
+        "longest": (
+            {
+                "title": longest.title,
+                "year": longest.year,
+                "length_chars": longest.length_chars,
+            }
+            if longest is not None
+            else None
+        ),
+        "most_liked": [
+            {
+                "title": review.title,
+                "year": review.year,
+                "likes_count": review.likes_count,
+                "published_date": (
+                    review.published_date.isoformat()
+                    if review.published_date is not None
+                    else None
+                ),
+            }
+            for review in ranked
+        ],
+        "reviews_by_year": [
+            {"year": year, "count": per_year[year]} for year in sorted(per_year)
+        ],
+        "average_rating_reviewed": _round(_average(reviewed), 2),
+        "average_rating_unreviewed": _round(_average(unreviewed), 2),
+    }
+
+
 def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
     """Recompute the Letterboxd stats page for one profile from local rows.
 
@@ -359,10 +615,16 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
     never the source: the two will differ because Letterboxd counts its own
     runtime data over a member's whole library while we count TMDB runtimes
     over the films we managed to match.
+
+    ``rewatches`` and ``reviews`` are always present, even for a profile that
+    has neither: their counts fall to zero and every average, median and
+    headline film falls to null, so a client renders "none yet" rather than
+    guessing whether the block failed to compute.
     """
 
     films = _film_rows(db, profile.id)
     watch_dates = _dated_watch_dates(db, profile.id)
+    reviews = _review_rows(db, profile.id)
 
     films_total = len(films)
     films_enriched = sum(1 for film in films if film.enriched)
@@ -387,6 +649,12 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
             "enrichment_ratio": _round(films_enriched / films_total, 4) if films_total else 0.0,
             "dated_events": len(watch_dates),
             "rated_films": len(ratings),
+            # How many reviews could be placed against a film in the library at
+            # all: the ratings comparison in ``reviews`` is blind to the rest.
+            "reviews_total": len(reviews),
+            "reviews_matched_to_films": sum(
+                1 for review in reviews if review.movie_id is not None
+            ),
         },
         "totals": {
             "films": films_total,
@@ -414,5 +682,7 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
             "decade": _highest_rated(decades),
             "director": _highest_rated(directors, label_key="name"),
         },
+        "rewatches": _rewatch_block(films),
+        "reviews": _review_block(reviews, films),
         "letterboxd_reported": profile.stats_snapshot,
     }
