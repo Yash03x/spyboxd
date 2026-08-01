@@ -105,6 +105,11 @@ class _Candidate:
     title: str
     added_date: Optional[date]
     letterboxd_average: Optional[float]
+    # What the crowd's ten buckets say beyond their mean. Two films can share an
+    # average of 3.5 while one splits the room and the other bores it equally,
+    # and the mean cannot tell them apart.
+    crowd_ceiling: Optional[float]
+    crowd_floor: Optional[float]
     genres: Tuple[str, ...]
     opinions: _Opinions
 
@@ -119,6 +124,44 @@ class _Candidate:
         if self.added_date is None:
             return None
         return max(0, (today - self.added_date).days)
+
+
+# Half-star buckets counted as "this film can be a favourite" and "this film
+# can be a write-off". Deliberately not the extremes alone: a 4.5 is already an
+# enthusiastic verdict, and a 2.0 already a dismissal.
+CEILING_FROM = 4.5
+FLOOR_TO = 2.0
+
+
+def _crowd_shape(distribution: Any) -> Tuple[Optional[float], Optional[float]]:
+    """Share of the crowd at 4.5+ and at 2.0-, from the stored histogram.
+
+    Returns nulls when no histogram has been imported for the film, which is a
+    real state rather than a zero: "nobody rated it highly" and "we have not
+    looked" are different answers.
+    """
+
+    if not isinstance(distribution, dict) or not distribution:
+        return None, None
+    total = 0
+    ceiling = 0
+    floor = 0
+    for key, value in distribution.items():
+        try:
+            stars = float(key)
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count < 0:
+            continue
+        total += count
+        if stars >= CEILING_FROM:
+            ceiling += count
+        if stars <= FLOOR_TO:
+            floor += count
+    if total <= 0:
+        return None, None
+    return round(ceiling / total, 4), round(floor / total, 4)
 
 
 def _letterboxd_average(value: Any) -> Optional[float]:
@@ -231,6 +274,7 @@ def _candidates(db: Session, profile_id: int) -> List[_Candidate]:
             WatchlistItem.added_date,
             Movie.title,
             Movie.letterboxd_average_rating,
+            Movie.letterboxd_rating_distribution,
             MovieEnrichment.genres,
         )
         .join(Movie, Movie.id == WatchlistItem.movie_id)
@@ -243,17 +287,22 @@ def _candidates(db: Session, profile_id: int) -> List[_Candidate]:
         .all()
     )
     opinions = _group_opinions(db, profile_id)
-    return [
-        _Candidate(
-            movie_id=int(row.movie_id),
-            title=row.title or "",
-            added_date=row.added_date,
-            letterboxd_average=_letterboxd_average(row.letterboxd_average_rating),
-            genres=tuple(_as_string_list(row.genres)),
-            opinions=opinions.get(int(row.movie_id), _Opinions()),
+    candidates = []
+    for row in rows:
+        ceiling, floor = _crowd_shape(row.letterboxd_rating_distribution)
+        candidates.append(
+            _Candidate(
+                movie_id=int(row.movie_id),
+                title=row.title or "",
+                added_date=row.added_date,
+                letterboxd_average=_letterboxd_average(row.letterboxd_average_rating),
+                crowd_ceiling=ceiling,
+                crowd_floor=floor,
+                genres=tuple(_as_string_list(row.genres)),
+                opinions=opinions.get(int(row.movie_id), _Opinions()),
+            )
         )
-        for row in rows
-    ]
+    return candidates
 
 
 def _film_identities(db: Session, movie_ids: Sequence[int]) -> Dict[int, Dict[str, Any]]:
@@ -340,6 +389,10 @@ def _recommendation(
         "group_raters": len(opinions.raters),
         "liked_by": opinions.liked_by,
         "letterboxd_average": _round(candidate.letterboxd_average, 2),
+        # The shape behind that average: what share of the crowd called it a
+        # favourite, and what share wrote it off.
+        "crowd_ceiling": candidate.crowd_ceiling,
+        "crowd_floor": candidate.crowd_floor,
         "added_date": candidate.added_date.isoformat() if candidate.added_date else None,
         "days_waiting": candidate.days_waiting(today),
         "raters": [
