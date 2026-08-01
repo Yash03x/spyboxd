@@ -225,8 +225,8 @@ export default function Compare() {
   return (
     <motion.div
       className="space-y-6"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ y: 12 }}
+      animate={{ y: 0 }}
       transition={{ duration: 0.4 }}
     >
       <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">

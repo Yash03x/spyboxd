@@ -15,6 +15,51 @@ const PROFILE_NAMES = [
 
 export const MISSING_POSTER_URL = 'https://assets.spyboxd.test/missing-poster.jpg';
 
+/**
+ * A follow graph with real edges, so the network view can be driven end to end.
+ *
+ * Deterministic rather than random: `alpha` is deliberately the busiest node so
+ * a test can assert an ordering, and every pair is spelled out so a changed
+ * rollup shows up as a diff rather than as arithmetic nobody re-checks.
+ */
+const FOLLOW_PAIRS: Array<[string, string, boolean, boolean]> = [
+  // [a, b, a_follows_b, b_follows_a]
+  ['alpha', 'bravo', true, true],
+  ['alpha', 'charlie', true, true],
+  ['alpha', 'delta', true, false],
+  ['alpha', 'echo', false, true],
+  ['bravo', 'charlie', true, true],
+  ['bravo', 'delta', true, false],
+  ['charlie', 'echo', false, true],
+  ['delta', 'echo', true, true],
+];
+
+export const followMutuals = {
+  profiles: ['alpha', 'bravo', 'charlie', 'delta', 'echo'],
+  pairs: FOLLOW_PAIRS.map(([a, b, aFollowsB, bFollowsA]) => ({
+    a,
+    b,
+    a_follows_b: aFollowsB,
+    b_follows_a: bFollowsA,
+    mutual: aFollowsB && bFollowsA,
+  })),
+  rollups: FOLLOW_PAIRS.reduce<
+    Record<string, { follows_in_group: number; followed_by_in_group: number }>
+  >((totals, [a, b, aFollowsB, bFollowsA]) => {
+    totals[a] ??= { follows_in_group: 0, followed_by_in_group: 0 };
+    totals[b] ??= { follows_in_group: 0, followed_by_in_group: 0 };
+    if (aFollowsB) {
+      totals[a].follows_in_group += 1;
+      totals[b].followed_by_in_group += 1;
+    }
+    if (bFollowsA) {
+      totals[b].follows_in_group += 1;
+      totals[a].followed_by_in_group += 1;
+    }
+    return totals;
+  }, {}),
+};
+
 export const profiles = PROFILE_NAMES.map((username, index) => ({
   username,
   display_name: username[0].toUpperCase() + username.slice(1),
@@ -1039,10 +1084,13 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
     });
   }
 
-  // Social graph (contract-shaped empty states until fixtures grow edges).
+  // Social graph. The mutuals fixture carries real edges: an empty graph
+  // renders "no follow connections" and leaves every node, the ego view and the
+  // deep-dive hand-off untestable, which is how a blank-on-back regression
+  // reached production unnoticed.
   if (path === '/api/follow-graph/suggestions') return json(route, { suggestions: [] });
   if (path === '/api/follow-graph/mutuals') {
-    return json(route, { profiles: [], pairs: [], rollups: {} });
+    return json(route, followMutuals);
   }
   {
     // Patron-only stats, computed for everyone. Contract-shaped so the

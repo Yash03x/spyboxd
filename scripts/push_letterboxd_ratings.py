@@ -78,6 +78,7 @@ def collect_ratings(db: Session, *, limit: Optional[int] = None) -> tuple[List[D
             Movie.letterboxd_url,
             Movie.letterboxd_average_rating,
             Movie.letterboxd_rating_count,
+            Movie.letterboxd_rating_distribution,
             Movie.letterboxd_rating_synced_at,
         )
         .filter(Movie.letterboxd_average_rating.isnot(None))
@@ -88,7 +89,7 @@ def collect_ratings(db: Session, *, limit: Optional[int] = None) -> tuple[List[D
 
     entries: List[Dict[str, Any]] = []
     skipped_no_slug = 0
-    for slug, url, average, count, synced_at in query.all():
+    for slug, url, average, count, distribution, synced_at in query.all():
         resolved = resolve_slug(slug, url)
         if not resolved:
             skipped_no_slug += 1
@@ -98,6 +99,13 @@ def collect_ratings(db: Session, *, limit: Optional[int] = None) -> tuple[List[D
                 "slug": resolved,
                 "average_rating": float(average),
                 "rating_count": int(count) if count is not None else None,
+                # Sent only when this machine actually holds one; the receiver
+                # treats a null as "not carried" and keeps what it has.
+                "rating_distribution": (
+                    {key: int(size) for key, size in distribution.items()}
+                    if isinstance(distribution, dict) and distribution
+                    else None
+                ),
                 "synced_at": synced_at.isoformat() if synced_at is not None else None,
             }
         )
