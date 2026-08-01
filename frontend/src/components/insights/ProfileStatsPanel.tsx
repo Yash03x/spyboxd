@@ -511,12 +511,12 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
     || languageRows.length > 0
     || decadeRows.length > 0;
 
-  const highlightCandidates: Array<{ label: string; name: string; count: number; average: number } | null> = [
+  const highlightCandidates: Array<{ label: string; name: string; ratedCount: number; average: number } | null> = [
     highestRated?.genre
       ? {
           label: 'Highest-rated genre',
           name: highestRated.genre.label,
-          count: highestRated.genre.count,
+          ratedCount: highestRated.genre.rated_count ?? highestRated.genre.count,
           average: highestRated.genre.average_rating,
         }
       : null,
@@ -524,7 +524,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
       ? {
           label: 'Highest-rated decade',
           name: highestRated.decade.label,
-          count: highestRated.decade.count,
+          ratedCount: highestRated.decade.rated_count ?? highestRated.decade.count,
           average: highestRated.decade.average_rating,
         }
       : null,
@@ -532,13 +532,13 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
       ? {
           label: 'Highest-rated director',
           name: highestRated.director.name,
-          count: highestRated.director.count,
+          ratedCount: highestRated.director.rated_count ?? highestRated.director.count,
           average: highestRated.director.average_rating,
         }
       : null,
   ];
   const highlights = highlightCandidates.filter(
-    (item): item is { label: string; name: string; count: number; average: number } => item !== null,
+    (item): item is { label: string; name: string; ratedCount: number; average: number } => item !== null,
   );
 
   // Rewatching and reviewing are part of the same "about this profile" story,
@@ -554,7 +554,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
   // One caveat for the whole panel rather than a footnote on every row.
   const enrichmentCaveat = coverage.films_total > 0
     && coverage.enrichment_ratio < ENRICHMENT_CAVEAT_THRESHOLD
-    ? `Film metadata is in for ${formatRatio(coverage.enrichment_ratio)} of ${formatCount(coverage.films_total)} synced films (${formatCount(coverage.films_enriched)}), so the credits, country, language and runtime figures below are drawn from that subset.`
+    ? `Film metadata is in for ${formatRatio(coverage.enrichment_ratio)} of ${formatCount(coverage.films_total)} synced films (${formatCount(coverage.films_enriched)}), so the genre, credits, country, language and runtime figures below are drawn from that subset.`
     : null;
 
   return (
@@ -659,7 +659,10 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
                 {highlight.name}
               </p>
               <p className="mt-0.5 text-[11px] text-white/40">
-                {highlight.average.toFixed(2)} average across {formatCount(highlight.count)} films
+                {/* The bucket holds more films than this; the average only
+                    covers the rated ones, and quoting the bucket size made a
+                    three-rating average look like a twelve-film one. */}
+                {highlight.average.toFixed(2)} average across {formatCount(highlight.ratedCount)} rated {highlight.ratedCount === 1 ? 'film' : 'films'}
               </p>
             </div>
           ))}

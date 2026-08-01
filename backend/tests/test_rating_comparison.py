@@ -760,7 +760,10 @@ def test_route_serves_the_payload_for_a_tracked_profile(
         "poster_url",
         "letterboxd_url",
         "rating_spread",
+        # The spread spans every rater; the group average excludes the profile
+        # being viewed. Each figure carries its own denominator.
         "rater_count",
+        "group_rater_count",
         "group_average",
         "profile_rating",
     }
@@ -798,3 +801,22 @@ def test_route_refuses_an_untracked_profile(database: Session, client) -> None:
     response = client().get("/api/profiles/subject/rating-comparison")
 
     assert response.status_code == 403
+
+
+def test_the_group_average_reports_its_own_denominator(database: Session) -> None:
+    """The spread counts everyone; the group average excludes the viewer.
+
+    One count served both, so a four-person average was presented beside
+    "5 raters" and read as a five-person one.
+    """
+    subject = _profile(database, "subject")
+    circle = _circle(database, size=4)
+    _shared(database, subject, circle, "Argued About", subject_rating=1.0,
+            other_ratings=[5.0, 4.5, 4.0, 3.5])
+
+    payload = build_rating_comparison(database, subject, limit=5)
+    entry = payload["most_divisive"][0]
+
+    assert entry["rater_count"] == 5          # the spread spans all five
+    assert entry["group_rater_count"] == 4    # the average is over the others
+    assert entry["group_average"] == 4.25
