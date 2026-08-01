@@ -323,6 +323,7 @@ export default function WatchTogether() {
         <WatchTogetherResults
           data={recommendationsQuery.data}
           coverage={coverageFallback(coverageQuery.data)}
+          availability={appliedFilters.availability}
         />
       )}
 
