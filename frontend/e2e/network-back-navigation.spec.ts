@@ -74,6 +74,34 @@ test('page content is actually painted, not just present in the DOM', async ({ p
   expect(await effectiveOpacity()).toBeGreaterThan(0.99);
 });
 
+test('navigation chrome is painted, not only the page content', async ({ page }) => {
+  // The first fix covered the shell and the view roots but left the sidebar and
+  // top bar fading in from `opacity: 0`. On production, with the tab
+  // backgrounded so no animation clock advances, the content was fully painted
+  // and the navigation was at 0 - invisible until the tab was focused.
+  await page.goto('/network');
+
+  const chromeOpacity = () =>
+    page.evaluate(() =>
+      ['nav', 'main > header'].map((selector) => {
+        const node = document.querySelector(selector);
+        if (!node) return { selector, opacity: null as number | null };
+        let element: HTMLElement | null = node as HTMLElement;
+        let product = 1;
+        while (element && element !== document.documentElement) {
+          product *= parseFloat(getComputedStyle(element).opacity);
+          element = element.parentElement;
+        }
+        return { selector, opacity: product };
+      }),
+    );
+
+  for (const entry of await chromeOpacity()) {
+    if (entry.opacity === null) continue;
+    expect(entry.opacity, `${entry.selector} must be painted`).toBeGreaterThan(0.99);
+  }
+});
+
 test('a failed follow-graph request explains itself instead of rendering nothing', async ({
   page,
 }) => {
