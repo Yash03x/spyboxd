@@ -329,11 +329,16 @@ function NodeAvatar({
 export default function FollowNetwork({
   profiles,
   onFocusChange,
+  initialFocus,
 }: {
   profiles: ProfileInfo[];
   /** Notified with the centred username, or null in the full view, so a
    *  surrounding page can follow the selection instead of contradicting it. */
   onFocusChange?: (username: string | null) => void;
+  /** Username to centre on when the graph first has nodes, so another page can
+   *  link straight to one profile's corner of the network. Applied once; the
+   *  user is free to walk elsewhere afterwards. */
+  initialFocus?: string | null;
 }) {
   const reactId = useId();
   const router = useRouter();
@@ -465,6 +470,18 @@ export default function FollowNetwork({
       setFocusKey(null);
     }
   }, [focusKey, groupIndexByKey, groupNodes.length]);
+
+  // Honour a requested starting profile once the group has loaded, and only
+  // once: re-applying it would fight the user every time they walked to a
+  // neighbour. A name that is not in the group is ignored rather than clearing
+  // the view.
+  const appliedInitialFocus = useRef(false);
+  useEffect(() => {
+    if (appliedInitialFocus.current || !initialFocus || groupNodes.length === 0) return;
+    appliedInitialFocus.current = true;
+    const key = initialFocus.toLowerCase();
+    if (groupIndexByKey.has(key)) setFocusKey(key);
+  }, [initialFocus, groupIndexByKey, groupNodes.length]);
 
   const focusNode = useMemo(
     () => (focusKey ? groupNodes.find((node) => node.key === focusKey) ?? null : null),
