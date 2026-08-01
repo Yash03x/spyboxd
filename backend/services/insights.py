@@ -19,6 +19,7 @@ from database.models import (
     MovieWatchProvider,
     Profile,
     ProfileFilm,
+    ProfileFollowEdge,
     ProfileSync,
     Review,
     SyncDataset,
@@ -133,6 +134,151 @@ class ProviderAvailability:
     logo_path: Optional[str]
     display_priority: Optional[int]
     regions: Tuple[str, ...]
+
+
+def _and_unknown(left: Optional[bool], right: Optional[bool]) -> Optional[bool]:
+    """Three-valued AND: a known ``False`` decides, an unknown does not.
+
+    Used so "mutual" reads False when one direction is authoritatively absent
+    even if the other direction was never observable, instead of pretending an
+    unknown is a no.
+    """
+    if left is False or right is False:
+        return False
+    if left is None or right is None:
+        return None
+    return bool(left and right)
+
+
+@dataclass(frozen=True)
+class FollowGraph:
+    """Active follow edges among a selected group, loaded once per request.
+
+    A follow edge is a social link one member published on their own
+    following/followers pages. It says these two accounts are connected; it is
+    not evidence that either member's watch caused the other's. Nothing derived
+    from this class may be presented as influence, only as context for a
+    co-watch that already exists in the diary data.
+
+    Presence of an edge is positive evidence regardless of import authority,
+    because an observed edge cannot be observed by accident. Absence only means
+    something when the profile whose page would have listed it carries an
+    authoritative social import, so unobservable directions stay ``None``
+    rather than collapsing into ``False``.
+    """
+
+    # (profile_id, counterpart_username_normalized) for each direction.
+    active_following: frozenset
+    active_followers: frozenset
+    # Profiles whose latest sync owns an authoritative following/followers
+    # surface, i.e. the only profiles whose *missing* edges mean anything.
+    authoritative_following: frozenset
+    authoritative_followers: frozenset
+    normalized_username_by_profile_id: Mapping[int, str]
+    username_by_profile_id: Mapping[int, str]
+
+    @classmethod
+    def unknown(cls, profiles: Sequence[Profile] = ()) -> "FollowGraph":
+        """A graph with no observations, so every relationship reads unknown."""
+        return cls(
+            active_following=frozenset(),
+            active_followers=frozenset(),
+            authoritative_following=frozenset(),
+            authoritative_followers=frozenset(),
+            normalized_username_by_profile_id={
+                profile.id: profile.username.casefold() for profile in profiles
+            },
+            username_by_profile_id={
+                profile.id: profile.username for profile in profiles
+            },
+        )
+
+    def has_authoritative_social_sync(self, profile_id: int) -> bool:
+        """Whether this profile's own social surface was imported authoritatively."""
+        return (
+            profile_id in self.authoritative_following
+            or profile_id in self.authoritative_followers
+        )
+
+    def follows(
+        self, source_profile_id: int, target_profile_id: int
+    ) -> Optional[bool]:
+        """Does ``source`` actively follow ``target``? ``None`` when unobservable.
+
+        ``False`` is only returned when an authoritative import covers the
+        direction and did not list the edge. Never read this as a statement
+        about who watched what.
+        """
+        source_normalized = self.normalized_username_by_profile_id.get(source_profile_id)
+        target_normalized = self.normalized_username_by_profile_id.get(target_profile_id)
+        if source_normalized is None or target_normalized is None:
+            return None
+        if (source_profile_id, target_normalized) in self.active_following:
+            return True
+        # The counterpart's own followers page corroborates the same edge.
+        if (target_profile_id, source_normalized) in self.active_followers:
+            return True
+        if (
+            source_profile_id in self.authoritative_following
+            or target_profile_id in self.authoritative_followers
+        ):
+            return False
+        return None
+
+    def _observed_by(self, left_profile_id: int, right_profile_id: int) -> List[str]:
+        return [
+            self.username_by_profile_id[profile_id]
+            for profile_id in (left_profile_id, right_profile_id)
+            if profile_id in self.username_by_profile_id
+            and self.has_authoritative_social_sync(profile_id)
+        ]
+
+    def relationship(
+        self,
+        left_profile_id: int,
+        right_profile_id: int,
+        *,
+        left_username: str,
+        right_username: str,
+        left_date: Optional[date] = None,
+        right_date: Optional[date] = None,
+    ) -> Dict[str, Any]:
+        """Describe the social link between two profiles in a co-watch event.
+
+        ``follows_earlier_watcher`` is the strongest honest reading available:
+        the later watcher already followed the earlier one when this pair of
+        diary entries landed. It is a directional hint about reach, not a claim
+        that the earlier watch caused the later one, and it is ``None`` whenever
+        the order is unknown or the social link is unobservable.
+        """
+        left_follows_right = self.follows(left_profile_id, right_profile_id)
+        right_follows_left = self.follows(right_profile_id, left_profile_id)
+        earlier_username: Optional[str] = None
+        later_username: Optional[str] = None
+        follows_earlier_watcher: Optional[bool] = None
+        if left_date is not None and right_date is not None and left_date != right_date:
+            if left_date < right_date:
+                earlier_username, later_username = left_username, right_username
+                follows_earlier_watcher = right_follows_left
+            else:
+                earlier_username, later_username = right_username, left_username
+                follows_earlier_watcher = left_follows_right
+        return {
+            "a": left_username,
+            "b": right_username,
+            "a_follows_b": left_follows_right,
+            "b_follows_a": right_follows_left,
+            "mutual": _and_unknown(left_follows_right, right_follows_left),
+            # False means no authoritative social import covers either
+            # direction, which is not the same as an observed absence.
+            "known": left_follows_right is not None or right_follows_left is not None,
+            # Which of the two members' own social imports are authoritative,
+            # so a UI can say who the reading is sourced from.
+            "observed_by": self._observed_by(left_profile_id, right_profile_id),
+            "earlier_watcher": earlier_username,
+            "later_watcher": later_username,
+            "follows_earlier_watcher": follows_earlier_watcher,
+        }
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -670,6 +816,144 @@ class InsightsService:
             )
             for event, profile, movie in rows
         ]
+
+    def _follow_graph(self, profiles: Sequence[Profile]) -> FollowGraph:
+        """Load every active follow edge inside the selection in one query.
+
+        Signals run over thousands of films, so the graph is resolved once for
+        the selected profiles and then consulted in memory; no event triggers a
+        query of its own.
+        """
+        profile_ids = [profile.id for profile in profiles]
+        if not profile_ids or self.db is None:
+            return FollowGraph.unknown(profiles)
+
+        normalized_by_profile_id = {
+            profile.id: profile.username.casefold() for profile in profiles
+        }
+        rows = (
+            self.db.query(
+                ProfileFollowEdge.profile_id,
+                ProfileFollowEdge.direction,
+                ProfileFollowEdge.counterpart_username_normalized,
+            )
+            .filter(
+                ProfileFollowEdge.profile_id.in_(profile_ids),
+                ProfileFollowEdge.counterpart_username_normalized.in_(
+                    sorted(set(normalized_by_profile_id.values()))
+                ),
+                ProfileFollowEdge.removed_at.is_(None),
+            )
+            .all()
+        )
+        active_following = set()
+        active_followers = set()
+        for profile_id, direction, counterpart in rows:
+            if direction == "following":
+                active_following.add((profile_id, counterpart))
+            elif direction == "follower":
+                active_followers.add((profile_id, counterpart))
+
+        authoritative_following = set()
+        authoritative_followers = set()
+        for profile_id, (sync, datasets) in self._latest_sync_context(profiles).items():
+            following_dataset = self._dataset(datasets, "following")
+            followers_dataset = self._dataset(datasets, "followers")
+            if (
+                following_dataset is not None
+                and following_dataset.is_authoritative
+                and not self._dataset_unavailable_reason(
+                    sync, following_dataset, "following"
+                )
+            ):
+                authoritative_following.add(profile_id)
+            if (
+                followers_dataset is not None
+                and followers_dataset.is_authoritative
+                and not self._dataset_unavailable_reason(
+                    sync, followers_dataset, "followers"
+                )
+            ):
+                authoritative_followers.add(profile_id)
+
+        return FollowGraph(
+            active_following=frozenset(active_following),
+            active_followers=frozenset(active_followers),
+            authoritative_following=frozenset(authoritative_following),
+            authoritative_followers=frozenset(authoritative_followers),
+            normalized_username_by_profile_id=normalized_by_profile_id,
+            username_by_profile_id={
+                profile.id: profile.username for profile in profiles
+            },
+        )
+
+    @staticmethod
+    def _follow_backed(relationships: Sequence[Mapping[str, Any]]) -> Optional[bool]:
+        """Whether any later watcher in this event already followed an earlier one.
+
+        ``True`` records that the social link existed, not that it carried the
+        film across. ``False`` needs every ordered pair to be authoritatively
+        unconnected; anything unobservable keeps the event undetermined.
+        """
+        reads = [
+            relationship["follows_earlier_watcher"]
+            for relationship in relationships
+            if relationship["later_watcher"] is not None
+        ]
+        if not reads:
+            return None
+        if any(read is True for read in reads):
+            return True
+        if all(read is False for read in reads):
+            return False
+        return None
+
+    @staticmethod
+    def _follow_graph_summary(
+        graph: FollowGraph,
+        profiles: Sequence[Profile],
+        events: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        """Count how many gap events sit on an observed follow, and say what is unknown.
+
+        The split is descriptive: a follow-backed gap event is one where the
+        later watcher already followed the earlier one. It is never a count of
+        films that travelled along the graph, and the undetermined bucket is
+        reported rather than folded into either side.
+        """
+        gap_events = [event for event in events if (event.get("day_gap") or 0) > 0]
+        covered = [
+            profile.username
+            for profile in profiles
+            if graph.has_authoritative_social_sync(profile.id)
+        ]
+        coverage_ratio = len(covered) / len(profiles) if profiles else None
+        warnings = [
+            "A follow edge is an observed social link, not evidence that one "
+            "member's watch caused another's.",
+        ]
+        if profiles and len(covered) < len(profiles):
+            warnings.append(
+                f"{len(covered)} of {len(profiles)} selected profiles have an "
+                "authoritative following/followers import; pairs without one "
+                "stay undetermined rather than counting as unconnected."
+            )
+        return {
+            "gap_events": len(gap_events),
+            "follow_backed_gap_events": sum(
+                event.get("follow_backed") is True for event in gap_events
+            ),
+            "coincidental_gap_events": sum(
+                event.get("follow_backed") is False for event in gap_events
+            ),
+            "undetermined_gap_events": sum(
+                event.get("follow_backed") is None for event in gap_events
+            ),
+            "same_day_events": len(events) - len(gap_events),
+            "profiles_with_social_sync": covered,
+            "social_sync_coverage_ratio": _round(coverage_ratio, 3),
+            "warnings": warnings,
+        }
 
     def _latest_sync_context(
         self, profiles: Sequence[Profile]
@@ -1306,6 +1590,7 @@ class InsightsService:
         start_date: date,
         end_date: date,
         pair_count: int,
+        follow_graph: Optional[FollowGraph] = None,
     ) -> Dict[str, Any]:
         by_profile: Dict[int, EventRow] = {}
         for participant in participants:
@@ -1319,6 +1604,28 @@ class InsightsService:
             key=lambda item: (item.watched_date, item.username.casefold()),
         )
         ratings = [item.rating for item in unique if item.rating is not None]
+
+        # Order the pair by each profile's earliest watch inside this window,
+        # which is what "watched after" can be said about; the displayed
+        # participant row may be a later, better-rated entry for the same
+        # profile.
+        graph = follow_graph or FollowGraph.unknown()
+        earliest_by_profile: Dict[int, date] = {}
+        for participant in participants:
+            current_date = earliest_by_profile.get(participant.profile_id)
+            if current_date is None or participant.watched_date < current_date:
+                earliest_by_profile[participant.profile_id] = participant.watched_date
+        relationships = [
+            graph.relationship(
+                left.profile_id,
+                right.profile_id,
+                left_username=left.username,
+                right_username=right.username,
+                left_date=earliest_by_profile[left.profile_id],
+                right_date=earliest_by_profile[right.profile_id],
+            )
+            for left, right in combinations(unique, 2)
+        ]
         return {
             "title": movie.title,
             "year": movie.release_year,
@@ -1340,6 +1647,16 @@ class InsightsService:
             "max_rating_gap": _round(max(ratings) - min(ratings), 2) if len(ratings) >= 2 else None,
             "rewatch_count": sum(item.rewatch for item in participants),
             "day_gap": (end_date - start_date).days,
+            # Social context for the co-watch, additive to the timing evidence
+            # above. `follow_relationship` is the two-profile case; group events
+            # keep every pair in `follow_relationships` instead of inventing a
+            # single relationship that does not exist.
+            "follow_relationship": relationships[0] if len(unique) == 2 else None,
+            "follow_relationships": relationships,
+            "follows_earlier_watcher": (
+                relationships[0]["follows_earlier_watcher"] if len(unique) == 2 else None
+            ),
+            "follow_backed": InsightsService._follow_backed(relationships),
         }
 
     def _matched_events(
@@ -1349,6 +1666,7 @@ class InsightsService:
         gap_days: int,
         from_date: Optional[date] = None,
         to_date: Optional[date] = None,
+        follow_graph: Optional[FollowGraph] = None,
     ) -> List[Dict[str, Any]]:
         by_movie: Dict[int, List[EventRow]] = defaultdict(list)
         for event in events:
@@ -1367,7 +1685,14 @@ class InsightsService:
                     pair_count = len(same_day_profiles) * (len(same_day_profiles) - 1) // 2
                     if (from_date is None or start >= from_date) and (to_date is None or start <= to_date):
                         matches.append(
-                            self._event_payload(movie, by_date[start], start, start, pair_count)
+                            self._event_payload(
+                                movie,
+                                by_date[start],
+                                start,
+                                start,
+                                pair_count,
+                                follow_graph,
+                            )
                         )
                 for end in dates[start_index + 1:]:
                     distance = (end - start).days
@@ -1394,6 +1719,7 @@ class InsightsService:
                             start,
                             end,
                             pair_count,
+                            follow_graph,
                         )
                     )
         matches.sort(
@@ -1494,6 +1820,7 @@ class InsightsService:
             if state.enrichment is not None
         }
         classified = self._classified_daily_events(events)
+        follow_graph = self._follow_graph(profiles)
 
         by_movie: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
         for item in classified:
@@ -1534,6 +1861,14 @@ class InsightsService:
                           for item in ordered),
                     ]
                 )
+                relationship = follow_graph.relationship(
+                    ordered[0]["event"].profile_id,
+                    ordered[-1]["event"].profile_id,
+                    left_username=ordered[0]["event"].username,
+                    right_username=ordered[-1]["event"].username,
+                    left_date=ordered[0]["watched_date"],
+                    right_date=ordered[-1]["watched_date"],
+                )
                 echoes.append(
                     {
                         # Stable UI identifier only; preserve the public 16-hex
@@ -1567,6 +1902,12 @@ class InsightsService:
                             }
                             for item in ordered
                         ],
+                        # Who follows whom, alongside the timing the echo
+                        # already proves. Neither field asserts that the
+                        # earlier watch prompted the later one.
+                        "follow_relationship": relationship,
+                        "follows_earlier_watcher": relationship["follows_earlier_watcher"],
+                        "follow_backed": self._follow_backed([relationship]),
                     }
                 )
 
@@ -1624,6 +1965,7 @@ class InsightsService:
                 ),
                 "date_coverage_ratio": _round(date_coverage_ratio, 3),
             },
+            "follow_graph": self._follow_graph_summary(follow_graph, profiles, echoes),
             "echoes": returned_echoes,
         }
 
@@ -1667,7 +2009,12 @@ class InsightsService:
         correlation_component = (correlation + 1) / 2 if correlation is not None else 0.5
         gap_component = max(0.0, 1.0 - ((average_gap or 0) / 2.5))
 
-        matched = self._matched_events(events, gap_days=gap_days)
+        follow_graph = self._follow_graph(profiles)
+        matched = self._matched_events(
+            events,
+            gap_days=gap_days,
+            follow_graph=follow_graph,
+        )
         timing_component = min(len(matched) / max(len(shared), 1), 1.0)
         alignment_score = 100 * (
             0.45 * correlation_component
@@ -1749,6 +2096,13 @@ class InsightsService:
                             "leader_date": leader.watched_date.isoformat(),
                             "follower_date": follower.watched_date.isoformat(),
                             "gap_days": abs(delta),
+                            # `leader`/`follower` here are watch order, not the
+                            # social graph. This field is the social question:
+                            # was the later watcher already following the
+                            # earlier one? None when that is unobservable.
+                            "follows_earlier_watcher": follow_graph.follows(
+                                follower.profile_id, leader.profile_id
+                            ),
                         }
                     )
         influence_paths.sort(key=lambda item: (item["gap_days"], item["leader_date"], item["movie"]["title"]))
@@ -1807,6 +2161,16 @@ class InsightsService:
                     3,
                 ) if total_states else None,
             },
+            "follow_graph": {
+                **self._follow_graph_summary(follow_graph, profiles, matched),
+                # The pair's own social link, independent of any single event.
+                "relationship": follow_graph.relationship(
+                    ordered_profile_ids[0],
+                    ordered_profile_ids[1],
+                    left_username=profiles[0].username,
+                    right_username=profiles[1].username,
+                ),
+            },
             "co_watches": matched[:100],
             "influence_paths": influence_paths[:100],
             "agreements": agreements,
@@ -1830,11 +2194,13 @@ class InsightsService:
         if range_from > range_to:
             raise InsightRequestError({"message": "from must be on or before to"})
 
+        follow_graph = self._follow_graph(profiles)
         matches = self._matched_events(
             events,
             gap_days=gap_days,
             from_date=range_from,
             to_date=range_to,
+            follow_graph=follow_graph,
         )
         calendar_events = []
         for event in matches:
@@ -1895,6 +2261,9 @@ class InsightsService:
             "from": range_from.isoformat(),
             "to": range_to.isoformat(),
             "coverage": self._feature_coverage(profiles, "signal_calendar", events),
+            "follow_graph": self._follow_graph_summary(
+                follow_graph, profiles, calendar_events
+            ),
             "buckets": bucket_payload,
             "events": calendar_events,
             "monthly_summary": monthly_payload,

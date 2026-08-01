@@ -575,6 +575,9 @@ class Movie(Base):
     # whole library.
     letterboxd_average_rating = Column(Float, nullable=True)
     letterboxd_rating_count = Column(BigInteger, nullable=True)
+    # The ten half-star buckets behind that average, keyed "0.5".."5.0", so a
+    # rating can be placed against the crowd's shape rather than only its mean.
+    letterboxd_rating_distribution = Column(_json_type(), nullable=True)
     letterboxd_rating_synced_at = Column(DateTime(timezone=True), nullable=True)
     tmdb_lookup_attempted_at = Column(DateTime(timezone=True), nullable=True)
     tmdb_lookup_expires_at = Column(DateTime(timezone=True), nullable=True)

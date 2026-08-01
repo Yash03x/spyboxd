@@ -17,8 +17,10 @@ import AdminScopeToggle from '../components/AdminScopeToggle';
 import ProfileHeader from '../components/ProfileHeader';
 import ProfilePicker from '../components/ProfilePicker';
 import ArchivePanel from '../components/insights/ArchivePanel';
+import ObscurityPanel from '../components/insights/ObscurityPanel';
 import ProfileStatsPanel from '../components/insights/ProfileStatsPanel';
 import RatingComparisonPanel from '../components/insights/RatingComparisonPanel';
+import WatchlistPanel from '../components/insights/WatchlistPanel';
 import TasteProfilePanel from '../components/insights/TasteProfilePanel';
 import TagsPanel, { TagChipList } from '../components/insights/TagsPanel';
 import { useScopedProfiles } from '../hooks/useScopedProfiles';
@@ -169,6 +171,10 @@ const Analysis: React.FC = () => {
           <ProfileStatsPanel username={analysis.username} delay={0.08} />
 
           <RatingComparisonPanel username={analysis.username} delay={0.1} />
+
+          <ObscurityPanel username={analysis.username} delay={0.12} />
+
+          <WatchlistPanel username={analysis.username} delay={0.14} />
 
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
             <StatsCard

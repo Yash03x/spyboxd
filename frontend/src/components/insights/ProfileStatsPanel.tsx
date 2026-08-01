@@ -9,8 +9,12 @@ import { profileStatsApi } from '../../services/api';
 import type {
   ProfileStatsBucket,
   ProfileStatsCountryBucket,
+  ProfileStatsCoverage,
   ProfileStatsPerson,
+  ProfileStatsReviews,
+  ProfileStatsRewatches,
 } from '../../services/api';
+import { FilmTitle, MoviePoster, formatCalendarDate, toMovieSummary } from './InsightUI';
 
 /** Below this, the metadata gap is worth saying once at the panel level. */
 const ENRICHMENT_CAVEAT_THRESHOLD = 0.95;
@@ -207,6 +211,207 @@ function BreakdownBars({
   );
 }
 
+/** A sub-heading inside the panel, so the folded sections keep its chrome. */
+function SubSection({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-wide text-white/45">{title}</p>
+      {subtitle ? <p className="mt-0.5 text-[11px] leading-4 text-white/30">{subtitle}</p> : null}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The two averages a rewatch or review split produces, phrased as what they
+ * are. Both sides are self-selected sets of films from the same library, so the
+ * gap describes which films get revisited or written about — never what
+ * revisiting or writing does to a rating.
+ */
+function PairedAverages({
+  leftLabel,
+  leftValue,
+  rightLabel,
+  rightValue,
+  caveat,
+}: {
+  leftLabel: string;
+  leftValue: number | null;
+  rightLabel: string;
+  rightValue: number | null;
+  caveat: string;
+}) {
+  if (leftValue === null && rightValue === null) return null;
+  const parts = [
+    leftValue === null ? null : `${leftLabel} ${leftValue.toFixed(2)}`,
+    rightValue === null ? null : `${rightLabel} ${rightValue.toFixed(2)}`,
+  ].filter((part): part is string => part !== null);
+
+  return (
+    <p className="mt-2 text-[11px] leading-4 text-white/40">
+      {parts.join(' · ')}
+      <span className="text-white/25">{` — ${caveat}`}</span>
+    </p>
+  );
+}
+
+/**
+ * What this member returns to. Films seen once are not listed: a film with no
+ * rewatch is not a quiet entry at the bottom of a rewatch list.
+ */
+function RewatchSection({ rewatches }: { rewatches: ProfileStatsRewatches }) {
+  const films = rewatches.most_rewatched ?? [];
+  if (rewatches.total_rewatches === 0 && films.length === 0) return null;
+
+  const subtitle = [
+    `${formatCount(rewatches.total_rewatches)} logged across ${formatCount(rewatches.films_rewatched)} films`,
+    rewatches.rewatch_rate === null
+      ? null
+      : `${formatRatio(rewatches.rewatch_rate)} of the library revisited`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' · ');
+
+  return (
+    <SubSection title="Rewatches" subtitle={subtitle}>
+      {films.length > 0 ? (
+        <ul className="mt-2 space-y-1.5">
+          {films.map((film, index) => (
+            <li
+              key={`${film.title}-${film.year ?? 'na'}-${index}`}
+              className="flex items-center gap-3 rounded-xl border border-white/5 bg-black/20 px-3 py-2"
+            >
+              <MoviePoster movie={toMovieSummary(film)} className="h-12 w-8" />
+              <div className="min-w-0 flex-1">
+                <FilmTitle film={film} />
+                <p className="mt-0.5 text-[11px] leading-4 tabular-nums text-white/40">
+                  {film.rating === null ? 'Unrated' : `Rated ${film.rating.toFixed(1)}`}
+                </p>
+              </div>
+              <span
+                className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs font-semibold tabular-nums text-white/70"
+                title={`${formatCount(film.watch_count)} logged ${film.watch_count === 1 ? 'watch' : 'watches'}`}
+              >
+                {`×${formatCount(film.watch_count)}`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <PairedAverages
+        leftLabel="Revisited films average"
+        leftValue={rewatches.average_rating_rewatched}
+        rightLabel="seen once"
+        rightValue={rewatches.average_rating_once}
+        caveat="two self-selected sets, not a before-and-after"
+      />
+    </SubSection>
+  );
+}
+
+/** Writing habits, and how this member rates the films they write about. */
+function ReviewSection({
+  reviews,
+  coverage,
+}: {
+  reviews: ProfileStatsReviews;
+  coverage: ProfileStatsCoverage;
+}) {
+  const liked = reviews.most_liked ?? [];
+  const byYear = reviews.reviews_by_year ?? [];
+  if (reviews.total_reviews === 0) return null;
+
+  const subtitle = [
+    `${formatCount(reviews.total_reviews)} published`,
+    reviews.with_text > 0 ? `${formatCount(reviews.with_text)} with prose` : null,
+    reviews.spoiler_reviews > 0 ? `${formatCount(reviews.spoiler_reviews)} flagged for spoilers` : null,
+    reviews.median_length_chars === null
+      ? null
+      : `${formatCount(reviews.median_length_chars)} characters median`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' · ');
+
+  return (
+    <SubSection title="Reviews" subtitle={subtitle}>
+      {reviews.longest ? (
+        <p className="mt-2 text-[11px] leading-4 text-white/40">
+          {`Longest: ${reviews.longest.title}${reviews.longest.year ? ` (${reviews.longest.year})` : ''}, ${formatCount(reviews.longest.length_chars)} characters`}
+        </p>
+      ) : null}
+
+      {liked.length > 0 ? (
+        <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-white/35">
+          Most liked
+        </p>
+      ) : null}
+      {liked.length > 0 ? (
+        <ol className="mt-2 space-y-1.5">
+          {liked.map((review, index) => (
+            <li
+              key={`${review.title}-${review.published_date ?? index}`}
+              className="flex items-center gap-2 text-sm"
+            >
+              <span className="min-w-0 flex-1 truncate text-white/80" title={review.title}>
+                {review.title}
+                {review.year ? <span className="text-white/35">{` (${review.year})`}</span> : null}
+              </span>
+              {review.published_date ? (
+                <span className="shrink-0 text-[11px] text-white/30">
+                  {formatCalendarDate(review.published_date)}
+                </span>
+              ) : null}
+              <span
+                className="w-10 shrink-0 text-right text-xs tabular-nums text-white/45"
+                title={`${formatCount(review.likes_count)} likes`}
+              >
+                {`♥ ${formatCount(review.likes_count)}`}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+
+      {byYear.length > 0 ? (
+        <div className="mt-4">
+          <BreakdownBars
+            title="Reviews by year"
+            subtitle="Undated reviews belong to no year and are left out"
+            rows={byYear.map((entry) => ({
+              id: String(entry.year),
+              label: String(entry.year),
+              title: String(entry.year),
+              count: entry.count,
+              averageRating: null,
+            }))}
+          />
+        </div>
+      ) : null}
+
+      <PairedAverages
+        leftLabel="Reviewed films average"
+        leftValue={reviews.average_rating_reviewed}
+        rightLabel="unreviewed"
+        rightValue={reviews.average_rating_unreviewed}
+        caveat="two self-selected sets, not a before-and-after"
+      />
+      {coverage.reviews_total > coverage.reviews_matched_to_films ? (
+        <p className="mt-1 text-[11px] leading-4 text-white/25">
+          {`${formatCount(coverage.reviews_matched_to_films)} of ${formatCount(coverage.reviews_total)} reviews matched a film in the library; the rest count only in the totals above.`}
+        </p>
+      ) : null}
+    </SubSection>
+  );
+}
+
 /**
  * The numbers Letterboxd puts behind its Patron-only stats page, computed for
  * every tracked member from their synced history. The endpoint is optional
@@ -336,6 +541,16 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
     (item): item is { label: string; name: string; count: number; average: number } => item !== null,
   );
 
+  // Rewatching and reviewing are part of the same "about this profile" story,
+  // so they fold in here rather than arriving as panels of their own. A profile
+  // with neither gets no divider and no empty shell.
+  const rewatches = stats.rewatches;
+  const reviews = stats.reviews;
+  const hasRewatchSection = Boolean(
+    rewatches && (rewatches.total_rewatches > 0 || (rewatches.most_rewatched?.length ?? 0) > 0),
+  );
+  const hasReviewSection = Boolean(reviews && reviews.total_reviews > 0);
+
   // One caveat for the whole panel rather than a footnote on every row.
   const enrichmentCaveat = coverage.films_total > 0
     && coverage.enrichment_ratio < ENRICHMENT_CAVEAT_THRESHOLD
@@ -448,6 +663,15 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
               </p>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {hasRewatchSection || hasReviewSection ? (
+        <div className="mt-6 grid gap-6 border-t border-white/10 pt-5 lg:grid-cols-2">
+          {hasRewatchSection && rewatches ? <RewatchSection rewatches={rewatches} /> : null}
+          {hasReviewSection && reviews ? (
+            <ReviewSection reviews={reviews} coverage={coverage} />
+          ) : null}
         </div>
       ) : null}
 

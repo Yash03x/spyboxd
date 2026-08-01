@@ -11,9 +11,21 @@ page. Its ``averagerating`` anchor carries the authoritative phrase::
 
     Weighted average of 4.50 based on 4,609,944 ratings
 
-Both numbers are read from that phrase alone. The per-bucket bar labels in the
-same document use abbreviated forms ("27.6K", "2.2M") and are never used as a
-rating count.
+The average and the total are read from that phrase alone, and never by summing
+the ten half-star buckets in the same document.
+
+Those ten buckets are read too, and stored as the film's rating distribution.
+Each bucket row carries its size twice::
+
+    <a class="barcolumn tooltip" title="2,230,960 ★★★★★ ratings (48%)">
+      <span class="_sr-only">2.2M (48%)</span>
+
+The exact figure in the ``title`` attribute is preferred; the visible label is
+abbreviated and lossy ("2.2M" is 30,960 ratings short of the truth, and the ten
+labels together miss that film's real total by 80,202) so it is only expanded
+as a fallback if that attribute ever goes away. Either way the bucket sum stays
+a *shape*, not a total: ``letterboxd_rating_count`` always comes from the
+weighted-average phrase.
 """
 
 from __future__ import annotations
@@ -53,13 +65,38 @@ DEFAULT_TIMEOUT_SECONDS = 30
 RATING_HISTOGRAM_URL_TEMPLATE = "https://letterboxd.com/csi/film/{slug}/rating-histogram/"
 
 # Letterboxd renders the weighted average only once a film has enough ratings.
-# Everything else in the include (the ten half-star buckets) is deliberately
-# ignored: its visible labels are abbreviated and lossy.
 _WEIGHTED_AVERAGE_RE = re.compile(
     r"Weighted\s+average\s+of\s+(\d+(?:\.\d+)?)\s+based\s+on\s+([\d,]+)\s+ratings?",
     re.IGNORECASE,
 )
 _FILM_SLUG_RE = re.compile(r"/film/([^/?#]+)")
+
+# One ``<tr class="column">`` per half-star bucket. The ``<thead>`` row carries
+# no such class, so the header never enters the distribution.
+_BUCKET_ROW_RE = re.compile(
+    r"<tr\b[^>]*\bclass=\"[^\"]*\bcolumn\b[^\"]*\"[^>]*>(.*?)</tr>",
+    re.IGNORECASE | re.DOTALL,
+)
+_BAR_ANCHOR_RE = re.compile(r"<a\b[^>]*\bbarcolumn\b[^>]*>", re.IGNORECASE)
+_TITLE_ATTR_RE = re.compile(r"\btitle=\"([^\"]*)\"", re.IGNORECASE)
+_ROW_HEADER_RE = re.compile(r"<th\b[^>]*>(.*?)</th>", re.IGNORECASE | re.DOTALL)
+_SR_ONLY_RE = re.compile(
+    r"<span\b[^>]*\b_sr-only\b[^>]*>(.*?)</span>",
+    re.IGNORECASE | re.DOTALL,
+)
+_TAG_RE = re.compile(r"<[^>]*>")
+# "2,230,960 ★★★★★ ratings (48%)" -> the exact size and the star label.
+_BUCKET_TITLE_RE = re.compile(
+    r"^\s*([\d,]+(?:\.\d+)?\s*[KMB]?)\s+(.+?)\s+ratings?\b",
+    re.IGNORECASE,
+)
+# "2.2M (48%)" / "2,789 (0%)" -> the leading size, abbreviated or not.
+_LEADING_COUNT_RE = re.compile(r"^\s*([\d,]+(?:\.\d+)?\s*[KMB]?)\b", re.IGNORECASE)
+_ABBREVIATED_COUNT_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([KMB]?)$", re.IGNORECASE)
+_COUNT_MULTIPLIERS = {"": 1, "K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
+
+# The ten half-star keys, in the order Letterboxd renders them.
+BUCKET_KEYS: tuple[str, ...] = tuple(f"{index / 2:.1f}" for index in range(1, 11))
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -81,10 +118,17 @@ class RatingCandidate:
 
 @dataclass(frozen=True)
 class ParsedRating:
-    """A film's crowd rating, where ``None`` means "Letterboxd did not say"."""
+    """A film's crowd rating, where ``None`` means "Letterboxd did not say".
+
+    ``distribution`` is the ten half-star buckets keyed ``"0.5"``..``"5.0"``, or
+    ``None`` when the document carried no buckets at all. It is never an empty
+    dict: "no histogram" and "a histogram of zeros" are different claims, and
+    only the second one would be a number.
+    """
 
     average: Optional[float]
     count: Optional[int]
+    distribution: Optional[Dict[str, int]] = None
 
     @property
     def is_known(self) -> bool:
@@ -130,22 +174,133 @@ def resolve_slug(letterboxd_slug: Optional[str], letterboxd_url: Optional[str]) 
     return None
 
 
-def parse_rating_histogram(document: Optional[str]) -> ParsedRating:
-    """Parse Letterboxd's weighted-average phrase out of the CSI include.
+def _expand_count_label(raw: str) -> Optional[int]:
+    """Turn one bar label into an integer, expanding Letterboxd's abbreviations.
 
-    Returns an all-``None`` result when the film has too few ratings for
+    ``"2,230,960"`` is exact and survives untouched; ``"2.2M"`` expands to
+    2,200,000, which is the best the abbreviated form can say. That loss is why
+    the exact ``title`` attribute is always preferred over the visible label,
+    and why no caller may add these buckets up to obtain a rating count.
+    """
+
+    text = (raw or "").strip().replace(",", "").replace(" ", "")
+    match = _ABBREVIATED_COUNT_RE.match(text)
+    if match is None:
+        return None
+    multiplier = _COUNT_MULTIPLIERS[match.group(2).upper()]
+    return int(round(float(match.group(1)) * multiplier))
+
+
+def _bucket_key(label: str) -> Optional[str]:
+    """Map a star label ("★★½", "half-★") to its ``"0.5"``..``"5.0"`` key."""
+
+    text = _TAG_RE.sub("", label or "").strip()
+    if not text:
+        return None
+    if text.casefold().startswith("half"):
+        value = 0.5
+    else:
+        stars = text.count("★")
+        if stars == 0:
+            return None
+        value = stars + (0.5 if "½" in text else 0.0)
+    key = f"{value:.1f}"
+    return key if key in BUCKET_KEYS else None
+
+
+def _parse_buckets(unescaped: str) -> Optional[Dict[str, int]]:
+    """Read the half-star buckets out of an already-unescaped include.
+
+    Returns ``None`` when the document has no bucket rows -- an empty include,
+    or a film Letterboxd has no histogram for. A row that *is* a bucket but
+    whose label or size cannot be read raises, because a partially readable
+    histogram is markup drift, and half a distribution stored as if it were
+    whole would silently misplace every rating measured against it.
+    """
+
+    buckets: Dict[str, int] = {}
+    for row in _BUCKET_ROW_RE.findall(unescaped):
+        anchor = _BAR_ANCHOR_RE.search(row)
+        if anchor is None:
+            continue
+
+        title_match = _TITLE_ATTR_RE.search(anchor.group(0))
+        title = title_match.group(1) if title_match else ""
+        titled = _BUCKET_TITLE_RE.match(title)
+
+        # The star label is written twice -- as the row header and inside the
+        # tooltip -- so either one alone is enough to place the bucket.
+        header = _ROW_HEADER_RE.search(row)
+        labels: List[str] = []
+        if header is not None:
+            labels.append(header.group(1))
+        if titled is not None:
+            labels.append(titled.group(2))
+        key = next(
+            (candidate for candidate in map(_bucket_key, labels) if candidate),
+            None,
+        )
+        if key is None:
+            raise LetterboxdRatingParseError(
+                "Unreadable rating-histogram bucket label "
+                f"{(labels[0].strip() if labels else '')!r}"
+            )
+
+        # The title carries the exact figure; the visible label is abbreviated
+        # and is only read when that attribute is missing.
+        count = _expand_count_label(titled.group(1)) if titled else None
+        if count is None:
+            visible = _SR_ONLY_RE.findall(row)
+            for candidate in visible:
+                leading = _LEADING_COUNT_RE.match(_TAG_RE.sub("", candidate).strip())
+                if leading is not None:
+                    count = _expand_count_label(leading.group(1))
+                    if count is not None:
+                        break
+        if count is None:
+            raise LetterboxdRatingParseError(
+                f"Unreadable rating-histogram bucket size for {key} stars"
+            )
+        if key in buckets:
+            raise LetterboxdRatingParseError(
+                f"Rating histogram repeated the {key}-star bucket"
+            )
+        buckets[key] = count
+
+    if not buckets:
+        return None
+    return {key: buckets[key] for key in BUCKET_KEYS if key in buckets}
+
+
+def parse_rating_buckets(document: Optional[str]) -> Optional[Dict[str, int]]:
+    """Public entry point for the half-star buckets of a raw CSI include."""
+
+    if not document:
+        return None
+    return _parse_buckets(html_module.unescape(document))
+
+
+def parse_rating_histogram(document: Optional[str]) -> ParsedRating:
+    """Parse Letterboxd's weighted-average phrase and buckets out of the include.
+
+    Returns a null average and count when the film has too few ratings for
     Letterboxd to publish an average (the include is then empty, or renders the
     histogram without an ``averagerating`` anchor). That is "unknown", not zero.
+    The buckets are read independently: a document can show the shape of its
+    ratings without Letterboxd publishing a headline average for them.
 
     Raises ``LetterboxdRatingParseError`` when the phrase is present but carries
     a value outside Letterboxd's 0-5 scale, which would mean the markup drifted.
     """
     if not document:
-        return ParsedRating(average=None, count=None)
+        return ParsedRating(average=None, count=None, distribution=None)
 
-    match = _WEIGHTED_AVERAGE_RE.search(html_module.unescape(document))
+    unescaped = html_module.unescape(document)
+    distribution = _parse_buckets(unescaped)
+
+    match = _WEIGHTED_AVERAGE_RE.search(unescaped)
     if match is None:
-        return ParsedRating(average=None, count=None)
+        return ParsedRating(average=None, count=None, distribution=distribution)
 
     raw_average, raw_count = match.group(1), match.group(2)
     try:
@@ -160,7 +315,7 @@ def parse_rating_histogram(document: Optional[str]) -> ParsedRating:
         )
     if count < 0:  # pragma: no cover - regex already constrains this
         raise LetterboxdRatingParseError(f"Negative rating count {count}")
-    return ParsedRating(average=average, count=count)
+    return ParsedRating(average=average, count=count, distribution=distribution)
 
 
 def _build_session():
@@ -326,9 +481,12 @@ def _persist_rating(
 ) -> None:
     """Stamp the attempt, and write values only when Letterboxd published them.
 
-    An "unknown" result never overwrites a previously fetched average: the
-    absent phrase means Letterboxd declined to publish one, not that the film's
-    rating became zero.
+    An "unknown" result never overwrites a previously fetched value: the absent
+    phrase means Letterboxd declined to publish one, not that the film's rating
+    became zero. The distribution follows the same rule but on its own -- a
+    document can carry buckets without a headline average, and a film that has
+    an average already keeps it while ``--refresh`` fills in the buckets behind
+    it.
     """
     movie = db.get(Movie, candidate.movie_id)
     if movie is None:
@@ -336,6 +494,8 @@ def _persist_rating(
     if parsed.is_known:
         movie.letterboxd_average_rating = parsed.average
         movie.letterboxd_rating_count = parsed.count
+    if parsed.distribution is not None:
+        movie.letterboxd_rating_distribution = parsed.distribution
     movie.letterboxd_rating_synced_at = synced_at
     db.flush()
 

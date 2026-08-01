@@ -53,6 +53,8 @@ def test_data_bearing_reads_require_a_clerk_user():
         "/api/follow-graph/mutuals",
         "/api/follow-graph/suggestions",
         "/api/profiles/{username}/archive",
+        "/api/profiles/{username}/watchlist-insights",
+        "/api/profiles/{username}/obscurity",
     }
     for path in protected_reads:
         assert "get_current_user" in _dependency_names(_route("GET", path)), path
