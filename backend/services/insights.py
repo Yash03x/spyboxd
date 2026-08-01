@@ -574,6 +574,17 @@ def _merge_provider_availability(
     )
 
 
+
+def _negated_iso_date(value: str) -> str:
+    """Sort key that puts the newest ISO date first.
+
+    ISO dates sort lexically, so reversing them means inverting each digit
+    rather than negating a number.
+    """
+
+    return "".join(chr(ord("9") - (ord(ch) - ord("0"))) if ch.isdigit() else ch for ch in value)
+
+
 class InsightsService:
     """Source-backed insight calculations over the additive, event-corrected schema."""
 
@@ -2156,7 +2167,17 @@ class InsightsService:
                     ),
                 }
             )
-        influence_paths.sort(key=lambda item: (item["gap_days"], item["leader_date"], item["movie"]["title"]))
+        # Newest first. Ordering by gap and then by *ascending* leader date
+        # filled the panel with the pair's oldest one-day-apart films and never
+        # reached recent activity, however active they had been lately; the
+        # tight gap remains the tiebreaker within a day.
+        influence_paths.sort(
+            key=lambda item: (
+                _negated_iso_date(item["leader_date"]),
+                item["gap_days"],
+                item["movie"]["title"],
+            )
+        )
 
         monthly: Dict[str, Dict[str, Any]] = defaultdict(
             lambda: {"ratings_left": [], "ratings_right": [], "gaps": [], "overlap_count": 0}

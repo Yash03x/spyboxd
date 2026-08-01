@@ -135,7 +135,7 @@ const MetricCard: React.FC<{
 function SignalStrength({ event }: { event: GroupSignalEvent }) {
   const gap = event.max_rating_gap;
   const strength = gap === null || gap === undefined
-    ? { label: 'Ratings unavailable', classes: 'border-white/15 bg-white/5 text-white/50' }
+    ? { label: 'Gap unknown', classes: 'border-white/15 bg-white/5 text-white/50' }
     : gap <= 0.5
       ? { label: 'Strong', classes: 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' }
       : gap <= 1.5

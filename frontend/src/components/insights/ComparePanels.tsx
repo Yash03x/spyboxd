@@ -408,6 +408,11 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
                   </div>
                 ))}
               </div>
+              {(data.shared_signature ?? []).flatMap((trait) => trait.top_movies ?? []).length === 0 && (
+                <p className="py-6 text-center text-sm text-white/40">
+                  No films both profiles have rated in a shared trait yet.
+                </p>
+              )}
             </section>
             <section className="panel-insight p-4">
               <h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Film className="h-4 w-4 text-cinema-400" /> Semantic neighbors</h3>
@@ -421,6 +426,11 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
                   </div>
                 ))}
               </div>
+              {(data.semantic_neighbors ?? []).length === 0 && (
+                <p className="py-6 text-center text-sm text-white/40">
+                  No contextual matches close enough in time yet.
+                </p>
+              )}
             </section>
           </div>
         </>
@@ -466,8 +476,11 @@ export function SignalCalendarPanel({ data, coverage }: {
   const effectiveCoverage = data?.coverage ?? coverage;
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const days = useMemo(() => data ? calendarDays(data.from, data.to, data.buckets ?? []) : [], [data]);
+  // The heatmap counts each event once, on its start date. Filtering the detail
+  // list by span instead listed events belonging to other cells -- and a blank
+  // grey day could open a populated list -- so the two now agree.
   const selectedEvents = selectedDate && data
-    ? (data.events ?? []).filter((event) => event.start_date <= selectedDate && event.end_date >= selectedDate)
+    ? (data.events ?? []).filter((event) => event.start_date === selectedDate)
     : [];
   const peakBucket = data?.buckets?.reduce<SignalCalendarBucket | null>((peak, bucket) => !peak || bucket.signal_count > peak.signal_count ? bucket : peak, null) ?? null;
 
