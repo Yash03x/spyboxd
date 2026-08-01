@@ -79,4 +79,7 @@ def test_existing_mutations_keep_admin_or_ingestion_auth():
     assert "get_active_upload_user" in _dependency_names(
         _route("POST", "/profiles/{username}/rename")
     )
+    assert "get_active_upload_user" in _dependency_names(
+        _route("POST", "/api/films/letterboxd-ratings")
+    )
     assert "get_current_user" in _dependency_names(_route("POST", "/profiles/{profile_id}/tracking"))

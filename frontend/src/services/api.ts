@@ -1270,4 +1270,80 @@ export const profileStatsApi = {
   },
 };
 
+/**
+ * How much of the profile the rating comparison could actually be run over. A
+ * film is only comparable once enough other tracked profiles have rated it, so
+ * `compared_films` is always a subset of `rated_films`.
+ */
+export interface RatingComparisonCoverage {
+  rated_films: number;
+  compared_films: number;
+  /** How many *other* profiles must have rated a film for it to count. */
+  min_raters: number;
+  /** Rated films carrying Letterboxd's own crowd average, the one external reference. */
+  letterboxd_average_films: number;
+}
+
+/** Which way this profile leans against its own circle. */
+export type RatingComparisonLean = 'generous' | 'harsh' | 'aligned';
+
+export interface RatingComparisonSummary {
+  /** Mean of (profile rating - group average). Null when nothing is comparable. */
+  group_delta: number | null;
+  /**
+   * Mean of (profile rating - Letterboxd crowd average) over the rated films
+   * that carry one. Null until the crowd-average backfill has reached them.
+   */
+  letterboxd_delta: number | null;
+  lean: RatingComparisonLean | null;
+  /** Pearson correlation of this profile's ratings against the group average. */
+  agreement: number | null;
+}
+
+export interface RatingComparisonFilm {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+  profile_rating: number;
+  group_average: number;
+  /** profile_rating - group_average: positive means rated above the circle. */
+  delta: number;
+  rater_count: number;
+  /** Letterboxd's crowd average, on the same five-point scale as every rating here. */
+  letterboxd_average: number | null;
+}
+
+export interface RatingComparisonDivisiveFilm {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+  /** Widest gap between any two ratings of this film across all profiles. */
+  rating_spread: number;
+  rater_count: number;
+  group_average: number;
+  /** Null when this profile has not rated a film the rest of the group split over. */
+  profile_rating: number | null;
+}
+
+export interface RatingComparisonResponse {
+  username: string;
+  coverage: RatingComparisonCoverage;
+  summary: RatingComparisonSummary;
+  most_generous: RatingComparisonFilm[];
+  most_harsh: RatingComparisonFilm[];
+  most_divisive: RatingComparisonDivisiveFilm[];
+}
+
+export const ratingComparisonApi = {
+  getComparison: async (username: string, limit = 10): Promise<RatingComparisonResponse> => {
+    const response = await api.get(
+      `/api/profiles/${encodeURIComponent(username)}/rating-comparison`,
+      { params: { limit } },
+    );
+    return response.data;
+  },
+};
+
 export default api;

@@ -40,7 +40,11 @@ const EGO_LABEL_REACH = 166;
 /** The ego ring never pulls in tighter than this, however cramped the frame. */
 const MIN_EGO_RADIUS = 150;
 /** Ego view stays readable only if the fan of leaves stays small. */
-const MAX_EXTRA_LEAVES = 10;
+/** Counterparts outside the tracked group shown around an ego view. The
+ *  bundled layout stays readable to ~70 nodes, so this is generous enough
+ *  that most profiles show every connection; when it does bite, the header
+ *  says so rather than silently presenting a partial graph as complete. */
+const MAX_EXTRA_LEAVES = 45;
 
 const MUTUAL_COLOR = '#34d399'; // emerald-400
 const ONEWAY_COLOR = '#f57c00'; // cinema-400
@@ -322,7 +326,15 @@ function NodeAvatar({
  * the profile's deep dive and any tracked leaf re-centres the graph, so the
  * follow network can be walked one hop at a time.
  */
-export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] }) {
+export default function FollowNetwork({
+  profiles,
+  onFocusChange,
+}: {
+  profiles: ProfileInfo[];
+  /** Notified with the centred username, or null in the full view, so a
+   *  surrounding page can follow the selection instead of contradicting it. */
+  onFocusChange?: (username: string | null) => void;
+}) {
   const reactId = useId();
   const router = useRouter();
   const reduceMotion = useReducedMotion();
@@ -461,6 +473,11 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
 
   // Optional richer per-person edges, including counterparts outside the
   // tracked group. Failures stay silent: the group-only ego view still works.
+
+  // Keep the surrounding page in step with the centred profile.
+  useEffect(() => {
+    onFocusChange?.(focusNode?.username ?? null);
+  }, [focusNode?.username, onFocusChange]);
   const egoQuery = useQuery({
     queryKey: ['follow-graph', 'ego', focusNode?.username ?? ''],
     queryFn: () => followGraphApi.getFollowGraph(focusNode?.username ?? '', { direction: 'both', limit: 80 }),
@@ -505,6 +522,20 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
       )
       .slice(0, MAX_EXTRA_LEAVES);
   }, [focusNode, egoQuery.data?.edges, egoQuery.isError, groupIndexByKey]);
+
+  // How many outside counterparts exist versus how many the ring shows, so a
+  // truncated view can say so instead of looking complete.
+  const hiddenExtraCount = useMemo(() => {
+    if (!focusNode || egoQuery.isError) return 0;
+    const outside = new Set<string>();
+    (egoQuery.data?.edges ?? []).forEach((edge) => {
+      if (edge.removed_at) return;
+      const key = edge.counterpart_username?.toLowerCase();
+      if (!key || key === focusNode.key || groupIndexByKey.has(key)) return;
+      outside.add(key);
+    });
+    return Math.max(0, outside.size - extraNodes.length);
+  }, [focusNode, egoQuery.data?.edges, egoQuery.isError, groupIndexByKey, extraNodes.length]);
 
   // Leaves keep the ring's angular order so the collapse into ego view reads
   // as a fold-in rather than a shuffle; outside counterparts come last.
@@ -884,7 +915,9 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
           {!networkQuery.isLoading && groupNodes.length > 0 && (
             <span className="text-xs text-white/40">
               {focusNode
-                ? `@${focusNode.username} · ${egoLeafKeys.length} connection${egoLeafKeys.length === 1 ? '' : 's'}`
+                ? `@${focusNode.username} · ${egoLeafKeys.length} connection${egoLeafKeys.length === 1 ? '' : 's'}${
+                    hiddenExtraCount > 0 ? ` · ${hiddenExtraCount} more not shown` : ''
+                  }`
                 : `${groupNodes.length} profiles · ${mutualCount} mutual · ${onewayCount} one-way`}
             </span>
           )}
@@ -960,17 +993,27 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
               }
             >
               <defs>
+                {/* Arrowheads sit at the followed end of a one-way edge and
+                    are the only thing distinguishing direction, so they are
+                    drawn larger than the stroke and outlined against the
+                    panel to stay legible where curves converge. */}
                 <marker
                   id={`${reactId}-arrow`}
-                  viewBox="0 0 10 10"
-                  refX="9"
-                  refY="5"
-                  markerWidth="9"
-                  markerHeight="9"
+                  viewBox="0 0 12 12"
+                  refX="11"
+                  refY="6"
+                  markerWidth="13"
+                  markerHeight="13"
                   markerUnits="userSpaceOnUse"
                   orient="auto-start-reverse"
                 >
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill={ONEWAY_COLOR} />
+                  <path
+                    d="M 0 0.5 L 12 6 L 0 11.5 z"
+                    fill={ONEWAY_COLOR}
+                    stroke="#0b1220"
+                    strokeWidth="1"
+                    strokeLinejoin="round"
+                  />
                 </marker>
                 {/* Nodes draw around their own origin, so one clip serves them all. */}
                 <clipPath id={`${reactId}-node-clip`}>
@@ -1021,7 +1064,7 @@ export default function FollowNetwork({ profiles }: { profiles: ProfileInfo[] })
                         stroke={edge.mutual ? MUTUAL_COLOR : ONEWAY_COLOR}
                         strokeWidth={incidentToFocus || incidentToHover ? 2.5 : 1.75}
                         strokeLinecap="round"
-                        strokeDasharray={untracked ? '5 5' : undefined}
+                        strokeDasharray={untracked ? '6 4' : undefined}
                         markerEnd={edge.mutual ? undefined : `url(#${reactId}-arrow)`}
                         style={{ pointerEvents: 'none' }}
                       />

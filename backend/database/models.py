@@ -570,6 +570,12 @@ class Movie(Base):
     poster_url = Column(String(500), nullable=True)
     tmdb_id = Column(BigInteger, nullable=True)
     imdb_id = Column(String(32), nullable=True)
+    # Letterboxd's own crowd rating for the film, from its rating-histogram
+    # include. Film-level and shared by every profile, so one fetch serves the
+    # whole library.
+    letterboxd_average_rating = Column(Float, nullable=True)
+    letterboxd_rating_count = Column(BigInteger, nullable=True)
+    letterboxd_rating_synced_at = Column(DateTime(timezone=True), nullable=True)
     tmdb_lookup_attempted_at = Column(DateTime(timezone=True), nullable=True)
     tmdb_lookup_expires_at = Column(DateTime(timezone=True), nullable=True)
     tmdb_lookup_key = Column(String(64), nullable=True)

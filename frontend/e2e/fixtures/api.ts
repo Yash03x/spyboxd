@@ -310,6 +310,84 @@ export const profileStats = {
   letterboxd_reported: { hours: 2_130, directors: 640, longest_streak: 19 },
 };
 
+// Ratings against the rest of the tracked circle. Deliberately mixed: one
+// champion without a Letterboxd crowd average and one divisive film this
+// profile never rated, so both omission branches render.
+export const ratingComparison = {
+  username: 'alpha',
+  coverage: {
+    rated_films: 900,
+    compared_films: 312,
+    min_raters: 2,
+    letterboxd_average_films: 268,
+  },
+  summary: {
+    group_delta: 0.31,
+    letterboxd_delta: -0.12,
+    lean: 'generous',
+    agreement: 0.62,
+  },
+  most_generous: [
+    {
+      title: 'Champion Fixture Film',
+      year: 2019,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/champion-fixture-film/',
+      profile_rating: 4.5,
+      group_average: 2.75,
+      delta: 1.75,
+      rater_count: 4,
+      letterboxd_average: 3.21,
+    },
+    {
+      title: 'Unenriched Champion',
+      year: null,
+      poster_url: null,
+      letterboxd_url: null,
+      profile_rating: 5,
+      group_average: 3.5,
+      delta: 1.5,
+      rater_count: 3,
+      letterboxd_average: null,
+    },
+  ],
+  most_harsh: [
+    {
+      title: 'Panned Fixture Film',
+      year: 2021,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/panned-fixture-film/',
+      profile_rating: 1.5,
+      group_average: 3.83,
+      delta: -2.33,
+      rater_count: 5,
+      letterboxd_average: 3.94,
+    },
+  ],
+  most_divisive: [
+    {
+      title: 'Divisive Fixture Film',
+      year: 2017,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/divisive-fixture-film/',
+      rating_spread: 3,
+      rater_count: 6,
+      group_average: 3.08,
+      profile_rating: 4.5,
+    },
+    {
+      title: 'Unrated Divisive Fixture',
+      year: 2013,
+      poster_url: null,
+      letterboxd_url: null,
+      rating_spread: 2.5,
+      rater_count: 4,
+      group_average: 2.88,
+      profile_rating: null,
+    },
+  ],
+};
+
 const dataCoverage = {
   generated_at: '2026-07-29T12:00:00Z',
   overall_score: 100,
@@ -685,6 +763,17 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
     const statsMatch = path.match(/^\/api\/profiles\/([^/]+)\/stats$/);
     if (statsMatch) {
       return json(route, { ...profileStats, username: decodeURIComponent(statsMatch[1]) });
+    }
+  }
+  {
+    // Rating comparison against the tracked circle. Contract-shaped so the
+    // Analysis panel renders instead of 404-ing into a console error.
+    const comparisonMatch = path.match(/^\/api\/profiles\/([^/]+)\/rating-comparison$/);
+    if (comparisonMatch) {
+      return json(route, {
+        ...ratingComparison,
+        username: decodeURIComponent(comparisonMatch[1]),
+      });
     }
   }
   {
