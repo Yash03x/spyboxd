@@ -11,11 +11,11 @@ A film's crowd rating is film-level and shared by every profile, so this carries
 no per-profile data at all: one modest batch of ``(slug, average, count)`` rows
 that any profile's comparison can then read.
 
-Auth is deliberately the same trust boundary as ``/upload/``: ``main`` mounts
-this router behind ``get_active_upload_user`` (ingestion token, or an enabled
-Clerk admin), and the route additionally declares ``get_upload_user`` itself so
-the token gate travels with the router even if the mount is ever rewritten.
-``backend/tests/test_route_access_matrix.py`` pins the mounted dependency.
+Auth is deliberately the same trust boundary as ``/upload/``: the route
+declares ``get_active_upload_user`` (ingestion token, or an enabled Clerk
+admin) directly, so the gate is visible on the route itself rather than
+depending on how it happens to be mounted.
+``backend/tests/test_route_access_matrix.py`` pins it.
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from auth import ClerkUser, get_upload_user
+from api.dependencies import get_active_upload_user
+from auth import ClerkUser
 from database.connection import get_db
 from database.models import Movie
 from services.letterboxd_ratings import resolve_slug
@@ -96,7 +97,7 @@ def _movies_by_slug(db: Session, slugs: set[str]) -> Dict[str, List[Movie]]:
 def ingest_letterboxd_ratings(
     payload: FilmRatingBatch,
     db: Session = Depends(get_db),
-    _user: ClerkUser = Depends(get_upload_user),
+    _user: ClerkUser = Depends(get_active_upload_user),
 ):
     """Apply a batch of locally scraped Letterboxd film ratings.
 

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Query, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from api.dependencies import get_active_upload_user
 from api.routes.activity import router as activity_router
 from api.routes.film_ratings import router as film_ratings_router
 from api.routes.follow_graph import router as follow_graph_router
@@ -70,17 +71,6 @@ _PROFILE_DIRECTORY_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 class _OwnerExportPublicationConsentRequired(PermissionError):
     """Expected upload validation failure with a fixed, public-safe message."""
-
-
-def get_active_upload_user(
-    user: ClerkUser = Depends(get_upload_user),
-    db: Session = Depends(get_db),
-) -> ClerkUser:
-    """Reject disabled Clerk admins while preserving ingestion-token uploads."""
-
-    if user.user_id != "ingestion-token":
-        ensure_app_user(db, user)
-    return user
 
 
 def _remove_scraped_profile_directory(username: str) -> None:
@@ -395,7 +385,7 @@ app.include_router(rating_comparison_router)
 # Letterboxd film ratings can only be scraped from a residential IP, so they
 # arrive over the same ingestion-token boundary as /upload/ rather than being
 # enriched on this server the way TMDB data is.
-app.include_router(film_ratings_router, dependencies=[Depends(get_active_upload_user)])
+app.include_router(film_ratings_router)
 
 @app.get("/health")
 async def health_check():

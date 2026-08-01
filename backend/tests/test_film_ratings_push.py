@@ -333,10 +333,9 @@ def test_route_carries_the_upload_trust_boundary():
     )
     names = {dependency.call.__name__ for dependency in route.dependant.dependencies}
 
-    # The mounted gate rejects disabled Clerk admins; the route's own dependency
-    # keeps the ingestion-token check attached to the router itself.
+    # The route declares its own gate rather than inheriting one from how it is
+    # mounted, so the trust boundary is visible on the route itself.
     assert "get_active_upload_user" in names
-    assert "get_upload_user" in names
 
 
 def test_pusher_collects_only_films_with_a_known_average(database):
