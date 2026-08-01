@@ -58,7 +58,12 @@ test('page content is actually painted, not just present in the DOM', async ({ p
     });
 
   await page.goto('/network');
-  await expect.poll(effectiveOpacity).toBeGreaterThan(0.99);
+  // Checked immediately, not polled. Polling waits for the entrance animation
+  // to finish, which is exactly the assumption that broke: an animation clock
+  // that never advances (a background tab freezes it at its first keyframe)
+  // leaves the page at whatever that keyframe says. No ancestor may start from
+  // transparent, so the content is already painted before anything animates.
+  expect(await effectiveOpacity()).toBeGreaterThan(0.99);
 
   await page.getByRole('button', { name: /^Centre the network on @/ }).first().click();
   await page.getByRole('button', { name: /deep dive analysis$/ }).first().click();
@@ -66,7 +71,7 @@ test('page content is actually painted, not just present in the DOM', async ({ p
   await page.goBack();
 
   await expect(page).toHaveURL(/\/network/);
-  await expect.poll(effectiveOpacity).toBeGreaterThan(0.99);
+  expect(await effectiveOpacity()).toBeGreaterThan(0.99);
 });
 
 test('a failed follow-graph request explains itself instead of rendering nothing', async ({
