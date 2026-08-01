@@ -733,6 +733,10 @@ def test_route_serves_the_payload_for_a_tracked_profile(
         "group_raters",
         "liked_by",
         "letterboxd_average",
+        # The distribution behind the average: two films can share a mean while
+        # one has a real chance of being loved and the other reliably does not.
+        "crowd_ceiling",
+        "crowd_floor",
         "added_date",
         "days_waiting",
         "raters",
@@ -831,3 +835,48 @@ def test_a_lone_five_star_does_not_outrank_a_corroborated_favourite(
     assert rows["Lone Favourite"]["group_average"] == 5.0
     assert rows["Lone Favourite"]["group_raters"] == 1
     assert rows["Crowd Favourite"]["group_raters"] == 5
+
+
+def test_the_crowd_shape_separates_two_films_with_the_same_average(
+    database: Session,
+) -> None:
+    """A mean cannot tell a divisive film from a uniformly mediocre one."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    polarising = _queued(database, subject, circle, "Polarising", other_ratings=[4.0])
+    flat = _queued(database, subject, circle, "Flat", other_ratings=[4.0])
+    # Same crowd average, very different shapes.
+    polarising.letterboxd_average_rating = 3.5
+    polarising.letterboxd_rating_distribution = {
+        "0.5": 50, "1.0": 50, "1.5": 0, "2.0": 100, "2.5": 0,
+        "3.0": 100, "3.5": 0, "4.0": 100, "4.5": 300, "5.0": 300,
+    }
+    flat.letterboxd_average_rating = 3.5
+    flat.letterboxd_rating_distribution = {
+        "0.5": 0, "1.0": 0, "1.5": 0, "2.0": 0, "2.5": 200,
+        "3.0": 300, "3.5": 400, "4.0": 100, "4.5": 0, "5.0": 0,
+    }
+    database.commit()
+
+    entries = {
+        entry["title"]: entry
+        for entry in _insights(database, subject)["recommendations"]
+    }
+
+    assert entries["Polarising"]["crowd_ceiling"] > entries["Flat"]["crowd_ceiling"]
+    assert entries["Polarising"]["crowd_floor"] > entries["Flat"]["crowd_floor"]
+    assert entries["Flat"]["crowd_ceiling"] == 0.0
+
+
+def test_a_film_with_no_histogram_reports_no_shape_rather_than_zero(
+    database: Session,
+) -> None:
+    """"Nobody rated it highly" and "we have not looked" are different answers."""
+    subject = _profile(database, "viewer")
+    circle = _circle(database, size=3)
+    _queued(database, subject, circle, "Unscraped", other_ratings=[4.0])
+
+    entry = _insights(database, subject)["recommendations"][0]
+
+    assert entry["crowd_ceiling"] is None
+    assert entry["crowd_floor"] is None
