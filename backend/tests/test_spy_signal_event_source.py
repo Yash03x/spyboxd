@@ -599,3 +599,65 @@ class SignalFeedOrderingTests(unittest.TestCase):
         titles = [event["title"] for event in events]
 
         self.assertLess(titles.index("Same Day Crowd"), titles.index("Same Day Pair"))
+
+
+class AlignmentEvidenceTests(unittest.TestCase):
+    """A rating correlation is only worth what its sample is worth.
+
+    Any two points lie on a line, so a pair who had rated two films in common
+    and agreed scored a perfect correlation and a zero rating gap -- the full
+    55% those two components carry. That put them level with a pair sharing 95
+    films and 48 ratings, and the card said "Strongest Pair" above it.
+    """
+
+    def _score(self, *, shared_titles, overlap, correlation, gap):
+        """Run one pair through the merge path's scoring."""
+        baseline = {
+            "summary": {},
+            "aligned_pairs": [
+                {
+                    "profiles": ["ana", "ben"],
+                    "shared_titles": shared_titles,
+                    "rating_overlap_count": overlap,
+                    "rating_correlation": correlation,
+                    "average_rating_gap": gap,
+                    # Deliberately stale: the merge only recomputes the score
+                    # when the timing it holds differs from the event-derived
+                    # timing below, so these must not already agree.
+                    "same_day_count": 0,
+                    "one_day_gap_count": 0,
+                    "tight_window_count": 0,
+                    "alignment_score": 0.0,
+                }
+            ]
+        }
+        timing = {
+            "profiles_with_dates": ["ana", "ben"],
+            "same_day_events": [],
+            "one_day_gap_events": [],
+            "gap_events": [],
+            "follow_paths": {},
+            "pair_metrics": {
+                ("ana", "ben"): {
+                    "same_day_count": 0,
+                    "one_day_gap_count": 0,
+                    "tight_window_count": 1,
+                    "within_gap_count": 0,
+                }
+            },
+        }
+        merged = _merge_event_source_timing(baseline, timing, limit=8, gap_days=0)
+        return merged["aligned_pairs"][0]["alignment_score"]
+
+    def test_a_thin_perfect_agreement_scores_below_a_broad_real_one(self) -> None:
+        thin = self._score(shared_titles=88, overlap=2, correlation=1.0, gap=0.0)
+        broad = self._score(shared_titles=95, overlap=48, correlation=0.56, gap=0.48)
+
+        self.assertLess(thin, broad)
+
+    def test_two_shared_ratings_do_not_earn_the_full_correlation_weight(self) -> None:
+        thin = self._score(shared_titles=88, overlap=2, correlation=1.0, gap=0.0)
+
+        # Unshrunk, a perfect correlation and a zero gap take all 55% those two
+        # components carry, which with a full shared-titles score reaches 80.
+        self.assertLess(thin, 65)
