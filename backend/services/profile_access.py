@@ -15,6 +15,7 @@ from database.models import (
     AppUser,
     Profile,
     ProfileAccessRequest,
+    ProfileFollowEdge,
     Rating,
     UserTrackedProfile,
 )
@@ -143,6 +144,54 @@ def tracked_profiles(
     )
 
 
+def _connected_profile_ids(db: Session, app_user: AppUser) -> set[int]:
+    """Profiles in the caller's own corner of the follow graph.
+
+    Connection is read in both directions and from both sides of the edge
+    table, because only one end of a pair may be synced: an edge stored on
+    someone else's profile naming the caller counts, and so does an edge stored
+    on the caller's own profile naming someone else. The caller's own profile is
+    included -- not being able to see yourself would be strange.
+
+    Returns an empty set when the caller has no linked Letterboxd username,
+    which is a real state (a fresh sign-up) and not an error.
+    """
+
+    handle = (app_user.letterboxd_username or "").strip().casefold()
+    if not handle:
+        return set()
+
+    connected: set[int] = set()
+
+    # Edges other profiles hold that name the caller.
+    connected.update(
+        profile_id
+        for (profile_id,) in db.query(ProfileFollowEdge.profile_id)
+        .filter(
+            ProfileFollowEdge.counterpart_username_normalized == handle,
+            ProfileFollowEdge.removed_at.is_(None),
+        )
+        .all()
+    )
+
+    own = _single_profile_by_normalized_username(db, handle)
+    if own is not None:
+        connected.add(own.id)
+        # Edges the caller's own profile holds that resolve to a synced profile.
+        connected.update(
+            counterpart_id
+            for (counterpart_id,) in db.query(ProfileFollowEdge.counterpart_profile_id)
+            .filter(
+                ProfileFollowEdge.profile_id == own.id,
+                ProfileFollowEdge.counterpart_profile_id.isnot(None),
+                ProfileFollowEdge.removed_at.is_(None),
+            )
+            .all()
+        )
+
+    return connected
+
+
 def list_profile_catalog(
     db: Session,
     clerk_user: ClerkUser,
@@ -156,6 +205,17 @@ def list_profile_catalog(
     The catalog intentionally exposes only recognition fields and aggregate film
     counts. Pending, errored, and inactive profiles stay in the admin library
     and are never offered as selectable monitoring targets.
+
+    For a non-admin the list is narrowed to their own corner of the follow
+    graph. Browsing every tracked profile revealed who Spyboxd watches, which is
+    not something Letterboxd publishes even though the profiles themselves are
+    public, and one sign-up would otherwise have been a directory of everybody
+    under observation. Reaching someone outside that corner still works: typing
+    a known username in "request another profile" resolves immediately when the
+    profile is already synced, so this restricts *discovery*, not access.
+
+    A caller with no linked Letterboxd username has no connections to compute,
+    so their catalog is empty and the request path is the way in.
     """
 
     app_user = ensure_app_user(db, clerk_user)
@@ -172,6 +232,9 @@ def list_profile_catalog(
         Profile.is_active.is_(True),
         Profile.scraping_status == "completed",
     )
+    if not clerk_user.is_admin:
+        connected = _connected_profile_ids(db, app_user)
+        query = query.filter(Profile.id.in_(connected) if connected else false())
     normalized_search = (search or "").strip().casefold()
     if normalized_search:
         pattern = f"%{normalized_search}%"

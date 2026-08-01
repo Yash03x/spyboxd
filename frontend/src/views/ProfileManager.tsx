@@ -442,8 +442,9 @@ const ProfileManager: React.FC = () => {
               </span>
             </div>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-white/60">
-              Select any synced profile already in Spyboxd. Your choices are private to your account, power the Monitored view in My Dashboard, and can be changed at any time.
-              {isAdmin ? ' The default global admin dashboard and library controls remain explicit and separate.' : ''}
+              {isAdmin
+                ? 'Select any synced profile already in Spyboxd. Your choices are private to your account, power the Monitored view in My Dashboard, and can be changed at any time. The default global admin dashboard and library controls remain explicit and separate.'
+                : 'Profiles you are connected to on Letterboxd. Your choices are private to your account, power the Monitored view in My Dashboard, and can be changed at any time. Know someone who is not listed? Ask for them by username below.'}
             </p>
           </div>
           <label className="relative w-full lg:max-w-sm">
@@ -470,7 +471,11 @@ const ProfileManager: React.FC = () => {
           </div>
         ) : catalogProfiles.length === 0 ? (
           <p className="mt-5 rounded-xl border border-white/10 bg-black/15 p-4 text-sm text-white/45">
-            {catalogSearchTerm.trim() ? 'No synced profiles match that search.' : 'No synced profiles are available yet.'}
+            {catalogSearchTerm.trim()
+              ? 'No synced profiles match that search.'
+              : isAdmin
+                ? 'No synced profiles are available yet.'
+                : 'Nobody you follow on Letterboxd is synced here yet. You can still ask for anyone by username below.'}
           </p>
         ) : (
           <>
