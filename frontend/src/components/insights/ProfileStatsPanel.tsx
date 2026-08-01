@@ -12,6 +12,7 @@ import type {
   ProfileStatsCoverage,
   ProfileStatsPerson,
   ProfileStatsReviews,
+  ProfileStatsResponse,
   ProfileStatsRewatches,
 } from '../../services/api';
 import { FilmTitle, MoviePoster, formatCalendarDate, toMovieSummary } from './InsightUI';
@@ -267,7 +268,13 @@ function PairedAverages({
  * What this member returns to. Films seen once are not listed: a film with no
  * rewatch is not a quiet entry at the bottom of a rewatch list.
  */
-function RewatchSection({ rewatches }: { rewatches: ProfileStatsRewatches }) {
+function RewatchSection({
+  rewatches,
+  journeys,
+}: {
+  rewatches: ProfileStatsRewatches;
+  journeys?: ProfileStatsResponse['return_journeys'];
+}) {
   const films = rewatches.most_rewatched ?? [];
   if (rewatches.total_rewatches === 0 && films.length === 0) return null;
 
@@ -282,6 +289,29 @@ function RewatchSection({ rewatches }: { rewatches: ProfileStatsRewatches }) {
 
   return (
     <SubSection title="Rewatches" subtitle={subtitle}>
+      {journeys && journeys.revisited_films > 0 ? (
+        <p className="mt-2 rounded-lg border border-white/[0.07] bg-black/15 px-3 py-2 text-[11px] leading-5 text-white/50">
+          Typically returns after{' '}
+          <strong className="text-white/80">
+            {formatCount(journeys.median_days_to_return ?? 0)} days
+          </strong>{' '}
+          across {formatCount(journeys.revisited_films)} revisited{' '}
+          {journeys.revisited_films === 1 ? 'film' : 'films'}.
+          {/* The paired half, and a much smaller set: only films rated on two
+              separate viewings can say what the revisit did to the score. */}
+          {journeys.rated_twice > 0 ? (
+            <>
+              {' '}Of the {formatCount(journeys.rated_twice)} rated on both viewings,{' '}
+              {journeys.rating_rose} went up, {journeys.rating_fell} down and{' '}
+              {journeys.rating_held} held
+              {journeys.average_change !== null
+                ? ` (${journeys.average_change > 0 ? '+' : ''}${journeys.average_change.toFixed(2)} on average)`
+                : ''}
+              .
+            </>
+          ) : null}
+        </p>
+      ) : null}
       {films.length > 0 ? (
         <ul className="mt-2 space-y-1.5">
           {films.map((film, index) => (
@@ -537,7 +567,12 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
   const topDirectors = stats.top_directors ?? [];
   const topActors = stats.top_actors ?? [];
   const topStudios = stats.top_studios ?? [];
-  const hasPeople = topDirectors.length > 0 || topActors.length > 0 || topStudios.length > 0;
+  const topComposers = stats.top_composers ?? [];
+  const topCinematographers = stats.top_cinematographers ?? [];
+  const topEditors = stats.top_editors ?? [];
+  const directorGender = stats.director_gender;
+  const hasPeople = topDirectors.length > 0 || topActors.length > 0 || topStudios.length > 0
+    || topComposers.length > 0 || topCinematographers.length > 0 || topEditors.length > 0;
   const hasBreakdowns = genreRows.length > 0
     || countryRows.length > 0
     || languageRows.length > 0
@@ -639,6 +674,39 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
         <p className="mt-3 text-xs text-white/35">{footnotes.join(' · ')}</p>
       ) : null}
 
+      {directorGender && directorGender.measured_films > 0 && directorGender.women_share !== null ? (
+        <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white/75">Who directs what you watch</h3>
+            {/* The denominator is stated because TMDB records no gender for
+                some directors, and those films are excluded from the split
+                rather than quietly assigned to one side. */}
+            <span className="text-[11px] text-white/40">
+              {formatCount(directorGender.measured_films)} films where TMDB records a director&rsquo;s gender
+            </span>
+          </div>
+          <div className="mt-2.5 flex h-2 overflow-hidden rounded-full bg-white/10">
+            <span
+              className="bg-cinema-500"
+              style={{ width: `${(directorGender.women / directorGender.measured_films) * 100}%` }}
+            />
+            <span
+              className="bg-emerald-400/70"
+              style={{ width: `${(directorGender.mixed / directorGender.measured_films) * 100}%` }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-white/50">
+            <strong className="text-white/80">
+              {Math.round(directorGender.women_share * 1000) / 10}%
+            </strong>{' '}
+            had a woman among their directors
+            {directorGender.mixed > 0
+              ? ` (${formatCount(directorGender.women)} solely, ${formatCount(directorGender.mixed)} co-directed)`
+              : ''}
+          </p>
+        </div>
+      ) : null}
+
       {hasPeople ? (
         <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
           <RankedList
@@ -656,6 +724,11 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
             subtitle={totals.distinct_studios ? `of ${formatCount(totals.distinct_studios)} seen` : null}
             people={topStudios}
           />
+          {/* Below the line: credits stored on most enriched films that no
+              panel has ever surfaced. */}
+          <RankedList title="Top composers" subtitle="Scored what you watch" people={topComposers} />
+          <RankedList title="Top cinematographers" subtitle="Shot what you watch" people={topCinematographers} />
+          <RankedList title="Top editors" subtitle="Cut what you watch" people={topEditors} />
         </div>
       ) : null}
 
@@ -703,7 +776,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
 
       {hasRewatchSection || hasReviewSection ? (
         <div className="mt-6 grid gap-6 border-t border-white/10 pt-5 lg:grid-cols-2">
-          {hasRewatchSection && rewatches ? <RewatchSection rewatches={rewatches} /> : null}
+          {hasRewatchSection && rewatches ? <RewatchSection rewatches={rewatches} journeys={stats.return_journeys} /> : null}
           {hasReviewSection && reviews ? (
             <ReviewSection reviews={reviews} coverage={coverage} />
           ) : null}

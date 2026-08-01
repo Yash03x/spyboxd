@@ -21,6 +21,9 @@ router = APIRouter(prefix="/api", tags=["watchlist insights"])
 def get_watchlist_insights(
     username: str,
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    # Providers are imported per country, so an unset region means "do not
+    # claim anything about where this can be streamed".
+    region: str | None = Query(default=None, min_length=2, max_length=2),
     db: Session = Depends(get_db),
     user: ClerkUser = Depends(get_current_user),
 ):
@@ -40,4 +43,4 @@ def get_watchlist_insights(
     """
 
     profile = require_profile_access(db, user, username)
-    return build_watchlist_insights(db, profile, limit=limit)
+    return build_watchlist_insights(db, profile, limit=limit, region=region)

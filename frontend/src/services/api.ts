@@ -148,6 +148,11 @@ export interface ProfileFavoriteFilm {
   year: number | null;
   poster_url: string | null;
   letterboxd_url: string | null;
+  /** Whether the film appears in this profile's own library at all. A stated
+   *  favourite that was never logged is a different claim from a logged one. */
+  in_library: boolean;
+  /** Their own rating, or null when logged without one. */
+  own_rating: number | null;
 }
 
 /**
@@ -1398,6 +1403,20 @@ export interface ProfileStatsResponse {
   coverage: ProfileStatsCoverage;
   totals: ProfileStatsTotals;
   top_directors: ProfileStatsPerson[];
+  /** Crew whose credits TMDB stores on most enriched films and nothing read
+   *  until now: the people shaping what you watch without being counted. */
+  top_composers: ProfileStatsPerson[];
+  top_cinematographers: ProfileStatsPerson[];
+  top_editors: ProfileStatsPerson[];
+  director_gender: {
+    /** Films with at least one director whose gender TMDB records. Films where
+     *  none is recorded are excluded from the shares rather than assigned. */
+    measured_films: number;
+    women: number;
+    men: number;
+    mixed: number;
+    women_share: number | null;
+  };
   top_actors: ProfileStatsPerson[];
   top_studios: ProfileStatsPerson[];
   genres: ProfileStatsBucket[];
@@ -1412,6 +1431,17 @@ export interface ProfileStatsResponse {
    * say "none yet" instead of guessing whether the block failed to compute.
    */
   rewatches: ProfileStatsRewatches;
+  /** A paired measurement, unlike the averages inside `rewatches`: the same
+   *  person rating the same film on two separate viewings. */
+  return_journeys: {
+    revisited_films: number;
+    median_days_to_return: number | null;
+    rated_twice: number;
+    rating_rose: number;
+    rating_fell: number;
+    rating_held: number;
+    average_change: number | null;
+  };
   reviews: ProfileStatsReviews;
   /**
    * Letterboxd's own stats-page figures, verbatim, for side-by-side
@@ -1545,6 +1575,10 @@ export interface WatchlistRecommendation {
   crowd_ceiling: number | null;
   /** Share that rated it 2.0 or below. */
   crowd_floor: number | null;
+  /** Subscription services carrying it in the requested region. Empty means
+   *  "not carried there", never "not streamable anywhere" — providers are only
+   *  imported per country. */
+  streaming_on?: string[];
   added_date: string | null;
   /** Null when the import carried no added date: an unknown wait, not a zero-day one. */
   days_waiting: number | null;
