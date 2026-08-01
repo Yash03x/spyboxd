@@ -1486,6 +1486,10 @@ export interface RatingComparisonDivisiveFilm {
   rater_count: number;
   /** The others only — the group average's denominator. */
   group_rater_count: number;
+  /** Share of Letterboxd's crowd in the film's most popular half-star bucket.
+   *  High means the wider world has largely settled, so a split here belongs to
+   *  this circle rather than to the film. Null when no histogram is imported. */
+  crowd_consensus: number | null;
   group_average: number;
   /** Null when this profile has not rated a film the rest of the group split over. */
   profile_rating: number | null;
@@ -1538,6 +1542,12 @@ export interface WatchlistRecommendation {
   group_raters: number;
   liked_by: number;
   letterboxd_average: number | null;
+  /** Share of Letterboxd's crowd that rated it 4.5+ — how much room the film has
+   *  to become a favourite. Null when no histogram has been imported, which is
+   *  not the same as nobody rating it highly. */
+  crowd_ceiling: number | null;
+  /** Share that rated it 2.0 or below. */
+  crowd_floor: number | null;
   added_date: string | null;
   /** Null when the import carried no added date: an unknown wait, not a zero-day one. */
   days_waiting: number | null;

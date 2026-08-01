@@ -61,6 +61,12 @@ function QueueRow({ film, rank }: { film: WatchlistRecommendation; rank: number 
     `${formatInsightCount(film.group_raters)} ${film.group_raters === 1 ? 'rater' : 'raters'}`,
     film.liked_by > 0 ? `${formatInsightCount(film.liked_by)} liked` : null,
     film.letterboxd_average !== null ? `Letterboxd ${film.letterboxd_average.toFixed(2)}` : null,
+    // Two films can share an average while one has a real chance of being loved
+    // and the other reliably does not; the crowd's own high-end share says
+    // which is which.
+    film.crowd_ceiling !== null
+      ? `${Math.round(film.crowd_ceiling * 100)}% rated it 4.5+`
+      : null,
   ].filter((note): note is string => note !== null);
 
   return (
