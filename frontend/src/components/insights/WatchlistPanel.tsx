@@ -67,6 +67,9 @@ function QueueRow({ film, rank }: { film: WatchlistRecommendation; rank: number 
     film.crowd_ceiling !== null
       ? `${Math.round(film.crowd_ceiling * 100)}% rated it 4.5+`
       : null,
+    // A recommendation you cannot watch tonight is a different proposition
+    // from one you can.
+    film.streaming_on?.length ? `on ${film.streaming_on[0]}` : null,
   ].filter((note): note is string => note !== null);
 
   return (
