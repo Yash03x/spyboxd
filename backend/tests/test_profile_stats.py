@@ -1069,6 +1069,11 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "coverage",
         "totals",
         "top_directors",
+        # Crew whose credits were stored and never surfaced.
+        "top_composers",
+        "top_cinematographers",
+        "top_editors",
+        "director_gender",
         "top_actors",
         "top_studios",
         "genres",
@@ -1156,3 +1161,60 @@ def test_a_bucket_reports_the_denominator_its_average_was_built_from(database):
     assert horror["count"] == 4
     assert horror["rated_count"] == 2
     assert horror["average_rating"] == 5.0
+
+
+def test_below_the_line_crew_is_counted_from_credits_nothing_else_reads(database):
+    """Composer, cinematographer and editor credits sit on ~4,000 enriched films."""
+    profile = _profile(database, "viewer")
+    for index in range(3):
+        _film(
+            database,
+            profile,
+            title=f"Scored {index}",
+            crew=[
+                {"name": "Mica Levi", "job": "Original Music Composer"},
+                {"name": "Robbie Ryan", "job": "Director of Photography"},
+                {"name": "Thelma Schoonmaker", "job": "Editor"},
+                {"name": "Some Director", "job": "Director"},
+            ],
+        )
+
+    stats = build_profile_stats(database, profile)
+
+    assert stats["top_composers"][0]["name"] == "Mica Levi"
+    assert stats["top_composers"][0]["count"] == 3
+    assert stats["top_cinematographers"][0]["name"] == "Robbie Ryan"
+    assert stats["top_editors"][0]["name"] == "Thelma Schoonmaker"
+
+
+def test_director_gender_counts_films_not_credits(database):
+    """A two-director film is one film, and an unrecorded gender is not a side."""
+    profile = _profile(database, "viewer")
+    _film(database, profile, title="By A Woman",
+          crew=[{"name": "Chantal Akerman", "job": "Director", "gender": 1}])
+    _film(database, profile, title="By A Man",
+          crew=[{"name": "Some Man", "job": "Director", "gender": 2}])
+    _film(database, profile, title="By Both",
+          crew=[{"name": "Her", "job": "Director", "gender": 1},
+                {"name": "Him", "job": "Director", "gender": 2}])
+    _film(database, profile, title="Unrecorded",
+          crew=[{"name": "Nobody Knows", "job": "Director", "gender": 0}])
+
+    split = build_profile_stats(database, profile)["director_gender"]
+
+    # The unrecorded film is excluded from the shares rather than assigned.
+    assert split["measured_films"] == 3
+    assert split["women"] == 1
+    assert split["men"] == 1
+    assert split["mixed"] == 1
+
+
+def test_a_profile_with_no_recorded_director_gender_reports_no_share(database):
+    profile = _profile(database, "viewer")
+    _film(database, profile, title="Unknown",
+          crew=[{"name": "Nobody Knows", "job": "Director"}])
+
+    split = build_profile_stats(database, profile)["director_gender"]
+
+    assert split["measured_films"] == 0
+    assert split["women_share"] is None

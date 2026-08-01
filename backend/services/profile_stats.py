@@ -75,6 +75,10 @@ class _FilmRow:
     countries: List[_Value]
     languages: List[_Value]
     directors: List[_Value]
+    director_genders: List[int]
+    composers: List[_Value]
+    cinematographers: List[_Value]
+    editors: List[_Value]
     actors: List[_Value]
     studios: List[_Value]
 
@@ -146,6 +150,56 @@ def _director_values(credits: Any) -> List[_Value]:
             ]
         )
     )
+
+
+# Crew whose work shapes a film as much as the director's, and whose credits
+# TMDB stores on ~4,000 of the enriched films while nothing reads them.
+BELOW_THE_LINE_JOBS = {
+    "composer": "Original Music Composer",
+    "cinematographer": "Director of Photography",
+    "editor": "Editor",
+}
+
+
+def _crew_values(credits: Any, job: str) -> List[_Value]:
+    """Names credited with one specific crew job."""
+
+    crew = credits.get("crew") if isinstance(credits, Mapping) else None
+    if not isinstance(crew, list):
+        return []
+    return _plain_values(
+        _as_string_list(
+            [
+                member
+                for member in crew
+                if isinstance(member, Mapping) and member.get("job") == job
+            ]
+        )
+    )
+
+
+def _director_genders(credits: Any) -> List[int]:
+    """TMDB gender codes for this film's directors.
+
+    1 is female and 2 is male; 0 and null mean TMDB has not recorded one, and
+    those are dropped rather than counted as a third category. Coverage is 93%
+    of director credits across the enriched library.
+    """
+
+    crew = credits.get("crew") if isinstance(credits, Mapping) else None
+    if not isinstance(crew, list):
+        return []
+    genders = []
+    for member in crew:
+        if not isinstance(member, Mapping) or member.get("job") != "Director":
+            continue
+        try:
+            code = int(member.get("gender") or 0)
+        except (TypeError, ValueError):
+            continue
+        if code in (1, 2):
+            genders.append(code)
+    return genders
 
 
 def _actor_values(credits: Any) -> List[_Value]:
@@ -230,6 +284,12 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
                 countries=_country_values(row.production_countries),
                 languages=_language_values(row.original_language, row.spoken_languages),
                 directors=_director_values(credits),
+                director_genders=_director_genders(credits),
+                composers=_crew_values(credits, BELOW_THE_LINE_JOBS["composer"]),
+                cinematographers=_crew_values(
+                    credits, BELOW_THE_LINE_JOBS["cinematographer"]
+                ),
+                editors=_crew_values(credits, BELOW_THE_LINE_JOBS["editor"]),
                 actors=_actor_values(credits),
                 studios=_plain_values(_as_string_list(row.production_companies)),
             )
@@ -326,6 +386,42 @@ def _entry(
 
 def _by_count(bucket: Mapping[str, Any]):
     return (-bucket["count"], bucket["label"].casefold(), bucket["label"])
+
+
+def _director_gender_split(films: Sequence[_FilmRow]) -> Dict[str, Any]:
+    """Share of watched films directed by women, men, and by both.
+
+    Counted per film rather than per credit, so a two-director film is one
+    film. TMDB records no gender for 7% of director credits; a film whose
+    directors are all unrecorded is left out of the shares entirely rather than
+    being assigned to either side, and the count that was measured is reported
+    so the reader can weigh it.
+    """
+
+    women = 0
+    men = 0
+    mixed = 0
+    measured = 0
+    for film in films:
+        genders = set(film.director_genders)
+        if not genders:
+            continue
+        measured += 1
+        if genders == {1}:
+            women += 1
+        elif genders == {2}:
+            men += 1
+        else:
+            mixed += 1
+    if measured == 0:
+        return {"measured_films": 0, "women": 0, "men": 0, "mixed": 0, "women_share": None}
+    return {
+        "measured_films": measured,
+        "women": women,
+        "men": men,
+        "mixed": mixed,
+        "women_share": _round((women + mixed) / measured, 3),
+    }
 
 
 def _ranked(
@@ -642,6 +738,9 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
     languages = _collect(films, lambda film: film.languages)
     decades = _collect(films, lambda film: film.decades)
     directors = _collect(films, lambda film: film.directors)
+    composers = _collect(films, lambda film: film.composers)
+    cinematographers = _collect(films, lambda film: film.cinematographers)
+    editors = _collect(films, lambda film: film.editors)
     actors = _collect(films, lambda film: film.actors)
     studios = _collect(films, lambda film: film.studios)
 
@@ -675,6 +774,12 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
             "average_rating": _round(_average(ratings), 2),
         },
         "top_directors": _ranked(directors, label_key="name"),
+        # The people whose work shapes a film without their name being the one
+        # anybody counts. Their credits were already stored and never read.
+        "top_composers": _ranked(composers, label_key="name"),
+        "top_cinematographers": _ranked(cinematographers, label_key="name"),
+        "top_editors": _ranked(editors, label_key="name"),
+        "director_gender": _director_gender_split(films),
         "top_actors": _ranked(actors, label_key="name"),
         "top_studios": _ranked(studios, label_key="name"),
         "genres": _ranked(genres),

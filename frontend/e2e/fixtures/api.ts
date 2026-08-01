@@ -362,15 +362,27 @@ export const profileStats = {
     average_rating: 3.72,
   },
   top_directors: [
-    { name: 'Akira Kurosawa', count: 18, average_rating: 4.3 },
-    { name: 'Agnès Varda', count: 12, average_rating: 4.1 },
-    { name: 'Mani Ratnam', count: 9, average_rating: null },
+    { name: 'Akira Kurosawa', count: 18, rated_count: 16, average_rating: 4.3 },
+    { name: 'Agnès Varda', count: 12, rated_count: 10, average_rating: 4.1 },
+    { name: 'Mani Ratnam', count: 9, rated_count: 7, average_rating: null },
   ],
+  top_composers: [
+    { name: 'Joe Hisaishi', count: 21, rated_count: 19, average_rating: 4.2 },
+  ],
+  top_cinematographers: [
+    { name: 'Roger Deakins', count: 16, rated_count: 14, average_rating: 4.1 },
+  ],
+  top_editors: [
+    { name: 'Thelma Schoonmaker', count: 11, rated_count: 9, average_rating: 4.0 },
+  ],
+  // Films where TMDB records no director gender are excluded from the split,
+  // so measured_films is deliberately lower than the profile's film count.
+  director_gender: { measured_films: 940, women: 96, men: 832, mixed: 12, women_share: 0.115 },
   top_actors: [
-    { name: 'Toshiro Mifune', count: 14, average_rating: 4.2 },
-    { name: 'Tilda Swinton', count: 11, average_rating: 3.9 },
+    { name: 'Toshiro Mifune', count: 14, rated_count: 12, average_rating: 4.2 },
+    { name: 'Tilda Swinton', count: 11, rated_count: 9, average_rating: 3.9 },
   ],
-  top_studios: [{ name: 'Studio Ghibli', count: 16, average_rating: 4.4 }],
+  top_studios: [{ name: 'Studio Ghibli', count: 16, rated_count: 14, average_rating: 4.4 }],
   genres: [
     { label: 'Drama', count: 420, average_rating: 3.9 },
     { label: 'Comedy', count: 210, average_rating: 3.4 },
