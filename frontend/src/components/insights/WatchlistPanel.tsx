@@ -67,6 +67,12 @@ function QueueRow({ film, rank }: { film: WatchlistRecommendation; rank: number 
     film.crowd_ceiling !== null
       ? `${Math.round(film.crowd_ceiling * 100)}% rated it 4.5+`
       : null,
+    // And the other end of the same histogram. A film with a high ceiling and
+    // a high floor is a gamble, not a safe pick, and the ceiling alone reads
+    // like a recommendation with no downside.
+    film.crowd_floor !== null && film.crowd_floor >= 0.05
+      ? `${Math.round(film.crowd_floor * 100)}% rated it 2.0 or below`
+      : null,
     // A recommendation you cannot watch tonight is a different proposition
     // from one you can.
     film.streaming_on?.length ? `on ${film.streaming_on[0]}` : null,

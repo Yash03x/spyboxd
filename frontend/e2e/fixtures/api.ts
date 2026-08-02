@@ -554,6 +554,27 @@ export const watchlistInsights = {
       ],
     },
     {
+      // A gamble rather than a safe pick: a real shot at being loved and a real
+      // shot at being hated, which the ceiling alone would hide.
+      title: 'Divisive Queue Entry',
+      year: 2021,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/divisive-queue-entry/',
+      group_average: 3.5,
+      group_raters: 2,
+      liked_by: 1,
+      letterboxd_average: 3.02,
+      crowd_ceiling: 0.31,
+      crowd_floor: 0.22,
+      streaming_on: [],
+      added_date: '2025-01-05',
+      days_waiting: 209,
+      raters: [
+        { username: 'bravo', rating: 5 },
+        { username: 'charlie', rating: 2 },
+      ],
+    },
+    {
       title: 'Undated Queue Entry',
       year: null,
       poster_url: null,
