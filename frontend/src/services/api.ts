@@ -1420,6 +1420,18 @@ export interface ProfileStatsResponse {
     recent: Array<{ date: string; films: number; runtime_minutes: number | null; titles: string[] }>;
     import_artifact_days: number;
   };
+  /** How long after release this person gets to a film. A decade breakdown
+   *  cannot answer it: the same 2020s library belongs to someone following new
+   *  releases and to someone three years behind. */
+  release_lag: {
+    measured_films: number;
+    median_lag_days: number | null;
+    fresh_share: number | null;
+    back_catalogue_share: number | null;
+    /** Watches dated before release; excluded from the median, not hidden. */
+    logged_before_release: number;
+    lean: 'current' | 'catching_up' | 'archival' | null;
+  };
   /** Rhythm rather than volume: the same film count reads differently if it
    *  arrived weekly or in two binges either side of a silence. */
   cadence: {

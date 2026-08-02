@@ -28,6 +28,7 @@ from database.models import (
 from services.profile_stats import (
     build_marathons,
     build_cadence,
+    build_release_lag,
     build_profile_stats,
     build_return_journeys,
     longest_streak_weeks,
@@ -1077,6 +1078,8 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "marathons",
         # Rhythm alongside volume.
         "cadence",
+        # When they got to a film, which its decade cannot say.
+        "release_lag",
         "top_directors",
         # Crew whose credits were stored and never surfaced.
         "top_composers",
@@ -1424,3 +1427,60 @@ def test_a_profile_that_never_returns_reports_nothing_rather_than_zero():
 
     assert journeys["revisited_films"] == 0
     assert journeys["median_days_to_return"] is None
+
+
+# A film's decade says when it was made, never when this person got to it. Two
+# profiles whose libraries are entirely 2020s films are indistinguishable by
+# decade while one follows new releases and the other is three years behind.
+
+def _lag_events(pairs):
+    """(movie_id, watched, released) triples from (watched, released) pairs."""
+    return [(index, watched, released) for index, (watched, released) in enumerate(pairs)]
+
+
+def test_release_lag_measures_the_first_watch_not_every_rewatch():
+    """A rewatch years later says nothing about how fast they got there first."""
+    events = _lag_events(
+        [(date(2026, 1, 10), date(2026, 1, 1))] * 20
+    )
+
+    lag = build_release_lag(events)
+
+    assert lag["measured_films"] == 20
+    assert lag["median_lag_days"] == 9
+    assert lag["fresh_share"] == 1.0
+    assert lag["lean"] == "current"
+
+
+def test_a_watch_dated_before_release_is_excluded_and_counted():
+    """A festival screening and a mistyped date are indistinguishable here."""
+    events = _lag_events(
+        [(date(2026, 1, 10), date(2026, 1, 1))] * 20
+        + [(date(2025, 12, 1), date(2026, 1, 1))]
+    )
+
+    lag = build_release_lag(events)
+
+    assert lag["measured_films"] == 20
+    assert lag["logged_before_release"] == 1
+
+
+def test_a_back_catalogue_habit_is_named_archival():
+    events = _lag_events([(date(2026, 1, 1), date(2000, 1, 1))] * 20)
+
+    lag = build_release_lag(events)
+
+    assert lag["lean"] == "archival"
+    assert lag["back_catalogue_share"] == 1.0
+    assert lag["fresh_share"] == 0.0
+
+
+def test_too_few_datable_films_describe_no_habit():
+    """Under the floor there are coincidences, not a viewing pattern."""
+    events = _lag_events([(date(2026, 1, 10), date(2026, 1, 1))] * 5)
+
+    lag = build_release_lag(events)
+
+    assert lag["measured_films"] == 5
+    assert lag["median_lag_days"] is None
+    assert lag["lean"] is None

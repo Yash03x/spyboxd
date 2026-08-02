@@ -566,6 +566,10 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
 
   const marathons = stats.marathons;
   const cadence = stats.cadence;
+  const releaseLag = stats.release_lag;
+  const lagYears = releaseLag?.median_lag_days != null
+    ? releaseLag.median_lag_days / 365
+    : null;
   // Fixed order so the row reads like a week rather than a ranking, and a
   // weekday with no watches still occupies its slot.
   const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -732,6 +736,50 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
             <p className="mt-1 text-[11px] text-white/35">
               Longest silence: {formatCount(cadence.longest_dry_spell_days)} days
               {cadence.dry_spell_started ? ` from ${cadence.dry_spell_started}` : ''}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* When they got to a film, which its decade cannot say: a library made
+          entirely of 2020s films belongs equally to someone following new
+          releases and to someone three years behind. */}
+      {releaseLag && releaseLag.median_lag_days !== null && lagYears !== null ? (
+        <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white/75">How soon after release</h3>
+            <span className="text-[11px] text-white/40">
+              {formatCount(releaseLag.measured_films)} films with a known release date
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-white/55">
+            Typically{' '}
+            <strong className="text-white/85">
+              {lagYears >= 1
+                ? `${lagYears.toFixed(1)} years`
+                : `${releaseLag.median_lag_days} days`}
+            </strong>{' '}
+            after a film came out
+            {releaseLag.lean === 'current'
+              ? ' — they watch things while they are new'
+              : releaseLag.lean === 'archival'
+                ? ' — almost everything is back catalogue'
+                : ' — a while behind, but not archival'}
+            .
+          </p>
+          {releaseLag.fresh_share !== null && releaseLag.back_catalogue_share !== null ? (
+            <p className="mt-1 text-[11px] text-white/35">
+              {Math.round(releaseLag.fresh_share * 100)}% within a month of release ·{' '}
+              {Math.round(releaseLag.back_catalogue_share * 100)}% at least five years old
+            </p>
+          ) : null}
+          {releaseLag.logged_before_release > 0 ? (
+            /* Stated rather than dropped silently: a festival screening and a
+               mistyped diary date look identical from here. */
+            <p className="mt-1 text-[11px] text-white/30">
+              {formatCount(releaseLag.logged_before_release)}{' '}
+              {releaseLag.logged_before_release === 1 ? 'entry was' : 'entries were'} dated before
+              release and left out.
             </p>
           ) : null}
         </div>
