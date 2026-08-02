@@ -810,6 +810,13 @@ def request_summary(
                 "requester_user_id": (
                     request.user.clerk_user_id if request.user else None
                 ),
+                # Who asked, in the only name an admin can act on. The Clerk id
+                # identifies the account but says nothing a human recognises,
+                # and it stays in the payload because grandfathered users have
+                # no linked username to fall back to.
+                "requester_letterboxd_username": (
+                    request.user.letterboxd_username if request.user else None
+                ),
                 "note": request.admin_note,
                 "resolved_by_user_id": request.resolved_by_clerk_user_id,
             }

@@ -1113,6 +1113,8 @@ def test_non_admin_request_payload_omits_internal_identity_and_notes(database):
 
     ordinary = list_profile_requests(database, _user("requester"))[0]
     assert "requester_user_id" not in ordinary
+    # Naming the requester is as much an identity leak as the Clerk id is.
+    assert "requester_letterboxd_username" not in ordinary
     assert "resolved_by_user_id" not in ordinary
     assert "note" not in ordinary
 
@@ -1124,6 +1126,35 @@ def test_non_admin_request_payload_omits_internal_identity_and_notes(database):
     assert privileged["requester_user_id"] == "requester"
     assert privileged["resolved_by_user_id"] == "admin"
     assert privileged["note"] == "internal moderation note"
+    # This requester never linked an account, so there is no name to show and
+    # the queue is left with the opaque id.
+    assert privileged["requester_letterboxd_username"] is None
+
+
+def test_admin_queue_names_the_requester_when_an_account_is_linked(database):
+    """The Clerk id identifies an account; it does not tell an admin who asked."""
+    requester = AppUser(clerk_user_id="user_3HDeXHfN", letterboxd_username="prani_1234")
+    database.add_all([requester, AppUser(clerk_user_id="admin")])
+    database.flush()
+    database.add(
+        ProfileAccessRequest(
+            user_id=requester.id,
+            requested_username="Alpha",
+            normalized_username="alpha",
+            status="pending",
+        )
+    )
+    database.commit()
+
+    privileged = list_profile_requests(
+        database,
+        _user("admin", admin=True),
+        include_all=True,
+    )[0]
+
+    assert privileged["requester_letterboxd_username"] == "prani_1234"
+    # Kept alongside, not replaced: it is still the only stable identifier.
+    assert privileged["requester_user_id"] == "user_3HDeXHfN"
 
 
 def test_profile_username_is_unique_case_insensitively(database):

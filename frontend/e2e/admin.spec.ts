@@ -14,6 +14,20 @@ test('backend admin truth exposes management and the residential sync queue', as
   await expect(page.getByText('Awaiting residential sync', { exact: true })).toBeVisible();
 });
 
+test('the request queue names the requester rather than printing a Clerk id', async ({ page }) => {
+  await installApiMocks(page, { isAdmin: true });
+
+  await page.goto('/profiles');
+
+  // Scoped to the admin queue: the same username also appears on the ordinary
+  // request card, which deliberately carries no requester line at all.
+  const queued = page.locator('article').filter({ hasText: 'Requester' }).first();
+  await expect(queued).toContainText('Requester @e2erequester');
+  // The opaque id is what an admin was reading before, and it must not be what
+  // they read when a linked account exists.
+  await expect(queued).not.toContainText('user_e2e');
+});
+
 test('admin can upload residential full-sync bundles without owner-export publishing consent', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
 

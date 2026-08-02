@@ -898,6 +898,7 @@ interface ApiFixtureState {
   requests: Array<{
     id: number;
     requester_user_id: string;
+    requester_letterboxd_username: string | null;
     requested_username: string;
     status: 'pending' | 'approved' | 'rejected' | 'fulfilled';
     note: string | null;
@@ -998,6 +999,7 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
     const request = {
       id: state.requests.length + 1,
       requester_user_id: 'user_e2e',
+      requester_letterboxd_username: null,
       requested_username: username,
       status: 'pending' as const,
       note: null,
@@ -1456,6 +1458,7 @@ export async function installApiMocks(
     requests: [{
       id: 1,
       requester_user_id: 'user_e2e',
+      requester_letterboxd_username: 'e2erequester',
       requested_username: 'queuedprofile',
       status: 'approved',
       note: 'Accepted for the next sync.',
