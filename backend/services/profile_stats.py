@@ -313,6 +313,101 @@ def _dated_watch_dates(db: Session, profile_id: int) -> List[date]:
     ]
 
 
+def _marathon_events(db: Session, profile_id: int) -> List[Tuple[date, str, Optional[int]]]:
+    """(date, title, runtime) for every active watch event with a date."""
+
+    rows = (
+        db.query(WatchEvent.watched_date, Movie.title, MovieEnrichment.runtime_minutes)
+        .join(Movie, Movie.id == WatchEvent.movie_id)
+        .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
+        .filter(
+            WatchEvent.profile_id == profile_id,
+            WatchEvent.superseded_at.is_(None),
+            WatchEvent.watched_date.isnot(None),
+        )
+        .all()
+    )
+    # A TMDB runtime of 0 means unrecorded, never a zero-minute film.
+    return [(row[0], row[1] or "", row[2] or None) for row in rows]
+
+
+# A day whose films add up to more hours than a day has did not happen: a
+# Letterboxd export can date a whole backlog to the day it was imported, and 9
+# days across the tracked library carry 20+ films for exactly that reason.
+# Runtime is the honest test; days with no known runtime fall back to a film
+# count nobody could really sit through.
+MARATHON_MIN_FILMS = 3
+MARATHON_MAX_HOURS = 24
+MARATHON_MAX_FILMS_WITHOUT_RUNTIME = 8
+
+
+def build_marathons(
+    events: Sequence[Tuple[date, str, Optional[int]]], *, limit: int = 5
+) -> Dict[str, Any]:
+    """Days this profile watched several films, and what a sitting looked like.
+
+    ``events`` is (watched_date, title, runtime_minutes). A day only counts when
+    its films could physically fit inside one: an import that dates a backlog to
+    a single day is not a viewing session, and reporting it as somebody's
+    biggest would be the panel's most obviously wrong number.
+    """
+
+    by_day: Dict[date, List[Tuple[str, Optional[int]]]] = defaultdict(list)
+    for watched_date, title, runtime in events:
+        if watched_date is not None:
+            by_day[watched_date].append((title or "", runtime))
+
+    marathons: List[Dict[str, Any]] = []
+    discarded = 0
+    for day, films in by_day.items():
+        if len(films) < MARATHON_MIN_FILMS:
+            continue
+        known = [runtime for _, runtime in films if runtime]
+        total_minutes = sum(known)
+        if known and total_minutes > MARATHON_MAX_HOURS * 60:
+            discarded += 1
+            continue
+        if not known and len(films) > MARATHON_MAX_FILMS_WITHOUT_RUNTIME:
+            discarded += 1
+            continue
+        marathons.append(
+            {
+                "date": day.isoformat(),
+                "films": len(films),
+                "runtime_minutes": total_minutes or None,
+                "titles": [title for title, _ in films][:6],
+            }
+        )
+
+    marathons.sort(key=lambda item: (-item["films"], item["date"]))
+    return {
+        "count": len(marathons),
+        "biggest": marathons[0] if marathons else None,
+        "recent": sorted(marathons, key=lambda item: item["date"], reverse=True)[:limit],
+        # Named rather than hidden: a reader comparing this against Letterboxd
+        # should know some days were set aside, and why.
+        "import_artifact_days": discarded,
+    }
+
+
+def _marathon_events(db: Session, profile_id: int) -> List[Tuple[date, str, Optional[int]]]:
+    """(date, title, runtime) for every active watch event carrying a date."""
+
+    rows = (
+        db.query(WatchEvent.watched_date, Movie.title, MovieEnrichment.runtime_minutes)
+        .join(Movie, Movie.id == WatchEvent.movie_id)
+        .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
+        .filter(
+            WatchEvent.profile_id == profile_id,
+            WatchEvent.superseded_at.is_(None),
+            WatchEvent.watched_date.isnot(None),
+        )
+        .all()
+    )
+    # A TMDB runtime of 0 means unrecorded, never a zero-minute film.
+    return [(row[0], row[1] or "", row[2] or None) for row in rows]
+
+
 WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 # A gap this long reads as having stopped rather than having paused.
 DRY_SPELL_DAYS = 30
@@ -926,6 +1021,8 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
             "rewatches": sum(film.rewatch_count for film in films),
             "average_rating": _round(_average(ratings), 2),
         },
+        # What a single sitting looks like, with import artifacts kept out.
+        "marathons": build_marathons(_marathon_events(db, profile.id)),
         # Rhythm, not volume: the same film count looks different depending on
         # whether it arrived weekly or in two binges either side of a silence.
         "cadence": build_cadence(watch_dates),

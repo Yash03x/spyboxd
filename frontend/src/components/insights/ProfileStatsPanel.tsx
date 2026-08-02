@@ -532,6 +532,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
   const languageRows = toBarRows(stats.languages ?? []);
   const decadeRows = toBarRows(stats.decades ?? []);
 
+  const marathons = stats.marathons;
   const topDirectors = stats.top_directors ?? [];
   const topActors = stats.top_actors ?? [];
   const topStudios = stats.top_studios ?? [];
@@ -640,6 +641,39 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
 
       {footnotes.length > 0 ? (
         <p className="mt-3 text-xs text-white/35">{footnotes.join(' · ')}</p>
+      ) : null}
+
+      {marathons && marathons.count > 0 && marathons.biggest ? (
+        <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white/75">Marathon days</h3>
+            <span className="text-[11px] text-white/40">
+              {formatCount(marathons.count)} {marathons.count === 1 ? 'day' : 'days'} with three or more films
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-white/55">
+            Biggest sitting: <strong className="text-white/85">{marathons.biggest.films} films</strong>{' '}
+            on {marathons.biggest.date}
+            {marathons.biggest.runtime_minutes
+              ? ` · ${Math.round(marathons.biggest.runtime_minutes / 60)}h`
+              : ''}
+          </p>
+          {marathons.biggest.titles.length > 0 ? (
+            <p className="mt-1 line-clamp-2 text-[11px] text-white/35">
+              {marathons.biggest.titles.join(' · ')}
+            </p>
+          ) : null}
+          {marathons.import_artifact_days > 0 ? (
+            /* Stated rather than hidden: an export can date a whole backlog to
+               one day, and a reader comparing this with Letterboxd should know
+               those days were set aside. */
+            <p className="mt-2 text-[11px] text-white/35">
+              {formatCount(marathons.import_artifact_days)}{' '}
+              {marathons.import_artifact_days === 1 ? 'day was' : 'days were'} excluded as bulk imports
+              rather than sittings.
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       {directorGender && directorGender.measured_films > 0 && directorGender.women_share !== null ? (

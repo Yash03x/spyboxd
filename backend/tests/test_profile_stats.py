@@ -26,6 +26,7 @@ from database.models import (
     WatchEvent,
 )
 from services.profile_stats import (
+    build_marathons,
     build_cadence,
     build_profile_stats,
     build_return_journeys,
@@ -1070,6 +1071,8 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "username",
         "coverage",
         "totals",
+        # What a single sitting looks like.
+        "marathons",
         # Rhythm alongside volume.
         "cadence",
         "top_directors",
@@ -1169,6 +1172,57 @@ def test_a_bucket_reports_the_denominator_its_average_was_built_from(database):
     assert horror["average_rating"] == 5.0
 
 
+# A day whose films add up to more hours than a day has did not happen. A
+# Letterboxd export can date an entire backlog to the day it was imported, and
+# reporting that as somebody's biggest sitting would be the panel's most
+# obviously wrong number.
+
+
+def test_a_real_sitting_is_reported_with_its_runtime():
+    events = [
+        (date(2026, 7, 4), "First", 95),
+        (date(2026, 7, 4), "Second", 102),
+        (date(2026, 7, 4), "Third", 88),
+    ]
+
+    marathons = build_marathons(events)
+
+    assert marathons["count"] == 1
+    assert marathons["biggest"]["films"] == 3
+    assert marathons["biggest"]["runtime_minutes"] == 285
+    assert marathons["import_artifact_days"] == 0
+
+
+def test_a_backlog_dated_to_one_day_is_not_a_marathon():
+    """Twenty films at two hours each is forty hours; the day was an import."""
+    events = [(date(2026, 7, 4), f"Bulk {index}", 120) for index in range(20)]
+
+    marathons = build_marathons(events)
+
+    assert marathons["count"] == 0
+    assert marathons["biggest"] is None
+    assert marathons["import_artifact_days"] == 1
+
+
+def test_without_runtimes_an_implausible_film_count_is_still_rejected():
+    events = [(date(2026, 7, 4), f"Unknown {index}", None) for index in range(12)]
+
+    assert build_marathons(events)["count"] == 0
+
+
+def test_two_films_in_a_day_is_not_yet_a_marathon():
+    events = [(date(2026, 7, 4), "One", 95), (date(2026, 7, 4), "Two", 95)]
+
+    assert build_marathons(events)["count"] == 0
+
+
+def test_a_profile_that_never_stacks_films_reports_an_empty_block():
+    assert build_marathons([]) == {
+        "count": 0,
+        "biggest": None,
+        "recent": [],
+        "import_artifact_days": 0,
+    }
 # Rhythm behind a watch count: two profiles with the same total look nothing
 # alike if one watches every Saturday and the other vanished for four months
 # and binged.
