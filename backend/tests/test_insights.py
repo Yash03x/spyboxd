@@ -1833,3 +1833,49 @@ class WatchTogetherCoverageHonestyTests(unittest.TestCase):
         runtime = (enrichment.runtime_minutes or None) if enrichment else None
 
         self.assertIsNone(runtime)
+
+
+class CrowdAdjustedSimilarityTests(unittest.TestCase):
+    """Two people who both like what everybody likes are not sharing taste.
+
+    Correlating raw ratings cannot tell that apart from real agreement, so the
+    same correlation is taken on each side's distance from Letterboxd's own
+    average as well.
+    """
+
+    def _pair(self, ratings):
+        """ratings: [(left, right, crowd)] -> (raw, adjusted) correlations."""
+        from backend.services.insights import _pearson
+
+        left = [row[0] for row in ratings]
+        right = [row[1] for row in ratings]
+        left_dev = [row[0] - row[2] for row in ratings if row[2] is not None]
+        right_dev = [row[1] - row[2] for row in ratings if row[2] is not None]
+        return _pearson(left, right), _pearson(left_dev, right_dev)
+
+    def test_agreeing_only_with_the_crowd_leaves_no_shared_taste(self) -> None:
+        # Both simply track the crowd: strong raw correlation, nothing of
+        # their own once the crowd is subtracted.
+        ratings = [(2.0, 2.0, 2.0), (3.0, 3.0, 3.0), (4.0, 4.0, 4.0), (5.0, 5.0, 5.0)]
+
+        raw, adjusted = self._pair(ratings)
+
+        self.assertGreater(raw, 0.9)
+        self.assertIsNone(adjusted)  # zero variance in the deviations
+
+    def test_shared_dissent_from_the_crowd_survives_the_adjustment(self) -> None:
+        # They disagree with the crowd in the same direction each time.
+        ratings = [(4.5, 4.5, 2.0), (1.0, 1.0, 4.0), (5.0, 5.0, 3.0), (2.0, 2.0, 4.5)]
+
+        raw, adjusted = self._pair(ratings)
+
+        self.assertGreater(raw, 0.9)
+        self.assertGreater(adjusted, 0.9)
+
+    def test_opposite_dissent_reads_as_disagreement(self) -> None:
+        # One consistently rates above the crowd, the other below.
+        ratings = [(5.0, 1.0, 3.0), (4.5, 1.5, 3.0), (4.0, 2.0, 3.0), (5.0, 1.0, 3.0)]
+
+        _, adjusted = self._pair(ratings)
+
+        self.assertLess(adjusted, 0)

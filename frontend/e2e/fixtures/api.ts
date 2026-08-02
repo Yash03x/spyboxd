@@ -1197,6 +1197,9 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
       // which is why nothing under it was ever exercised.
       summary: {
         similarity_score: 72.5,
+        // Most of that 72.5 is agreement with Letterboxd, not with each other.
+        crowd_adjusted_similarity: 52.5,
+        crowd_adjusted_films: 454,
         shared_rated_titles: 35,
         metadata_coverage_ratio: 0.92,
         tmdb_status: 'connected',

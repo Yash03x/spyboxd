@@ -2680,19 +2680,44 @@ class InsightsService:
         contrast_candidates.sort(key=lambda item: (-item[0], -item[1]["sample_size"], item[1]["label"]))
 
         pair_correlations: List[float] = []
+        # The same correlation taken on each side's distance from Letterboxd's
+        # own average instead of on the raw ratings. Two people who both like
+        # what everybody likes correlate strongly without sharing any taste of
+        # their own; subtracting the crowd leaves only the agreement that is
+        # actually theirs.
+        adjusted_correlations: List[float] = []
+        adjusted_films = 0
         profile_ids = [profile.id for profile in profiles]
         for left_id, right_id in combinations(profile_ids, 2):
             left: List[float] = []
             right: List[float] = []
+            left_deviation: List[float] = []
+            right_deviation: List[float] = []
             for rows in shared_rated:
                 mapping = {row.profile_id: row.rating for row in rows}
-                if left_id in mapping and right_id in mapping:
-                    left.append(float(mapping[left_id]))
-                    right.append(float(mapping[right_id]))
+                if left_id not in mapping or right_id not in mapping:
+                    continue
+                left.append(float(mapping[left_id]))
+                right.append(float(mapping[right_id]))
+                crowd = _safe_float(rows[0].movie.letterboxd_average_rating)
+                if crowd is not None:
+                    left_deviation.append(float(mapping[left_id]) - crowd)
+                    right_deviation.append(float(mapping[right_id]) - crowd)
             correlation = _pearson(left, right)
             if correlation is not None:
                 pair_correlations.append(correlation)
+            adjusted = _pearson(left_deviation, right_deviation)
+            if adjusted is not None:
+                adjusted_correlations.append(adjusted)
+                adjusted_films = max(adjusted_films, len(left_deviation))
         similarity = _average([(value + 1) * 50 for value in pair_correlations])
+        # Null rather than 50 when no shared film carries a crowd average: we
+        # never measured it, which is not the same as measuring no agreement.
+        crowd_adjusted = (
+            _average([(value + 1) * 50 for value in adjusted_correlations])
+            if adjusted_correlations
+            else None
+        )
         enriched = sum(row.enrichment is not None for row in states)
         metadata_ratio = enriched / len(states) if states else None
         tmdb_status = "unavailable"
@@ -2720,6 +2745,11 @@ class InsightsService:
             "coverage": coverage,
             "summary": {
                 "similarity_score": _round(similarity, 1),
+                # How much of that survives once Letterboxd's own opinion is
+                # subtracted from both sides. A large gap between the two means
+                # the pair mostly agrees with the crowd rather than each other.
+                "crowd_adjusted_similarity": _round(crowd_adjusted, 1),
+                "crowd_adjusted_films": adjusted_films,
                 "shared_rated_titles": len(shared_rated),
                 "metadata_coverage_ratio": _round(metadata_ratio, 3),
                 "tmdb_status": tmdb_status,
