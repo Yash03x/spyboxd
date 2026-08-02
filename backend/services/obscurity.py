@@ -368,6 +368,16 @@ def build_obscurity_index(
         )
     )
     crowd_position = positioned[:limit]
+    # The other end of the same ordering: films this profile rated below almost
+    # everyone. Showing only the contrarian tail told half the story -- somebody
+    # can be out on a limb in both directions at once.
+    crowd_position_below = list(reversed(positioned))[:limit]
+
+    # And the whole distribution behind those tails. The median share says where
+    # this profile usually sits inside the crowds it joins: above 0.5 means it
+    # typically rates a film higher than most of the people who rated it.
+    all_shares = [share for _, share in positioned]
+    typical_share = median(all_shares) if all_shares else None
 
     identities = _film_identities(
         db,
@@ -411,4 +421,22 @@ def build_obscurity_index(
         "crowd_position": [
             _crowd_entry(film, share, identity(film)) for film, share in crowd_position
         ],
+        "crowd_position_below": [
+            _crowd_entry(film, share, identity(film))
+            for film, share in crowd_position_below
+        ],
+        # Where this profile usually lands inside a crowd, across everything it
+        # rated that carries a histogram. Null when no film does -- "we never
+        # measured" rather than "exactly average".
+        "crowd_percentile": {
+            "measured_films": len(all_shares),
+            "typical_share": _round(typical_share, 3) if typical_share is not None else None,
+            "lean": (
+                None
+                if typical_share is None
+                else "generous" if typical_share > 0.55
+                else "harsh" if typical_share < 0.45
+                else "typical"
+            ),
+        },
     }

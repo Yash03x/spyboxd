@@ -677,6 +677,9 @@ def test_route_serves_the_frozen_contract(database: Session, client) -> None:
         "most_obscure",
         "most_mainstream",
         "crowd_position",
+        # The other tail, and the whole distribution behind both.
+        "crowd_position_below",
+        "crowd_percentile",
     }
     assert payload["username"] == "subject"
     assert set(payload["coverage"]) == {"rated_films", "films_with_rating_count"}
@@ -752,3 +755,53 @@ def test_route_requires_an_authenticated_user() -> None:
     assert "get_current_user" in {
         dependency.call.__name__ for dependency in route.dependant.dependencies
     }
+
+
+def test_the_crowd_percentile_says_where_a_profile_usually_lands(database: Session) -> None:
+    """Showing only the contrarian tail told half the story.
+
+    The median share across everything rated says whether somebody generally
+    sits above or below the crowds they join.
+    """
+    profile = _profile(database, "generous")
+    flat = {str(index / 2): 100 for index in range(1, 11)}
+    for index in range(3):
+        movie = _film(database, f"Loved {index}", rating_count=1000, distribution=flat)
+        _rate(database, profile, movie, 5.0)
+
+    percentile = build_obscurity_index(database, profile, limit=5)["crowd_percentile"]
+
+    assert percentile["measured_films"] == 3
+    assert percentile["typical_share"] == 1.0
+    assert percentile["lean"] == "generous"
+
+
+def test_both_tails_are_returned_so_a_profile_can_be_out_on_a_limb_either_way(
+    database: Session,
+) -> None:
+    profile = _profile(database, "mixed")
+    flat = {str(index / 2): 100 for index in range(1, 11)}
+    adored = _film(database, "Adored", rating_count=1000, distribution=flat)
+    hated = _film(database, "Hated", rating_count=1000, distribution=flat)
+    _rate(database, profile, adored, 5.0)
+    _rate(database, profile, hated, 0.5)
+
+    payload = build_obscurity_index(database, profile, limit=5)
+
+    assert payload["crowd_position"][0]["title"] == "Hated"
+    assert payload["crowd_position_below"][0]["title"] == "Adored"
+
+
+def test_a_profile_whose_films_carry_no_histogram_has_no_percentile(
+    database: Session,
+) -> None:
+    """Never measured is not the same as exactly average."""
+    profile = _profile(database, "unscraped")
+    movie = _film(database, "No Histogram")
+    _rate(database, profile, movie, 4.0)
+
+    percentile = build_obscurity_index(database, profile, limit=5)["crowd_percentile"]
+
+    assert percentile["measured_films"] == 0
+    assert percentile["typical_share"] is None
+    assert percentile["lean"] is None

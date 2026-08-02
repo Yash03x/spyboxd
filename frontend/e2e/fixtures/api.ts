@@ -632,6 +632,20 @@ export const obscurity = {
       profile_rating: 4.5,
     },
   ],
+  // Where they usually land, plus the opposite tail: somebody can be out on a
+  // limb in both directions at once.
+  crowd_percentile: { measured_films: 706, typical_share: 0.653, lean: 'generous' },
+  crowd_position_below: [
+    {
+      title: 'Adored By Everyone Else',
+      year: 2018,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/adored-by-everyone-else/',
+      profile_rating: 5,
+      share_at_or_below: 0.9714,
+      crowd_average: 3.11,
+    },
+  ],
   crowd_position: [
     {
       title: 'Contrarian Fixture Film',
