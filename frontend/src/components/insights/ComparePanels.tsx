@@ -432,7 +432,18 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
                 <div className="divide-y divide-white/[0.07]">
                   {(data.shared_signature ?? []).slice(0, 8).map((trait) => (
                     <div key={trait.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-4 py-2.5 text-sm">
-                      <span className="truncate text-white/70">{trait.label}</span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-white/70">{trait.label}</span>
+                        {/* Liking is a separate act from rating, and the average
+                            hides it: two traits can share a rating while one is
+                            liked twice as often. Computed all along, never shown. */}
+                        {trait.like_rate !== null && trait.like_rate !== undefined ? (
+                          <span className="mt-0.5 block text-[11px] text-white/35">
+                            {Math.round(trait.like_rate * 100)}% liked
+                            {trait.sample_size ? ` of ${trait.sample_size.toLocaleString()}` : ''}
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="font-semibold text-cinema-300">{Math.round(trait.group_score)}%</span>
                     </div>
                   ))}

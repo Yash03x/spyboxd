@@ -1264,7 +1264,32 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         metadata_coverage_ratio: 0.92,
         tmdb_status: 'connected',
       },
-      shared_signature: [],
+      shared_signature: [
+        {
+          id: 'genre:music',
+          label: 'Music',
+          dimension: 'genre' as const,
+          group_score: 77,
+          sample_size: 57,
+          average_rating: 3.46,
+          like_rate: 0.333,
+          watch_share: 1,
+          per_profile: [],
+          top_movies: [],
+        },
+        {
+          id: 'genre:animation',
+          label: 'Animation',
+          dimension: 'genre' as const,
+          group_score: 74,
+          sample_size: 312,
+          average_rating: 3.44,
+          like_rate: 0.131,
+          watch_share: 1,
+          per_profile: [],
+          top_movies: [],
+        },
+      ],
       contrasts: [],
       // Carries entries on purpose. The backend returned a hard-coded empty
       // list from the first commit, and because the fixture omitted the field
