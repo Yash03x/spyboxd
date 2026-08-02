@@ -351,7 +351,22 @@ export default function WatchTogetherResults({
               <div>
                 <p className="text-xs font-semibold text-white/75">{modeLabel}</p>
                 <p className="mt-0.5 text-[11px] text-white/35">
-                  {data.selected_list ? `${data.selected_list.owner} · ${data.selected_list.name}` : `${data.summary.candidates} ranked candidates`}
+                  {data.selected_list
+                    ? `${data.selected_list.owner} · ${data.selected_list.name}`
+                    : [
+                        `${data.summary.candidates} ranked candidates`,
+                        // Both already computed and never shown. Availability is
+                        // the one that changes a decision: a shortlist nobody can
+                        // stream tonight is a different shortlist.
+                        data.summary.on_every_watchlist > 0
+                          ? `${data.summary.on_every_watchlist} on everyone’s watchlist`
+                          : null,
+                        data.summary.available_in_region > 0
+                          ? `${data.summary.available_in_region} streaming here`
+                          : null,
+                      ]
+                        .filter((note): note is string => note !== null)
+                        .join(' · ')}
                 </p>
               </div>
               <label className="flex items-center gap-2 text-xs text-white/45">

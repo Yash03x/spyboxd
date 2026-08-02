@@ -903,10 +903,10 @@ const watchTogether = {
   region: 'ALL',
   coverage: readyCoverage,
   summary: {
-    candidates: 1,
-    on_every_watchlist: 0,
+    candidates: 12,
+    on_every_watchlist: 3,
     unseen_by_everyone: 1,
-    available_in_region: 1,
+    available_in_region: 8,
   },
   recommendations: [
     {
