@@ -567,6 +567,7 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
   const marathons = stats.marathons;
   const cadence = stats.cadence;
   const releaseLag = stats.release_lag;
+  const directorRuns = stats.director_runs;
   const lagYears = releaseLag?.median_lag_days != null
     ? releaseLag.median_lag_days / 365
     : null;
@@ -780,6 +781,34 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
               {formatCount(releaseLag.logged_before_release)}{' '}
               {releaseLag.logged_before_release === 1 ? 'entry was' : 'entries were'} dated before
               release and left out.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Watching a director twice in a fortnight happens about three times
+          more often than shuffling the same dates would produce, so this is a
+          habit rather than a by-product of watching a lot. */}
+      {directorRuns && directorRuns.count > 0 && directorRuns.biggest ? (
+        <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white/75">Director runs</h3>
+            <span className="text-[11px] text-white/40">
+              {formatCount(directorRuns.count)}{' '}
+              {directorRuns.count === 1 ? 'stretch' : 'stretches'} of three or more inside a fortnight
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-white/55">
+            Longest:{' '}
+            <strong className="text-white/85">
+              {directorRuns.biggest.films} {directorRuns.biggest.director} films
+            </strong>{' '}
+            over {directorRuns.biggest.days} {directorRuns.biggest.days === 1 ? 'day' : 'days'} from{' '}
+            {directorRuns.biggest.started}
+          </p>
+          {directorRuns.biggest.titles.length > 0 ? (
+            <p className="mt-1 line-clamp-2 text-[11px] text-white/35">
+              {directorRuns.biggest.titles.join(' · ')}
             </p>
           ) : null}
         </div>

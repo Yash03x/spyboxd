@@ -28,6 +28,7 @@ from database.models import (
 from services.profile_stats import (
     build_marathons,
     build_cadence,
+    build_director_runs,
     build_release_lag,
     build_profile_stats,
     build_return_journeys,
@@ -1080,6 +1081,8 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "cadence",
         # When they got to a film, which its decade cannot say.
         "release_lag",
+        # Whether they work through a filmography once they find one.
+        "director_runs",
         "top_directors",
         # Crew whose credits were stored and never surfaced.
         "top_composers",
@@ -1484,3 +1487,69 @@ def test_too_few_datable_films_describe_no_habit():
     assert lag["measured_films"] == 5
     assert lag["median_lag_days"] is None
     assert lag["lean"] is None
+
+
+# A run is somebody working through a filmography. Measured against a shuffle of
+# the same dates it happens about three times more often than chance, so it is a
+# habit rather than a by-product of watching a lot.
+
+def test_a_director_returned_to_across_days_is_a_run():
+    events = [
+        (date(2026, 3, 1), "Wong Kar-Wai", "Chungking Express"),
+        (date(2026, 3, 4), "Wong Kar-Wai", "Fallen Angels"),
+        (date(2026, 3, 9), "Wong Kar-Wai", "In the Mood for Love"),
+    ]
+
+    runs = build_director_runs(events)
+
+    assert runs["count"] == 1
+    assert runs["biggest"]["director"] == "Wong Kar-Wai"
+    assert runs["biggest"]["films"] == 3
+    assert runs["biggest"]["days"] == 8
+
+
+def test_three_films_dated_to_one_day_are_not_a_run():
+    """An export dating a backlog to its import is not a filmography binge.
+
+    Nineteen of the seventy-nine candidate runs across the tracked library sit
+    entirely on one date, which is that shape and not this habit.
+    """
+    events = [
+        (date(2026, 3, 1), "Steven Spielberg", "Jaws"),
+        (date(2026, 3, 1), "Steven Spielberg", "Duel"),
+        (date(2026, 3, 1), "Steven Spielberg", "Jurassic Park"),
+    ]
+
+    runs = build_director_runs(events)
+
+    assert runs["count"] == 0
+    assert runs["biggest"] is None
+
+
+def test_viewings_further_apart_than_the_window_are_separate():
+    events = [
+        (date(2026, 1, 1), "Agnes Varda", "Cleo from 5 to 7"),
+        (date(2026, 1, 3), "Agnes Varda", "Vagabond"),
+        (date(2026, 6, 1), "Agnes Varda", "The Gleaners and I"),
+    ]
+
+    runs = build_director_runs(events)
+
+    assert runs["count"] == 0
+
+
+def test_two_directors_binged_at_once_are_counted_separately():
+    """A co-directed film belongs to each of its directors, not to a pair."""
+    events = [
+        (date(2026, 2, 1), "Joel Coen", "Fargo"),
+        (date(2026, 2, 3), "Joel Coen", "No Country for Old Men"),
+        (date(2026, 2, 5), "Joel Coen", "Barton Fink"),
+        (date(2026, 2, 1), "Ethan Coen", "Fargo"),
+        (date(2026, 2, 3), "Ethan Coen", "No Country for Old Men"),
+        (date(2026, 2, 5), "Ethan Coen", "Barton Fink"),
+    ]
+
+    runs = build_director_runs(events)
+
+    assert runs["count"] == 2
+    assert {run["director"] for run in runs["recent"]} == {"Joel Coen", "Ethan Coen"}

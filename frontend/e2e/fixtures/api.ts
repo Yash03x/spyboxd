@@ -378,6 +378,20 @@ export const profileStats = {
     recent: [],
     import_artifact_days: 2,
   },
+  // A filmography worked through over a fortnight, not in one sitting.
+  director_runs: {
+    count: 4,
+    biggest: {
+      director: 'Steven Soderbergh',
+      films: 7,
+      started: '2025-04-02',
+      days: 8,
+      titles: ['Black Bag', 'Erin Brockovich', 'Side Effects', 'Traffic'],
+    },
+    recent: [
+      { director: 'Steven Soderbergh', films: 7, started: '2025-04-02', days: 8, titles: ['Black Bag'] },
+    ],
+  },
   // Two years behind on average, with a couple of festival-dated entries.
   release_lag: {
     measured_films: 467,

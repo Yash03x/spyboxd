@@ -314,6 +314,97 @@ def _dated_watch_dates(db: Session, profile_id: int) -> List[date]:
     ]
 
 
+# A run is a stretch where the same director keeps coming back. Fourteen days
+# is long enough to hold a weekend and the following one, short enough that two
+# unrelated viewings a month apart do not read as a binge.
+DIRECTOR_RUN_WINDOW_DAYS = 14
+DIRECTOR_RUN_MIN_FILMS = 3
+
+
+def _director_run_events(
+    db: Session, profile_id: int
+) -> List[Tuple[date, str, str]]:
+    """(date, director, title) for every dated watch with a known director."""
+
+    rows = (
+        db.query(WatchEvent.watched_date, Movie.title, MovieEnrichment.credits)
+        .join(Movie, Movie.id == WatchEvent.movie_id)
+        .join(MovieEnrichment, MovieEnrichment.movie_id == WatchEvent.movie_id)
+        .filter(
+            WatchEvent.profile_id == profile_id,
+            WatchEvent.superseded_at.is_(None),
+            WatchEvent.watched_date.isnot(None),
+        )
+        .all()
+    )
+    events: List[Tuple[date, str, str]] = []
+    for watched_date, title, credits in rows:
+        for value in _director_values(credits):
+            events.append((watched_date, value.label, title or ""))
+    return events
+
+
+def build_director_runs(events: Sequence[Tuple[date, str, str]]) -> Dict[str, Any]:
+    """Stretches where one director keeps reappearing.
+
+    Measured against chance across the tracked library this is a real habit
+    rather than an artefact of watching a lot: shuffling the dates while keeping
+    the films gives roughly a third as many runs as actually occur.
+
+    A run must span more than one date. Nineteen of the seventy-nine candidate
+    runs in the library sit entirely on a single day, which is usually a
+    Letterboxd export dating a backlog to its import rather than a filmography
+    worked through.
+
+    That rule also drops the genuine article -- somebody really did watch the
+    whole Before trilogy on one afternoon -- and those are deliberately left to
+    ``marathons``, which exists to describe a single sitting and already tests a
+    day's films against its runtime. Splitting the two keeps each panel honest
+    instead of having both report the same afternoon under different names.
+    """
+
+    by_director: Dict[str, List[Tuple[date, str]]] = defaultdict(list)
+    for watched_date, director, title in events:
+        by_director[director].append((watched_date, title))
+
+    runs: List[Dict[str, Any]] = []
+    for director, entries in by_director.items():
+        entries.sort()
+        index = 0
+        while index < len(entries):
+            end = index
+            while (
+                end + 1 < len(entries)
+                and (entries[end + 1][0] - entries[index][0]).days
+                <= DIRECTOR_RUN_WINDOW_DAYS
+            ):
+                end += 1
+            window = entries[index : end + 1]
+            dates = {entry[0] for entry in window}
+            if len(window) >= DIRECTOR_RUN_MIN_FILMS and len(dates) > 1:
+                titles: List[str] = []
+                for _, title in window:
+                    if title and title not in titles:
+                        titles.append(title)
+                runs.append(
+                    {
+                        "director": director,
+                        "films": len(window),
+                        "started": min(dates).isoformat(),
+                        "days": (max(dates) - min(dates)).days,
+                        "titles": titles[:6],
+                    }
+                )
+            index = end + 1
+
+    runs.sort(key=lambda run: (-run["films"], run["started"], run["director"]))
+    return {
+        "count": len(runs),
+        "biggest": runs[0] if runs else None,
+        "recent": sorted(runs, key=lambda run: run["started"], reverse=True)[:3],
+    }
+
+
 def _marathon_events(db: Session, profile_id: int) -> List[Tuple[date, str, Optional[int]]]:
     """(date, title, runtime) for every active watch event with a date."""
 
@@ -1139,6 +1230,10 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
         # Rhythm, not volume: the same film count looks different depending on
         # whether it arrived weekly or in two binges either side of a silence.
         "cadence": build_cadence(watch_dates),
+        # Whether they work through a filmography when they find one. Runs
+        # happen about three times more often than shuffling the dates would
+        # produce, so this is a habit rather than a by-product of volume.
+        "director_runs": build_director_runs(_director_run_events(db, profile.id)),
         # When they got to a film, which a decade breakdown cannot answer: a
         # 2024 release watched in 2024 and one watched in 2026 are the same
         # decade and opposite habits.

@@ -1,0 +1,30 @@
+{
+  "api_base_url": "https://api.spyboxd.com",
+  "output_root": "../data/local-sync-cache",
+  "pause_seconds": 5,
+  "continue_on_error": true,
+  "timeout_seconds": 300,
+  "usernames": [
+    "prani_1234",
+    "sweetsweetcorn",
+    "shivkiran",
+
+    "whiteknight03x",
+    "er3nweeber",
+    "gnanendar",
+    "pamarvss",
+    "sairohan",
+    "hashtag7781",
+    "satorukarlsfeni",
+    "infernooris",
+    "yellowflash097",
+    "harsha4123",
+    "keera_vv",
+    "vaishnavi_19",
+    "sai_yashwanth",
+    "foo_7755",
+    "dhatri46",
+    "snv710",
+    "mnigsm"
+  ]
+}

@@ -1432,6 +1432,14 @@ export interface ProfileStatsResponse {
     recent: Array<{ date: string; films: number; runtime_minutes: number | null; titles: string[] }>;
     import_artifact_days: number;
   };
+  /** Stretches where one director keeps reappearing. Runs must span more than
+   *  one date: a single-day cluster is usually an export dating a backlog to
+   *  its import, and a real one-day binge belongs to `marathons`. */
+  director_runs: {
+    count: number;
+    biggest: { director: string; films: number; started: string; days: number; titles: string[] } | null;
+    recent: Array<{ director: string; films: number; started: string; days: number; titles: string[] }>;
+  };
   /** How long after release this person gets to a film. A decade breakdown
    *  cannot answer it: the same 2020s library belongs to someone following new
    *  releases and to someone three years behind. */
