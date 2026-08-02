@@ -903,10 +903,10 @@ const watchTogether = {
   region: 'ALL',
   coverage: readyCoverage,
   summary: {
-    candidates: 12,
-    on_every_watchlist: 3,
+    candidates: 6,
+    on_every_watchlist: 2,
     unseen_by_everyone: 1,
-    available_in_region: 8,
+    available_in_region: 3,
   },
   recommendations: [
     {
@@ -1153,10 +1153,10 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         date_coverage_ratio: 1,
       },
       follow_graph: {
-        gap_events: 1,
+        gap_events: 3,
         follow_backed_gap_events: 1,
-        coincidental_gap_events: 0,
-        undetermined_gap_events: 0,
+        coincidental_gap_events: 1,
+        undetermined_gap_events: 1,
         same_day_events: 0,
         profiles_with_social_sync: ['alpha', 'bravo'],
         social_sync_coverage_ratio: 1,
