@@ -342,6 +342,15 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
         <>
           <MetricStrip metrics={[
             { label: 'Taste similarity', value: numberOrDash(data.summary.similarity_score), detail: `Rating correlation on ${data.summary.shared_rated_titles} shared films · 50 is no correlation`, accent: true },
+            // Two people who both like what everybody likes correlate strongly
+            // without sharing any taste of their own.
+            {
+              label: 'Beyond the crowd',
+              value: numberOrDash(data.summary.crowd_adjusted_similarity),
+              detail: data.summary.crowd_adjusted_similarity === null
+                ? 'No shared film carries a Letterboxd average yet'
+                : `With Letterboxd's own average subtracted, on ${data.summary.crowd_adjusted_films} films`,
+            },
             { label: 'Shared rated titles', value: numberOrDash(data.summary.shared_rated_titles), detail: 'Ratings used for comparison' },
             {
               label: 'Metadata coverage',
