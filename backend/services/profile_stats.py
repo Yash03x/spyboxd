@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.models import Movie, MovieEnrichment, Profile, ProfileFilm, Review, WatchEvent
@@ -390,22 +391,88 @@ def build_marathons(
     }
 
 
-def _marathon_events(db: Session, profile_id: int) -> List[Tuple[date, str, Optional[int]]]:
-    """(date, title, runtime) for every active watch event carrying a date."""
+# Within a month of release is "saw it on release" for practical purposes;
+# five years past it is unambiguously the back catalogue.
+FRESH_RELEASE_DAYS = 30
+BACK_CATALOGUE_DAYS = 365 * 5
+# Below this there is no habit to describe, only a handful of coincidences.
+MIN_LAG_FILMS = 20
+
+
+def _release_lag_events(
+    db: Session, profile_id: int
+) -> List[Tuple[int, date, date]]:
+    """(movie_id, first watch date, release date) for datable films.
+
+    The earliest watch per film, not every watch: a rewatch of an old favourite
+    says nothing about how quickly this person got to it the first time, and
+    counting it again would drag every rewatcher toward the back catalogue.
+    """
 
     rows = (
-        db.query(WatchEvent.watched_date, Movie.title, MovieEnrichment.runtime_minutes)
-        .join(Movie, Movie.id == WatchEvent.movie_id)
-        .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
+        db.query(
+            WatchEvent.movie_id,
+            func.min(WatchEvent.watched_date),
+            MovieEnrichment.release_date,
+        )
+        .join(MovieEnrichment, MovieEnrichment.movie_id == WatchEvent.movie_id)
         .filter(
             WatchEvent.profile_id == profile_id,
             WatchEvent.superseded_at.is_(None),
             WatchEvent.watched_date.isnot(None),
+            MovieEnrichment.release_date.isnot(None),
         )
+        .group_by(WatchEvent.movie_id, MovieEnrichment.release_date)
         .all()
     )
-    # A TMDB runtime of 0 means unrecorded, never a zero-minute film.
-    return [(row[0], row[1] or "", row[2] or None) for row in rows]
+    return [(row[0], row[1], row[2]) for row in rows]
+
+
+def build_release_lag(events: Sequence[Tuple[int, date, date]]) -> Dict[str, Any]:
+    """How long after release this person gets to a film.
+
+    A decade breakdown cannot answer this. Someone who watches only 2020s films
+    and someone who watched a 2024 release in 2024 look identical by decade, yet
+    one is following new releases and the other is working through a back
+    catalogue that happens to be recent.
+
+    Watches dated before release are dropped rather than counted as negative
+    lag: a festival screening and a mistyped diary date are indistinguishable
+    here, and neither belongs in a median.
+    """
+
+    lags = sorted(
+        (watched - released).days
+        for _, watched, released in events
+        if watched >= released
+    )
+    before_release = sum(1 for _, watched, released in events if watched < released)
+    if len(lags) < MIN_LAG_FILMS:
+        return {
+            "measured_films": len(lags),
+            "median_lag_days": None,
+            "fresh_share": None,
+            "back_catalogue_share": None,
+            "logged_before_release": before_release,
+            "lean": None,
+        }
+
+    fresh = sum(1 for lag in lags if lag <= FRESH_RELEASE_DAYS) / len(lags)
+    old = sum(1 for lag in lags if lag >= BACK_CATALOGUE_DAYS) / len(lags)
+    median_lag = lags[len(lags) // 2]
+    return {
+        "measured_films": len(lags),
+        "median_lag_days": median_lag,
+        "fresh_share": round(fresh, 3),
+        "back_catalogue_share": round(old, 3),
+        # Stated rather than hidden: these rows exist and were excluded.
+        "logged_before_release": before_release,
+        "lean": (
+            "current" if median_lag <= 180
+            else "catching_up" if median_lag <= 365 * 3
+            else "archival"
+        ),
+    }
 
 
 WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -1072,6 +1139,10 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
         # Rhythm, not volume: the same film count looks different depending on
         # whether it arrived weekly or in two binges either side of a silence.
         "cadence": build_cadence(watch_dates),
+        # When they got to a film, which a decade breakdown cannot answer: a
+        # 2024 release watched in 2024 and one watched in 2026 are the same
+        # decade and opposite habits.
+        "release_lag": build_release_lag(_release_lag_events(db, profile.id)),
         "top_directors": _ranked(directors, label_key="name"),
         # The people whose work shapes a film without their name being the one
         # anybody counts. Their credits were already stored and never read.

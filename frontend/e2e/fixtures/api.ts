@@ -378,6 +378,15 @@ export const profileStats = {
     recent: [],
     import_artifact_days: 2,
   },
+  // Two years behind on average, with a couple of festival-dated entries.
+  release_lag: {
+    measured_films: 467,
+    median_lag_days: 612,
+    fresh_share: 0.221,
+    back_catalogue_share: 0.415,
+    logged_before_release: 2,
+    lean: 'catching_up' as const,
+  },
   // A profile that watches most on Saturdays and went quiet for six weeks.
   cadence: {
     active_days: 301,
