@@ -378,6 +378,16 @@ export const profileStats = {
     recent: [],
     import_artifact_days: 2,
   },
+  // A profile that watches most on Saturdays and went quiet for six weeks.
+  cadence: {
+    active_days: 301,
+    span_days: 1079,
+    days_per_active_week: 1.95,
+    weekday_counts: { Mon: 221, Tue: 123, Wed: 187, Thu: 230, Fri: 207, Sat: 273, Sun: 222 },
+    busiest_weekday: 'Sat',
+    longest_dry_spell_days: 41,
+    dry_spell_started: '2024-05-26',
+  },
   top_directors: [
     { name: 'Akira Kurosawa', count: 18, rated_count: 16, average_rating: 4.3 },
     { name: 'Agnès Varda', count: 12, rated_count: 10, average_rating: 4.1 },
