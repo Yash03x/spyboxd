@@ -820,7 +820,17 @@ const pairDossier = {
     alignment_score: 88,
     rating_correlation: 0.82,
     average_rating_gap: 0.3,
-    directional_leader: null,
+    directional_leader: 'alpha',
+    // Leads well beyond what volume predicts: first on 64% of the films they
+    // both dated, on 24% of the pair's watching.
+    lead: {
+      leader: 'alpha',
+      decided_films: 50,
+      leader_films: 32,
+      lead_share: 0.64,
+      expected_share: 0.242,
+      beats_volume: true,
+    },
     date_coverage_ratio: 1,
   },
   co_watches: [signalEvent],

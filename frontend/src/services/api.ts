@@ -722,6 +722,18 @@ export interface PairDossierResponse {
     rating_correlation: number | null;
     average_rating_gap: number | null;
     directional_leader: string | null;
+    /** The same answer with its baseline attached. Whoever watches more reaches
+     *  a shared film first for no reason but volume, so `lead_share` only means
+     *  something next to `expected_share`. */
+    lead: {
+      leader: string | null;
+      decided_films: number;
+      leader_films: number;
+      lead_share: number | null;
+      /** What the leader's share would be if it were only about watch volume. */
+      expected_share: number | null;
+      beats_volume: boolean | null;
+    };
     date_coverage_ratio?: number | null;
   };
   co_watches: GroupSignalEvent[];

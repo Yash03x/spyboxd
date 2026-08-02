@@ -199,6 +199,40 @@ export function PairDossierPanel({ data, coverage }: {
             },
           ]} />
 
+          {summary.lead && summary.lead.leader && summary.lead.lead_share !== null ? (
+            /* Computed since the first release and never rendered. Shown with
+               its baseline: whoever watches more reaches a shared film first
+               for no reason but volume, so the bare winner is not the finding. */
+            <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="text-sm font-semibold text-white/75">Who gets there first</h3>
+                <span className="text-[11px] text-white/40">
+                  {summary.lead.decided_films.toLocaleString()} films they both dated, days apart
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-white/55">
+                <strong className="text-white/85">@{summary.lead.leader}</strong> was first on{' '}
+                <strong className="text-white/85">
+                  {Math.round(summary.lead.lead_share * 100)}%
+                </strong>{' '}
+                of them
+                {summary.lead.expected_share !== null ? (
+                  <>
+                    , against{' '}
+                    <strong className="text-white/85">
+                      {Math.round(summary.lead.expected_share * 100)}%
+                    </strong>{' '}
+                    of the pair&rsquo;s watching —{' '}
+                    {summary.lead.beats_volume
+                      ? 'they genuinely get there earlier'
+                      : 'about what their watching rate alone would produce'}
+                  </>
+                ) : null}
+                .
+              </p>
+            </div>
+          ) : null}
+
           <p className="flex items-start gap-2 px-1 text-xs leading-5 text-white/40">
             <Info className="mt-0.5 h-4 w-4 shrink-0" />
             Alignment reflects rating agreement, overlap, recency, and available behavior. Sequence is a follow pattern, not proof of influence.
