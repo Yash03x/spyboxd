@@ -4,7 +4,9 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from auth import ClerkUser, get_current_user
@@ -186,4 +188,70 @@ def get_member_archive(
             "comments": len(comments),
             "lost_entries": len(lost),
         },
+    }
+
+
+@router.post("/profiles/{username}/archive/like-targets")
+def resolve_like_targets(
+    username: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
+) -> dict:
+    """Attach resolved authors to this profile's stored likes.
+
+    A like is a `boxd.it` token until its redirect is followed, and Letterboxd
+    blocks the datacenter addresses this API runs on, so the redirect can only
+    be resolved from the residential machine that holds the export. This is the
+    counterpart to that constraint: the answer is computed there and posted
+    here, exactly as a scrape is.
+
+    Only the three resolution columns are written. Nothing is created, removed,
+    or soft-deleted, so a partial or repeated post cannot cost data -- unlike a
+    bundle upload, where a present authoritative file removes what it omits.
+    """
+
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Resolving like targets requires an admin.",
+        )
+    profile = require_profile_access(db, user, username)
+    resolutions = payload.get("resolutions")
+    if not isinstance(resolutions, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Send {'resolutions': {url: {'author': str, 'film_slug': str|null}}}.",
+        )
+
+    likes = (
+        db.query(MemberContentLike)
+        .filter(
+            MemberContentLike.profile_id == profile.id,
+            MemberContentLike.removed_at.is_(None),
+        )
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    updated = 0
+    for like in likes:
+        entry = resolutions.get(like.target_url)
+        if not isinstance(entry, dict):
+            continue
+        author = (entry.get("author") or "").strip()[:255]
+        if not author:
+            continue
+        like.target_username = author
+        slug = (entry.get("film_slug") or "").strip()[:250] or None
+        like.target_film_slug = slug
+        like.target_resolved_at = now
+        updated += 1
+    db.commit()
+    return {
+        "username": profile.username,
+        "likes": len(likes),
+        "resolved": updated,
+        # Stated rather than implied: a caller that sent fewer resolutions than
+        # there are likes should see that, not infer it from a smaller number.
+        "still_unresolved": sum(1 for like in likes if not like.target_username),
     }
