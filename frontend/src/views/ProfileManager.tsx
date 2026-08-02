@@ -805,7 +805,18 @@ const ProfileManager: React.FC = () => {
                         {request.status === 'approved' ? 'Awaiting residential sync' : REQUEST_STATUS_COPY[request.status].label}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-white/40">Requester {request.requester_user_id} · {new Date(request.requested_at).toLocaleString()}</p>
+                    {/* The Letterboxd name when we hold one. Falling back to the
+                        Clerk id is deliberate: a grandfathered account has no
+                        linked username, and showing nothing would hide who
+                        asked. */}
+                    <p className="mt-1 text-xs text-white/40">
+                      Requester{' '}
+                      {request.requester_letterboxd_username
+                        ? `@${request.requester_letterboxd_username}`
+                        : request.requester_user_id}
+                      {' · '}
+                      {new Date(request.requested_at).toLocaleString()}
+                    </p>
                   </div>
                   {request.status === 'pending' ? (
                     <input

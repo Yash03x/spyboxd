@@ -103,6 +103,9 @@ export interface ProfileRequest {
 
 export interface AdminProfileRequest extends ProfileRequest {
   requester_user_id: string;
+  /** Null for grandfathered accounts that never linked a Letterboxd username;
+   *  the queue falls back to `requester_user_id` in that case. */
+  requester_letterboxd_username: string | null;
   note: string | null;
   resolved_by_user_id: string | null;
 }
