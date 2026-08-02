@@ -313,6 +313,161 @@ def _dated_watch_dates(db: Session, profile_id: int) -> List[date]:
     ]
 
 
+def _marathon_events(db: Session, profile_id: int) -> List[Tuple[date, str, Optional[int]]]:
+    """(date, title, runtime) for every active watch event with a date."""
+
+    rows = (
+        db.query(WatchEvent.watched_date, Movie.title, MovieEnrichment.runtime_minutes)
+        .join(Movie, Movie.id == WatchEvent.movie_id)
+        .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
+        .filter(
+            WatchEvent.profile_id == profile_id,
+            WatchEvent.superseded_at.is_(None),
+            WatchEvent.watched_date.isnot(None),
+        )
+        .all()
+    )
+    # A TMDB runtime of 0 means unrecorded, never a zero-minute film.
+    return [(row[0], row[1] or "", row[2] or None) for row in rows]
+
+
+# A day whose films add up to more hours than a day has did not happen: a
+# Letterboxd export can date a whole backlog to the day it was imported, and 9
+# days across the tracked library carry 20+ films for exactly that reason.
+# Runtime is the honest test; days with no known runtime fall back to a film
+# count nobody could really sit through.
+MARATHON_MIN_FILMS = 3
+MARATHON_MAX_HOURS = 24
+MARATHON_MAX_FILMS_WITHOUT_RUNTIME = 8
+
+
+def build_marathons(
+    events: Sequence[Tuple[date, str, Optional[int]]], *, limit: int = 5
+) -> Dict[str, Any]:
+    """Days this profile watched several films, and what a sitting looked like.
+
+    ``events`` is (watched_date, title, runtime_minutes). A day only counts when
+    its films could physically fit inside one: an import that dates a backlog to
+    a single day is not a viewing session, and reporting it as somebody's
+    biggest would be the panel's most obviously wrong number.
+    """
+
+    by_day: Dict[date, List[Tuple[str, Optional[int]]]] = defaultdict(list)
+    for watched_date, title, runtime in events:
+        if watched_date is not None:
+            by_day[watched_date].append((title or "", runtime))
+
+    marathons: List[Dict[str, Any]] = []
+    discarded = 0
+    for day, films in by_day.items():
+        if len(films) < MARATHON_MIN_FILMS:
+            continue
+        known = [runtime for _, runtime in films if runtime]
+        total_minutes = sum(known)
+        if known and total_minutes > MARATHON_MAX_HOURS * 60:
+            discarded += 1
+            continue
+        if not known and len(films) > MARATHON_MAX_FILMS_WITHOUT_RUNTIME:
+            discarded += 1
+            continue
+        marathons.append(
+            {
+                "date": day.isoformat(),
+                "films": len(films),
+                "runtime_minutes": total_minutes or None,
+                "titles": [title for title, _ in films][:6],
+            }
+        )
+
+    marathons.sort(key=lambda item: (-item["films"], item["date"]))
+    return {
+        "count": len(marathons),
+        "biggest": marathons[0] if marathons else None,
+        "recent": sorted(marathons, key=lambda item: item["date"], reverse=True)[:limit],
+        # Named rather than hidden: a reader comparing this against Letterboxd
+        # should know some days were set aside, and why.
+        "import_artifact_days": discarded,
+    }
+
+
+def _marathon_events(db: Session, profile_id: int) -> List[Tuple[date, str, Optional[int]]]:
+    """(date, title, runtime) for every active watch event carrying a date."""
+
+    rows = (
+        db.query(WatchEvent.watched_date, Movie.title, MovieEnrichment.runtime_minutes)
+        .join(Movie, Movie.id == WatchEvent.movie_id)
+        .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
+        .filter(
+            WatchEvent.profile_id == profile_id,
+            WatchEvent.superseded_at.is_(None),
+            WatchEvent.watched_date.isnot(None),
+        )
+        .all()
+    )
+    # A TMDB runtime of 0 means unrecorded, never a zero-minute film.
+    return [(row[0], row[1] or "", row[2] or None) for row in rows]
+
+
+WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# A gap this long reads as having stopped rather than having paused.
+DRY_SPELL_DAYS = 30
+
+
+def build_cadence(dates: Sequence[date]) -> Dict[str, Any]:
+    """The rhythm behind a watch count: how often, on which days, and when it stopped.
+
+    Two profiles with the same total look nothing alike if one watches every
+    Saturday and the other disappeared for four months and binged. Everything
+    here comes from watch-event dates alone.
+
+    Weekday counts use every event, so two films on one Saturday count twice --
+    the question is where the watching happens, not how many distinct days.
+    Active days and gaps deliberately collapse to distinct dates instead.
+    """
+
+    if not dates:
+        return {
+            "active_days": 0,
+            "span_days": None,
+            "days_per_active_week": None,
+            "weekday_counts": {name: 0 for name in WEEKDAY_NAMES},
+            "busiest_weekday": None,
+            "longest_dry_spell_days": None,
+            "dry_spell_started": None,
+        }
+
+    ordered = sorted(dates)
+    distinct = sorted(set(ordered))
+    span = (distinct[-1] - distinct[0]).days
+
+    weekday_counts = {name: 0 for name in WEEKDAY_NAMES}
+    for value in ordered:
+        weekday_counts[WEEKDAY_NAMES[value.weekday()]] += 1
+    busiest = max(weekday_counts.items(), key=lambda item: (item[1], -WEEKDAY_NAMES.index(item[0])))
+
+    longest_gap = 0
+    gap_started: Optional[date] = None
+    for earlier, later in zip(distinct, distinct[1:]):
+        gap = (later - earlier).days
+        if gap > longest_gap:
+            longest_gap = gap
+            gap_started = earlier
+
+    return {
+        "active_days": len(distinct),
+        "span_days": span or None,
+        # Days watched per week of the span, which separates a steady watcher
+        # from one who logged the same total in a handful of binges.
+        "days_per_active_week": (
+            _round(len(distinct) / (span / 7), 2) if span >= 7 else None
+        ),
+        "weekday_counts": weekday_counts,
+        "busiest_weekday": busiest[0] if busiest[1] > 0 else None,
+        "longest_dry_spell_days": longest_gap if longest_gap >= DRY_SPELL_DAYS else None,
+        "dry_spell_started": gap_started.isoformat() if longest_gap >= DRY_SPELL_DAYS and gap_started else None,
+    }
+
+
 def longest_streak_weeks(dates: Sequence[date]) -> Optional[int]:
     """Longest run of consecutive ISO weeks that each contain a watch.
 
@@ -715,9 +870,50 @@ def median_length_chars(lengths: Sequence[int]) -> Optional[int]:
     return (ordered[middle - 1] + ordered[middle]) // 2
 
 
+def _writing_rate_by_year(
+    reviews_per_year: Mapping[int, int],
+    watch_dates: Sequence[date],
+) -> List[Dict[str, Any]]:
+    """Share of a year's watching that got written about.
+
+    A rising review count can simply mean a busier year, so the count alone
+    cannot say whether somebody is writing more. Only years with watching to
+    measure against appear; a year of reviews whose films carry no date is left
+    out rather than reported as an impossible rate.
+    """
+
+    watched_per_year: Dict[int, int] = defaultdict(int)
+    for watched in watch_dates:
+        if watched is not None:
+            watched_per_year[watched.year] += 1
+
+    rows = []
+    for year in sorted(set(reviews_per_year) | set(watched_per_year)):
+        watched = watched_per_year.get(year, 0)
+        if watched <= 0:
+            continue
+        written = reviews_per_year.get(year, 0)
+        rows.append(
+            {
+                "year": year,
+                "reviews": written,
+                "films_watched": watched,
+                # Reviews are counted by the year they were published, films by
+                # the year they were watched, so the two describe overlapping
+                # but different sets -- somebody can publish in 2022 about films
+                # seen earlier. Where the counts imply a share above 100% they
+                # are not a share of anything, and clamping to 1.0 would have
+                # presented "127 reviews of 35 films" as a tidy 100%.
+                "share": _round(written / watched, 3) if written <= watched else None,
+            }
+        )
+    return rows
+
+
 def _review_block(
     reviews: Sequence[_ReviewRow],
     films: Sequence[_FilmRow],
+    watch_dates: Sequence[date] = (),
 ) -> Dict[str, Any]:
     """Writing habits, and how a profile rates the films it writes about.
 
@@ -795,6 +991,11 @@ def _review_block(
         "reviews_by_year": [
             {"year": year, "count": per_year[year]} for year in sorted(per_year)
         ],
+        # Whether the habit is growing or fading. A raw count per year rises
+        # simply because somebody watched more, so this is reviews against
+        # films watched in the same year -- the share of viewing they chose to
+        # write about.
+        "writing_rate_by_year": _writing_rate_by_year(per_year, watch_dates),
         "average_rating_reviewed": _round(_average(reviewed), 2),
         "average_rating_unreviewed": _round(_average(unreviewed), 2),
     }
@@ -866,6 +1067,11 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
             "rewatches": sum(film.rewatch_count for film in films),
             "average_rating": _round(_average(ratings), 2),
         },
+        # What a single sitting looks like, with import artifacts kept out.
+        "marathons": build_marathons(_marathon_events(db, profile.id)),
+        # Rhythm, not volume: the same film count looks different depending on
+        # whether it arrived weekly or in two binges either side of a silence.
+        "cadence": build_cadence(watch_dates),
         "top_directors": _ranked(directors, label_key="name"),
         # The people whose work shapes a film without their name being the one
         # anybody counts. Their credits were already stored and never read.
@@ -888,6 +1094,6 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
         # A genuine paired measurement, unlike the two averages inside
         # ``rewatches``: the same person, the same film, two viewings.
         "return_journeys": build_return_journeys(_return_events(db, profile.id)),
-        "reviews": _review_block(reviews, films),
+        "reviews": _review_block(reviews, films, watch_dates),
         "letterboxd_reported": profile.stats_snapshot,
     }

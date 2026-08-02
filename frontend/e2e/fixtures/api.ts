@@ -365,6 +365,29 @@ export const profileStats = {
     rewatches: 64,
     average_rating: 3.72,
   },
+  // One real sitting, plus a day the export dated in bulk that must not be
+  // reported as the biggest.
+  marathons: {
+    count: 41,
+    biggest: {
+      date: '2025-10-23',
+      films: 8,
+      runtime_minutes: 884,
+      titles: ['Fixture One', 'Fixture Two', 'Fixture Three'],
+    },
+    recent: [],
+    import_artifact_days: 2,
+  },
+  // A profile that watches most on Saturdays and went quiet for six weeks.
+  cadence: {
+    active_days: 301,
+    span_days: 1079,
+    days_per_active_week: 1.95,
+    weekday_counts: { Mon: 221, Tue: 123, Wed: 187, Thu: 230, Fri: 207, Sat: 273, Sun: 222 },
+    busiest_weekday: 'Sat',
+    longest_dry_spell_days: 41,
+    dry_spell_started: '2024-05-26',
+  },
   top_directors: [
     { name: 'Akira Kurosawa', count: 18, rated_count: 16, average_rating: 4.3 },
     { name: 'Agnès Varda', count: 12, rated_count: 10, average_rating: 4.1 },
@@ -466,6 +489,15 @@ export const profileStats = {
         published_date: '2026-03-14',
       },
       { title: 'Undated Fixture Review', year: null, likes_count: 12, published_date: null },
+    ],
+    // A habit that grew, plus a year whose reviews outnumber its watching --
+    // reviews are dated by publication, films by viewing, so that row carries
+    // no share rather than a clamped 100%.
+    writing_rate_by_year: [
+      { year: 2023, reviews: 27, films_watched: 61, share: 0.443 },
+      { year: 2024, reviews: 93, films_watched: 138, share: 0.674 },
+      { year: 2025, reviews: 110, films_watched: 165, share: 0.667 },
+      { year: 2026, reviews: 88, films_watched: 40, share: null },
     ],
     reviews_by_year: [
       { year: 2024, count: 12 },
