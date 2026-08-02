@@ -26,6 +26,7 @@ from database.models import (
     WatchEvent,
 )
 from services.profile_stats import (
+    build_cadence,
     build_profile_stats,
     build_return_journeys,
     longest_streak_weeks,
@@ -1069,6 +1070,8 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "username",
         "coverage",
         "totals",
+        # Rhythm alongside volume.
+        "cadence",
         "top_directors",
         # Crew whose credits were stored and never surfaced.
         "top_composers",
@@ -1165,6 +1168,42 @@ def test_a_bucket_reports_the_denominator_its_average_was_built_from(database):
     assert horror["rated_count"] == 2
     assert horror["average_rating"] == 5.0
 
+
+# Rhythm behind a watch count: two profiles with the same total look nothing
+# alike if one watches every Saturday and the other vanished for four months
+# and binged.
+
+
+def test_weekday_counts_use_every_event_not_distinct_days():
+    """Two films on one Saturday is two Saturday watches."""
+    cadence = build_cadence([date(2026, 7, 4), date(2026, 7, 4), date(2026, 7, 6)])
+
+    assert cadence["weekday_counts"]["Sat"] == 2
+    assert cadence["weekday_counts"]["Mon"] == 1
+    assert cadence["busiest_weekday"] == "Sat"
+
+
+def test_active_days_collapse_to_distinct_dates():
+    assert build_cadence([date(2026, 7, 4), date(2026, 7, 4)])["active_days"] == 1
+
+
+def test_a_long_silence_is_reported_with_the_date_it_began():
+    cadence = build_cadence([date(2026, 1, 1), date(2026, 1, 2), date(2026, 6, 1)])
+
+    assert cadence["longest_dry_spell_days"] == 150
+    assert cadence["dry_spell_started"] == "2026-01-02"
+
+
+def test_an_ordinary_week_off_is_not_a_dry_spell():
+    assert build_cadence([date(2026, 1, 1), date(2026, 1, 8)])["longest_dry_spell_days"] is None
+
+
+def test_a_profile_with_no_dated_events_reports_zeroes_not_nulls():
+    cadence = build_cadence([])
+
+    assert cadence["active_days"] == 0
+    assert cadence["busiest_weekday"] is None
+    assert cadence["weekday_counts"]["Mon"] == 0
 
 def test_below_the_line_crew_is_counted_from_credits_nothing_else_reads(database):
     """Composer, cinematographer and editor credits sit on ~4,000 enriched films."""

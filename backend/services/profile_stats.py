@@ -313,6 +313,66 @@ def _dated_watch_dates(db: Session, profile_id: int) -> List[date]:
     ]
 
 
+WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# A gap this long reads as having stopped rather than having paused.
+DRY_SPELL_DAYS = 30
+
+
+def build_cadence(dates: Sequence[date]) -> Dict[str, Any]:
+    """The rhythm behind a watch count: how often, on which days, and when it stopped.
+
+    Two profiles with the same total look nothing alike if one watches every
+    Saturday and the other disappeared for four months and binged. Everything
+    here comes from watch-event dates alone.
+
+    Weekday counts use every event, so two films on one Saturday count twice --
+    the question is where the watching happens, not how many distinct days.
+    Active days and gaps deliberately collapse to distinct dates instead.
+    """
+
+    if not dates:
+        return {
+            "active_days": 0,
+            "span_days": None,
+            "days_per_active_week": None,
+            "weekday_counts": {name: 0 for name in WEEKDAY_NAMES},
+            "busiest_weekday": None,
+            "longest_dry_spell_days": None,
+            "dry_spell_started": None,
+        }
+
+    ordered = sorted(dates)
+    distinct = sorted(set(ordered))
+    span = (distinct[-1] - distinct[0]).days
+
+    weekday_counts = {name: 0 for name in WEEKDAY_NAMES}
+    for value in ordered:
+        weekday_counts[WEEKDAY_NAMES[value.weekday()]] += 1
+    busiest = max(weekday_counts.items(), key=lambda item: (item[1], -WEEKDAY_NAMES.index(item[0])))
+
+    longest_gap = 0
+    gap_started: Optional[date] = None
+    for earlier, later in zip(distinct, distinct[1:]):
+        gap = (later - earlier).days
+        if gap > longest_gap:
+            longest_gap = gap
+            gap_started = earlier
+
+    return {
+        "active_days": len(distinct),
+        "span_days": span or None,
+        # Days watched per week of the span, which separates a steady watcher
+        # from one who logged the same total in a handful of binges.
+        "days_per_active_week": (
+            _round(len(distinct) / (span / 7), 2) if span >= 7 else None
+        ),
+        "weekday_counts": weekday_counts,
+        "busiest_weekday": busiest[0] if busiest[1] > 0 else None,
+        "longest_dry_spell_days": longest_gap if longest_gap >= DRY_SPELL_DAYS else None,
+        "dry_spell_started": gap_started.isoformat() if longest_gap >= DRY_SPELL_DAYS and gap_started else None,
+    }
+
+
 def longest_streak_weeks(dates: Sequence[date]) -> Optional[int]:
     """Longest run of consecutive ISO weeks that each contain a watch.
 
@@ -866,6 +926,9 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
             "rewatches": sum(film.rewatch_count for film in films),
             "average_rating": _round(_average(ratings), 2),
         },
+        # Rhythm, not volume: the same film count looks different depending on
+        # whether it arrived weekly or in two binges either side of a silence.
+        "cadence": build_cadence(watch_dates),
         "top_directors": _ranked(directors, label_key="name"),
         # The people whose work shapes a film without their name being the one
         # anybody counts. Their credits were already stored and never read.
