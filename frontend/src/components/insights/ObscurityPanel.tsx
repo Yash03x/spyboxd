@@ -139,6 +139,8 @@ const ObscurityPanel: React.FC<{ username: string; delay?: number }> = ({
   const mostObscure = data.most_obscure ?? [];
   const mostMainstream = data.most_mainstream ?? [];
   const crowdPosition = data.crowd_position ?? [];
+  const crowdBelow = data.crowd_position_below ?? [];
+  const crowdPercentile = data.crowd_percentile;
   const median = index?.median_rating_count ?? null;
   if (median === null && mostObscure.length === 0 && mostMainstream.length === 0) return null;
 
@@ -231,15 +233,41 @@ const ObscurityPanel: React.FC<{ username: string; delay?: number }> = ({
       ) : null}
 
       {crowdPosition.length > 0 ? (
-        <div className="mt-6">
+        <div className="mt-6 space-y-4">
+          {crowdPercentile && crowdPercentile.typical_share !== null ? (
+            /* The tails below are the extremes; this is where they usually sit.
+               Showing only the extremes told half the story. */
+            <p className="rounded-lg border border-white/[0.07] bg-black/15 px-3 py-2 text-xs leading-5 text-white/50">
+              Across {crowdPercentile.measured_films.toLocaleString()} rated films with a
+              crowd histogram, they typically rate above{' '}
+              <strong className="text-white/80">
+                {Math.round(crowdPercentile.typical_share * 100)}%
+              </strong>{' '}
+              of the people who rated the same film
+              {crowdPercentile.lean && crowdPercentile.lean !== 'typical'
+                ? ` — a ${crowdPercentile.lean} hand overall`
+                : ' — right about average'}
+              .
+            </p>
+          ) : null}
           <ListSection
-            title="Furthest from the crowd"
+            title="Furthest above the crowd"
             subtitle="Where their rating fell inside Letterboxd’s own histogram for the film"
           >
             {crowdPosition.map((film, index_) => (
               <CrowdPositionRow key={`${film.title}-${film.year ?? 'na'}-${index_}`} film={film} />
             ))}
           </ListSection>
+          {crowdBelow.length > 0 ? (
+            <ListSection
+              title="Furthest below the crowd"
+              subtitle="Films they rated lower than almost everyone who rated them"
+            >
+              {crowdBelow.map((film, index_) => (
+                <CrowdPositionRow key={`below-${film.title}-${film.year ?? 'na'}-${index_}`} film={film} />
+              ))}
+            </ListSection>
+          ) : null}
         </div>
       ) : null}
 

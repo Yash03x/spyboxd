@@ -1698,6 +1698,17 @@ export interface ObscurityResponse {
   most_mainstream: ObscurityFilm[];
   /** Empty — never null — until the rating-distribution backfill has been run. */
   crowd_position: ObscurityCrowdPosition[];
+  /** The other tail: films rated below almost the whole crowd. Somebody can be
+   *  out on a limb in both directions at once. */
+  crowd_position_below: ObscurityCrowdPosition[];
+  /** Where this profile usually lands inside a crowd, across everything it
+   *  rated that carries a histogram. Null when none does — never measured is
+   *  not the same as exactly average. */
+  crowd_percentile: {
+    measured_films: number;
+    typical_share: number | null;
+    lean: 'generous' | 'harsh' | 'typical' | null;
+  };
 }
 
 export const obscurityApi = {
