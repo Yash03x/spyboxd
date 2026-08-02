@@ -113,6 +113,10 @@ function PairComparisonTable({ title, rows, tone }: {
 
 function PairTimeline({ data }: { data: PairDossierResponse }) {
   const paths = data.influence_paths ?? [];
+  // Co-watches this panel structurally cannot rank: with both viewings on one
+  // day there is no first. Left unsaid, the shorter list reads as missing data
+  // rather than as a question that does not apply.
+  const sameDay = (data.co_watches ?? []).filter((event) => event.day_gap === 0).length;
   return (
     <section className="panel-insight">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
@@ -123,6 +127,12 @@ function PairTimeline({ data }: { data: PairDossierResponse }) {
         </h3>
         <span className="text-xs text-white/35">Sequence is not proof of influence</span>
       </div>
+      {sameDay > 0 ? (
+        <p className="border-b border-white/10 px-4 py-2 text-[11px] text-white/35">
+          {sameDay.toLocaleString()} further {sameDay === 1 ? 'co-watch is' : 'co-watches are'} the same day, where
+          neither of them was first.
+        </p>
+      ) : null}
       {paths.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-white/40">No directional watch pattern is available for this pair.</p>
       ) : (
