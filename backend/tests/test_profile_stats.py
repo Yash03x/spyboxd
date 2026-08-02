@@ -1083,6 +1083,14 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "release_lag",
         # Whether they work through a filmography once they find one.
         "director_runs",
+        # The rest of the crew TMDB credits, and the series worked through.
+        "top_producers",
+        "top_executive_producers",
+        "top_writers",
+        "top_production_designers",
+        "top_costume_designers",
+        "top_casting",
+        "franchises",
         "top_directors",
         # Crew whose credits were stored and never surfaced.
         "top_composers",

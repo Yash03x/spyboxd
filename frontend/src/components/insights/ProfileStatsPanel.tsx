@@ -581,6 +581,15 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
   const topActors = stats.top_actors ?? [];
   const topStudios = stats.top_studios ?? [];
   const topComposers = stats.top_composers ?? [];
+  const franchises = stats.franchises ?? [];
+  const extraCrew: Array<[string, ProfileStatsPerson[]]> = [
+    ['Producers', stats.top_producers ?? []],
+    ['Executive producers', stats.top_executive_producers ?? []],
+    ['Writers', stats.top_writers ?? []],
+    ['Production design', stats.top_production_designers ?? []],
+    ['Costume design', stats.top_costume_designers ?? []],
+    ['Casting', stats.top_casting ?? []],
+  ];
   const topCinematographers = stats.top_cinematographers ?? [];
   const topEditors = stats.top_editors ?? [];
   const directorGender = stats.director_gender;
@@ -789,6 +798,38 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
       {/* Watching a director twice in a fortnight happens about three times
           more often than shuffling the same dates would produce, so this is a
           habit rather than a by-product of watching a lot. */}
+      {/* Series worked through. Counted over films held, never "8 of 8": TMDB
+          does not give a collection's size in the film payload, and inventing
+          a denominator would turn a count into a completion claim. */}
+      {franchises.length > 0 ? (
+        <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white/75">Series worked through</h3>
+            <span className="text-[11px] text-white/40">
+              films held from each, not a completion score
+            </span>
+          </div>
+          <ul className="mt-2 space-y-1.5">
+            {franchises.slice(0, 6).map((entry) => (
+              <li key={entry.name} className="flex items-center gap-2 text-xs">
+                <span className="min-w-0 flex-1 truncate text-white/75" title={entry.name}>
+                  {entry.name}
+                </span>
+                <span className="w-10 shrink-0 text-right tabular-nums text-white/55">
+                  {formatCount(entry.films)}
+                </span>
+                <span
+                  className="w-8 shrink-0 text-right tabular-nums text-white/35"
+                  title={entry.average_rating === null ? 'None of these are rated' : undefined}
+                >
+                  {entry.average_rating === null ? '' : entry.average_rating.toFixed(1)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {directorRuns && directorRuns.count > 0 && directorRuns.biggest ? (
         <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -902,6 +943,12 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
           <RankedList title="Top composers" subtitle="Scored what you watch" people={topComposers} />
           <RankedList title="Top cinematographers" subtitle="Shot what you watch" people={topCinematographers} />
           <RankedList title="Top editors" subtitle="Cut what you watch" people={topEditors} />
+          {/* The rest of the crew TMDB credits. Letterboxd's own stats page
+              lists every one of these beside the director; ours held the same
+              credits and showed three. */}
+          {extraCrew.map(([label, people]) => (
+            <RankedList key={label} title={label} subtitle={null} people={people} />
+          ))}
         </div>
       ) : null}
 

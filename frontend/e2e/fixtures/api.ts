@@ -378,6 +378,19 @@ export const profileStats = {
     recent: [],
     import_artifact_days: 2,
   },
+  // Series held, with one deliberately unrated so the null renders as blank
+  // rather than 0.0.
+  franchises: [
+    { name: 'Harry Potter Collection', films: 8, average_rating: 4.0 },
+    { name: 'The Fast and the Furious Collection', films: 11, average_rating: 2.25 },
+    { name: 'X-Men Collection', films: 7, average_rating: null },
+  ],
+  top_producers: [{ name: 'Kevin Feige', count: 30, rated_count: 28, average_rating: 3.1 }],
+  top_executive_producers: [{ name: 'Stan Lee', count: 41, rated_count: 39, average_rating: 2.9 }],
+  top_writers: [{ name: 'David Koepp', count: 9, rated_count: 9, average_rating: 3.3 }],
+  top_production_designers: [{ name: 'Stuart Craig', count: 12, rated_count: 12, average_rating: 3.9 }],
+  top_costume_designers: [{ name: 'Colleen Atwood', count: 17, rated_count: 15, average_rating: 3.4 }],
+  top_casting: [{ name: 'Sarah Halley Finn', count: 45, rated_count: 43, average_rating: 3.0 }],
   // A filmography worked through over a fortnight, not in one sitting.
   director_runs: {
     count: 4,
