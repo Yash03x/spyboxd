@@ -118,6 +118,11 @@ class EnhancedLetterboxdScraper:
             # NOTE: /films/stats/ is a 404; the live stats page is /stats/.
             'stats': f"https://letterboxd.com/{username}/stats/",
             'tags': f"https://letterboxd.com/{username}/tags/",
+            # Liked *reviews* and *lists*, which are public and were never
+            # fetched. `likes.csv` is liked films, read off the film rows; it
+            # says nothing about whose writing a member rates.
+            'liked_reviews': f"https://letterboxd.com/{username}/likes/reviews/",
+            'liked_lists': f"https://letterboxd.com/{username}/likes/lists/",
         }
         
         # Letterboxd currently challenges ordinary requests/cloudscraper on paginated
@@ -152,6 +157,8 @@ class EnhancedLetterboxdScraper:
         self.films_data = []
         self.diary_entries = []
         self.reviews_data = []
+        self.liked_reviews_data = []
+        self.liked_lists_data = []
         self.watchlist_data = []
         self.lists_data = []
         self.list_items_data = []
@@ -1457,6 +1464,9 @@ class EnhancedLetterboxdScraper:
     def _write_csv(self, file_path: str, data: List[Dict], fieldnames: List[str]):
         """Helper function to write data to a CSV file."""
         full_path = os.path.join(self.output_dir, file_path)
+        # Export layout nests some surfaces (likes/reviews.csv), and the
+        # directory will not exist on a fresh scrape.
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
@@ -1721,6 +1731,53 @@ class EnhancedLetterboxdScraper:
         )
         return len(all_likes)
 
+    def _save_liked_content(self) -> Dict[str, int]:
+        """Write the liked-review/list surfaces where ingestion already looks.
+
+        `likes/reviews.csv` and `likes/lists.csv` are the paths an official
+        export uses and the ingestion reads, so a scraped surface lands in the
+        same place with no second code path. `Content` is the canonical URL
+        rather than a boxd.it token, and the author travels beside it, so
+        nothing has to be resolved later.
+        """
+
+        counts = {}
+        for kind, rows in (
+            ("reviews", getattr(self, "liked_reviews_data", [])),
+            ("lists", getattr(self, "liked_lists_data", [])),
+        ):
+            if f"liked_{kind}" not in self.completed_datasets:
+                continue
+            self._write_csv(
+                os.path.join("likes", f"{kind}.csv"),
+                [
+                    {"Date": "", "Content": row["url"], "Author": row["author"], "Slug": row["slug"]}
+                    for row in rows
+                ],
+                ["Date", "Content", "Author", "Slug"],
+            )
+            counts[f"liked_{kind}"] = len(rows)
+
+        # The same answer in the shape the resolution path consumes, so a
+        # scraped bundle needs no boxd.it round trip at all.
+        resolutions = {
+            row["url"]: {
+                "author": row["author"],
+                "film_slug": row["slug"] if kind == "reviews" else None,
+            }
+            for kind, rows in (
+                ("reviews", getattr(self, "liked_reviews_data", [])),
+                ("lists", getattr(self, "liked_lists_data", [])),
+            )
+            for row in rows
+        }
+        if resolutions:
+            with open(
+                os.path.join(self.output_dir, "likes_resolved.json"), "w", encoding="utf-8"
+            ) as handle:
+                json.dump(resolutions, handle, indent=1, sort_keys=True)
+        return counts
+
     def _save_comprehensive_films(self):
         """Saves the comprehensive film data."""
         if 'films' not in self.completed_datasets:
@@ -1755,6 +1812,7 @@ class EnhancedLetterboxdScraper:
         self._save_people('followers')
         rated_films_count = self._save_enriched_ratings()
         liked_films_count = self._save_likes()
+        liked_content_counts = self._save_liked_content()
         self._save_comprehensive_films()
 
         # A retained output directory may contain a CSV from an earlier public
@@ -1774,6 +1832,7 @@ class EnhancedLetterboxdScraper:
             'favorites': len(self.profile_info.favorite_films),
             'following': len(self.social_data.get('following', [])),
             'followers': len(self.social_data.get('followers', [])),
+            **liked_content_counts,
         }
         for dataset_name in self.unavailable_datasets:
             counts.pop(dataset_name, None)
@@ -1800,6 +1859,76 @@ class EnhancedLetterboxdScraper:
         print(f"   - Reviews: {len(self.reviews_data)}")
         print(f"   - List memberships: {len(self.list_items_data)}")
     
+
+    # `/<member>/film/<slug>/` for a review, `/<member>/list/<slug>/` for a
+    # list. The member in the path is the author, which is the whole point:
+    # a like is otherwise an opaque pointer.
+    _LIKED_REVIEW_HREF = re.compile(r"^/([A-Za-z0-9_]+)/film/([a-z0-9][a-z0-9-]*)/")
+    _LIKED_LIST_HREF = re.compile(r"^/([A-Za-z0-9_]+)/list/([a-z0-9][a-z0-9-]*)/")
+
+    def _scrape_liked_content(self, kind: str, pattern) -> List[Dict]:
+        """Paginate a public likes surface, de-duplicated by (author, slug).
+
+        Each entry appears several times per page -- as the title link, the
+        attribution, and a comments anchor -- so rows are keyed rather than
+        counted. A page contributing nothing new ends the crawl, which also
+        stops cleanly when Letterboxd serves the first page for an overshoot.
+        """
+
+        url_key = f"liked_{kind}"
+        entries: List[Dict] = []
+        seen = set()
+        page_url = self.urls[url_key]
+        page_num = 1
+
+        while True:
+            response = self.fetch_with_retry(page_url, allow_private_forbidden=True)
+            if self._is_private_forbidden_response(response):
+                self._mark_unavailable(url_key, 'forbidden/private')
+                print(f"⚠ Liked {kind} are private or forbidden; preserving prior imported state")
+                return []
+            response = self._require_response(response, url_key, page_url)
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            fresh = 0
+            for anchor in soup.find_all('a', href=True):
+                match = pattern.match(anchor['href'])
+                if not match:
+                    continue
+                author, slug = match.group(1), match.group(2)
+                key = (author, slug)
+                if key in seen:
+                    continue
+                seen.add(key)
+                fresh += 1
+                entries.append({
+                    'author': author,
+                    'slug': slug,
+                    'url': f"https://letterboxd.com/{author}/{'film' if kind == 'reviews' else 'list'}/{slug}/",
+                })
+
+            if fresh == 0:
+                break
+            page_num += 1
+            page_url = f"{self.urls[url_key]}page/{page_num}/"
+
+        print(f"✓ Found {len(entries)} liked {kind}")
+        return entries
+
+    def scrape_liked_reviews(self) -> List[Dict]:
+        print(f"❤️  Scraping liked reviews for {self.username}...")
+        self.liked_reviews_data = self._scrape_liked_content('reviews', self._LIKED_REVIEW_HREF)
+        if 'liked_reviews' not in self.unavailable_datasets:
+            self.completed_datasets.add('liked_reviews')
+        return self.liked_reviews_data
+
+    def scrape_liked_lists(self) -> List[Dict]:
+        print(f"❤️  Scraping liked lists for {self.username}...")
+        self.liked_lists_data = self._scrape_liked_content('lists', self._LIKED_LIST_HREF)
+        if 'liked_lists' not in self.unavailable_datasets:
+            self.completed_datasets.add('liked_lists')
+        return self.liked_lists_data
+
     def scrape_all(self):
         """Main method to scrape all available data."""
         print(f"🎬 Starting comprehensive scrape for {self.username}")
@@ -1807,7 +1936,8 @@ class EnhancedLetterboxdScraper:
         
         self.requested_datasets = {
             'profile', 'favorites', 'films', 'diary', 'likes', 'reviews',
-            'watchlist', 'lists', 'list_items', 'following', 'followers'
+            'watchlist', 'lists', 'list_items', 'following', 'followers',
+            'liked_reviews', 'liked_lists'
         }
 
         # Scrape all sections. People pages come right after the profile so
@@ -1822,6 +1952,11 @@ class EnhancedLetterboxdScraper:
         self.scrape_reviews()
         self.scrape_watchlist()
         self.scrape_custom_lists()
+        # Public surfaces the crawl never touched. Liked reviews and lists name
+        # their author in the path, so they answer whose writing a member rates
+        # -- a question `likes.csv` (liked films) cannot reach.
+        self.scrape_liked_reviews()
+        self.scrape_liked_lists()
         # Tags ride the films/diary/reviews/lists CSVs as an authoritative
         # column, so the crawl runs after those surfaces are proven complete.
         self.scrape_tags()

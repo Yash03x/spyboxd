@@ -1465,3 +1465,60 @@ class TagScrapingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LikedContentScrapingTests(unittest.TestCase):
+    """Liked reviews and lists are public pages, not export-only surfaces.
+
+    They were never fetched, so `liked_authors` could only ever describe a
+    profile whose owner had uploaded an official export -- one of twenty.
+    """
+
+    def test_a_liked_entry_is_keyed_once_despite_repeated_links(self) -> None:
+        """A page links each review three times: title, attribution, comments."""
+        from backend.scraper_html import EnhancedLetterboxdScraper
+
+        pattern = EnhancedLetterboxdScraper._LIKED_REVIEW_HREF
+        hrefs = [
+            "/thesvbstance/film/spider-man-brand-new-day/",
+            "/thesvbstance/film/spider-man-brand-new-day/",
+            "/thesvbstance/film/spider-man-brand-new-day/#comments",
+            "/jaxjax/film/spider-man-brand-new-day/",
+        ]
+        seen = set()
+        for href in hrefs:
+            match = pattern.match(href)
+            if match:
+                seen.add((match.group(1), match.group(2)))
+
+        self.assertEqual(
+            seen,
+            {
+                ("thesvbstance", "spider-man-brand-new-day"),
+                ("jaxjax", "spider-man-brand-new-day"),
+            },
+        )
+
+    def test_the_author_is_taken_from_the_path_not_guessed(self) -> None:
+        from backend.scraper_html import EnhancedLetterboxdScraper
+
+        review = EnhancedLetterboxdScraper._LIKED_REVIEW_HREF.match(
+            "/gnanendar/film/when-evil-lurks/"
+        )
+        listing = EnhancedLetterboxdScraper._LIKED_LIST_HREF.match(
+            "/stautis/list/good-films-90-minutes-or-less/"
+        )
+
+        self.assertEqual(review.groups(), ("gnanendar", "when-evil-lurks"))
+        self.assertEqual(listing.groups(), ("stautis", "good-films-90-minutes-or-less"))
+
+    def test_a_films_path_is_not_mistaken_for_a_liked_review(self) -> None:
+        """`/<member>/films/` is the member's own library, not a liked review."""
+        from backend.scraper_html import EnhancedLetterboxdScraper
+
+        self.assertIsNone(
+            EnhancedLetterboxdScraper._LIKED_REVIEW_HREF.match("/er3nweeber/films/")
+        )
+        self.assertIsNone(
+            EnhancedLetterboxdScraper._LIKED_REVIEW_HREF.match("/film/dune-part-two/")
+        )
