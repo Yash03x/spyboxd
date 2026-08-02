@@ -26,6 +26,8 @@ from database.models import (
     WatchEvent,
 )
 from services.profile_stats import (
+    build_marathons,
+    build_cadence,
     build_profile_stats,
     build_return_journeys,
     longest_streak_weeks,
@@ -1071,6 +1073,10 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "username",
         "coverage",
         "totals",
+        # What a single sitting looks like.
+        "marathons",
+        # Rhythm alongside volume.
+        "cadence",
         "top_directors",
         # Crew whose credits were stored and never surfaced.
         "top_composers",
@@ -1217,6 +1223,93 @@ def test_more_reviews_than_films_watched_reports_no_share(database):
     assert row["reviews"] == 3
     assert row["films_watched"] == 1
     assert row["share"] is None
+
+# A day whose films add up to more hours than a day has did not happen. A
+# Letterboxd export can date an entire backlog to the day it was imported, and
+# reporting that as somebody's biggest sitting would be the panel's most
+# obviously wrong number.
+
+
+def test_a_real_sitting_is_reported_with_its_runtime():
+    events = [
+        (date(2026, 7, 4), "First", 95),
+        (date(2026, 7, 4), "Second", 102),
+        (date(2026, 7, 4), "Third", 88),
+    ]
+
+    marathons = build_marathons(events)
+
+    assert marathons["count"] == 1
+    assert marathons["biggest"]["films"] == 3
+    assert marathons["biggest"]["runtime_minutes"] == 285
+    assert marathons["import_artifact_days"] == 0
+
+
+def test_a_backlog_dated_to_one_day_is_not_a_marathon():
+    """Twenty films at two hours each is forty hours; the day was an import."""
+    events = [(date(2026, 7, 4), f"Bulk {index}", 120) for index in range(20)]
+
+    marathons = build_marathons(events)
+
+    assert marathons["count"] == 0
+    assert marathons["biggest"] is None
+    assert marathons["import_artifact_days"] == 1
+
+
+def test_without_runtimes_an_implausible_film_count_is_still_rejected():
+    events = [(date(2026, 7, 4), f"Unknown {index}", None) for index in range(12)]
+
+    assert build_marathons(events)["count"] == 0
+
+
+def test_two_films_in_a_day_is_not_yet_a_marathon():
+    events = [(date(2026, 7, 4), "One", 95), (date(2026, 7, 4), "Two", 95)]
+
+    assert build_marathons(events)["count"] == 0
+
+
+def test_a_profile_that_never_stacks_films_reports_an_empty_block():
+    assert build_marathons([]) == {
+        "count": 0,
+        "biggest": None,
+        "recent": [],
+        "import_artifact_days": 0,
+    }
+# Rhythm behind a watch count: two profiles with the same total look nothing
+# alike if one watches every Saturday and the other vanished for four months
+# and binged.
+
+
+def test_weekday_counts_use_every_event_not_distinct_days():
+    """Two films on one Saturday is two Saturday watches."""
+    cadence = build_cadence([date(2026, 7, 4), date(2026, 7, 4), date(2026, 7, 6)])
+
+    assert cadence["weekday_counts"]["Sat"] == 2
+    assert cadence["weekday_counts"]["Mon"] == 1
+    assert cadence["busiest_weekday"] == "Sat"
+
+
+def test_active_days_collapse_to_distinct_dates():
+    assert build_cadence([date(2026, 7, 4), date(2026, 7, 4)])["active_days"] == 1
+
+
+def test_a_long_silence_is_reported_with_the_date_it_began():
+    cadence = build_cadence([date(2026, 1, 1), date(2026, 1, 2), date(2026, 6, 1)])
+
+    assert cadence["longest_dry_spell_days"] == 150
+    assert cadence["dry_spell_started"] == "2026-01-02"
+
+
+def test_an_ordinary_week_off_is_not_a_dry_spell():
+    assert build_cadence([date(2026, 1, 1), date(2026, 1, 8)])["longest_dry_spell_days"] is None
+
+
+def test_a_profile_with_no_dated_events_reports_zeroes_not_nulls():
+    cadence = build_cadence([])
+
+    assert cadence["active_days"] == 0
+    assert cadence["busiest_weekday"] is None
+    assert cadence["weekday_counts"]["Mon"] == 0
 
 def test_below_the_line_crew_is_counted_from_credits_nothing_else_reads(database):
     """Composer, cinematographer and editor credits sit on ~4,000 enriched films."""
