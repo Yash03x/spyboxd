@@ -357,6 +357,11 @@ function ReviewSection({
 }) {
   const liked = reviews.most_liked ?? [];
   const byYear = reviews.reviews_by_year ?? [];
+  // How much of each year's watching got written about. A rising review count
+  // can just mean a busier year, so the share is the honest trend line.
+  const writingRate = (reviews.writing_rate_by_year ?? []).filter(
+    (row) => row.share !== null,
+  );
   if (reviews.total_reviews === 0) return null;
 
   const subtitle = [
@@ -376,6 +381,33 @@ function ReviewSection({
         <p className="mt-2 text-[11px] leading-4 text-white/40">
           {`Longest: ${reviews.longest.title}${reviews.longest.year ? ` (${reviews.longest.year})` : ''}, ${formatCount(reviews.longest.length_chars)} characters`}
         </p>
+      ) : null}
+
+      {writingRate.length > 1 ? (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-white/35">
+            How much they write about
+          </p>
+          <div className="mt-2 space-y-1">
+            {writingRate.map((row) => (
+              <div key={row.year} className="flex items-center gap-2 text-[11px]">
+                <span className="w-9 shrink-0 tabular-nums text-white/40">{row.year}</span>
+                <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
+                  <span
+                    className="block h-full rounded-full bg-cinema-500"
+                    style={{ width: `${Math.max(2, (row.share ?? 0) * 100)}%` }}
+                  />
+                </span>
+                <span
+                  className="w-20 shrink-0 text-right tabular-nums text-white/45"
+                  title={`${row.reviews} of ${row.films_watched} films watched`}
+                >
+                  {Math.round((row.share ?? 0) * 100)}% of {row.films_watched}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       ) : null}
 
       {liked.length > 0 ? (
@@ -532,6 +564,14 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
   const languageRows = toBarRows(stats.languages ?? []);
   const decadeRows = toBarRows(stats.decades ?? []);
 
+  const marathons = stats.marathons;
+  const cadence = stats.cadence;
+  // Fixed order so the row reads like a week rather than a ranking, and a
+  // weekday with no watches still occupies its slot.
+  const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const busiestWeekdayCount = cadence
+    ? Math.max(...WEEKDAYS.map((day) => cadence.weekday_counts?.[day] ?? 0), 0)
+    : 0;
   const topDirectors = stats.top_directors ?? [];
   const topActors = stats.top_actors ?? [];
   const topStudios = stats.top_studios ?? [];
@@ -640,6 +680,94 @@ const ProfileStatsPanel: React.FC<{ username: string; delay?: number }> = ({
 
       {footnotes.length > 0 ? (
         <p className="mt-3 text-xs text-white/35">{footnotes.join(' · ')}</p>
+      ) : null}
+
+      {/* Rhythm rather than volume. Two profiles with the same film count look
+          nothing alike if one watches every Saturday and the other vanished for
+          six weeks and binged, and the total cannot tell them apart. */}
+      {cadence && cadence.active_days > 0 && busiestWeekdayCount > 0 ? (
+        <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white/75">Watching rhythm</h3>
+            <span className="text-[11px] text-white/40">
+              {formatCount(cadence.active_days)} days with an entry
+              {cadence.span_days ? ` across ${formatCount(cadence.span_days)}` : ''}
+            </span>
+          </div>
+
+          <div className="mt-3 grid grid-cols-7 gap-1.5" data-testid="cadence-weekdays">
+            {WEEKDAYS.map((day) => {
+              const count = cadence.weekday_counts?.[day] ?? 0;
+              return (
+                <div key={day} className="flex flex-col items-center gap-1">
+                  <div className="flex h-16 w-full items-end rounded bg-white/5">
+                    <div
+                      className={`w-full rounded ${
+                        day === cadence.busiest_weekday ? 'bg-cinema-500' : 'bg-white/20'
+                      }`}
+                      style={{ height: `${Math.max((count / busiestWeekdayCount) * 100, 3)}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-white/40">{day}</span>
+                  <span className="text-[10px] tabular-nums text-white/55">{count}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="mt-3 text-xs text-white/55">
+            {cadence.busiest_weekday ? (
+              <>
+                Most often a <strong className="text-white/85">{cadence.busiest_weekday}</strong>
+              </>
+            ) : null}
+            {cadence.days_per_active_week
+              ? `${cadence.busiest_weekday ? ' · ' : ''}about ${cadence.days_per_active_week} days a week while active`
+              : ''}
+          </p>
+
+          {/* A gap is only worth naming when it reads as a stop rather than a
+              pause, so the backend leaves this null for ordinary quiet weeks. */}
+          {cadence.longest_dry_spell_days ? (
+            <p className="mt-1 text-[11px] text-white/35">
+              Longest silence: {formatCount(cadence.longest_dry_spell_days)} days
+              {cadence.dry_spell_started ? ` from ${cadence.dry_spell_started}` : ''}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {marathons && marathons.count > 0 && marathons.biggest ? (
+        <div className="mt-6 rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white/75">Marathon days</h3>
+            <span className="text-[11px] text-white/40">
+              {formatCount(marathons.count)} {marathons.count === 1 ? 'day' : 'days'} with three or more films
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-white/55">
+            Biggest sitting: <strong className="text-white/85">{marathons.biggest.films} films</strong>{' '}
+            on {marathons.biggest.date}
+            {marathons.biggest.runtime_minutes
+              ? ` · ${Math.round(marathons.biggest.runtime_minutes / 60)}h`
+              : ''}
+          </p>
+          {marathons.biggest.titles.length > 0 ? (
+            <p className="mt-1 line-clamp-2 text-[11px] text-white/35">
+              {marathons.biggest.titles.join(' · ')}
+            </p>
+          ) : null}
+          {marathons.import_artifact_days > 0 ? (
+            /* Stated rather than hidden: an export can date a whole backlog to
+               one day, and a reader comparing this with Letterboxd should know
+               those days were set aside. */
+            <p className="mt-2 text-[11px] text-white/35">
+              {formatCount(marathons.import_artifact_days)}{' '}
+              {marathons.import_artifact_days === 1 ? 'day was' : 'days were'} excluded as bulk imports
+              rather than sittings.
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       {directorGender && directorGender.measured_films > 0 && directorGender.women_share !== null ? (
