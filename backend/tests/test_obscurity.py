@@ -680,6 +680,9 @@ def test_route_serves_the_frozen_contract(database: Session, client) -> None:
         # The other tail, and the whole distribution behind both.
         "crowd_position_below",
         "crowd_percentile",
+        # Not the crowd's size or this rating's place in it, but whether the
+        # crowd agreed with itself.
+        "contested_taste",
     }
     assert payload["username"] == "subject"
     assert set(payload["coverage"]) == {"rated_films", "films_with_rating_count"}
@@ -805,3 +808,87 @@ def test_a_profile_whose_films_carry_no_histogram_has_no_percentile(
     assert percentile["measured_films"] == 0
     assert percentile["typical_share"] is None
     assert percentile["lean"] is None
+
+
+# A film's average cannot say whether the crowd agreed. Two films can share an
+# average of 3.0 while one was rated 3.0 by everybody and the other split the
+# room between 1 and 5, and only the histogram's shape tells them apart.
+
+def _flat(size: int = 400) -> Dict[str, int]:
+    """Everyone rated it 3.0."""
+    return {"3.0": size}
+
+
+def _split(size: int = 200) -> Dict[str, int]:
+    """Half rated it 0.5, half rated it 5.0 -- same 2.75 average as no film."""
+    return {"0.5": size, "5.0": size}
+
+
+def _spread_library(database: Session, count: int) -> None:
+    """Enough films for the deciles to mean something."""
+    for index in range(count):
+        # A spread of shapes so the thresholds are not degenerate.
+        weight = index % 5
+        _film(
+            database,
+            f"Library {index}",
+            rating_count=5_000,
+            distribution={"2.5": 300 - weight * 40, "3.0": 300, "3.5": 100 + weight * 60},
+        )
+
+
+def test_a_split_crowd_and_a_united_one_are_told_apart(database):
+    """Both films average near the middle; only one was argued about."""
+    profile = _profile(database, "viewer")
+    _spread_library(database, 240)
+    united = _film(database, "United", rating_count=90_000, distribution=_flat())
+    split = _film(database, "Split", rating_count=90_000, distribution=_split())
+    _rate(database, profile, united, 3.0)
+    _rate(database, profile, split, 4.0)
+
+    contested = build_obscurity_index(database, profile)["contested_taste"]
+
+    assert contested["contested_films"] == 1
+    assert contested["agreed_films"] == 1
+    titles = [entry["title"] for entry in contested["most_contested"]]
+    assert titles == ["Split"]
+
+
+def test_a_histogram_too_small_to_argue_about_is_not_counted(database):
+    """Under a hundred ratings the shape is noise, not a verdict."""
+    profile = _profile(database, "viewer")
+    _spread_library(database, 240)
+    thin = _film(database, "Thin", rating_count=12, distribution={"0.5": 6, "5.0": 6})
+    _rate(database, profile, thin, 4.0)
+
+    contested = build_obscurity_index(database, profile)["contested_taste"]
+
+    assert contested["measured_films"] == 0
+    assert contested["most_contested"] == []
+    assert contested["lean_ratio"] is None
+
+
+def test_the_lean_ratio_is_null_rather_than_infinite_without_agreed_films(database):
+    """A ratio needs a denominator; dividing by zero would print an inflated lie."""
+    profile = _profile(database, "viewer")
+    _spread_library(database, 240)
+    split = _film(database, "Split", rating_count=90_000, distribution=_split())
+    _rate(database, profile, split, 4.0)
+
+    contested = build_obscurity_index(database, profile)["contested_taste"]
+
+    assert contested["contested_films"] == 1
+    assert contested["agreed_films"] == 0
+    assert contested["lean_ratio"] is None
+
+
+def test_a_library_too_small_for_deciles_measures_nothing(database):
+    """Thresholds drawn from a handful of films would be arbitrary."""
+    profile = _profile(database, "viewer")
+    split = _film(database, "Split", rating_count=90_000, distribution=_split())
+    _rate(database, profile, split, 4.0)
+
+    contested = build_obscurity_index(database, profile)["contested_taste"]
+
+    assert contested["measured_films"] == 0
+    assert contested["median_spread"] is None

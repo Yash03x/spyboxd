@@ -1715,6 +1715,18 @@ export interface ObscurityResponse {
     typical_share: number | null;
     lean: 'generous' | 'harsh' | 'typical' | null;
   };
+  /** Whether they gravitate toward films Letterboxd splits over. Contestedness
+   *  comes from each film's own histogram, so it rests on the site's whole
+   *  audience rather than on the handful of tracked profiles who rated it. */
+  contested_taste: {
+    measured_films: number;
+    contested_films: number;
+    agreed_films: number;
+    median_spread: number | null;
+    /** Null rather than infinity when there are no agreed-on films to divide by. */
+    lean_ratio: number | null;
+    most_contested: ObscurityFilm[];
+  };
 }
 
 export const obscurityApi = {

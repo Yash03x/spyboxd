@@ -141,6 +141,7 @@ const ObscurityPanel: React.FC<{ username: string; delay?: number }> = ({
   const crowdPosition = data.crowd_position ?? [];
   const crowdBelow = data.crowd_position_below ?? [];
   const crowdPercentile = data.crowd_percentile;
+  const contested = data.contested_taste;
   const median = index?.median_rating_count ?? null;
   if (median === null && mostObscure.length === 0 && mostMainstream.length === 0) return null;
 
@@ -249,6 +250,40 @@ const ObscurityPanel: React.FC<{ username: string; delay?: number }> = ({
                 : ' — right about average'}
               .
             </p>
+          ) : null}
+          {contested && contested.lean_ratio !== null && contested.measured_films > 0 ? (
+            /* A different question from the two above: not how big the crowd
+               was, nor where this rating sat inside it, but whether the crowd
+               agreed with itself at all. */
+            <div className="rounded-lg border border-white/[0.07] bg-black/15 px-3 py-2.5">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="text-xs font-semibold text-white/70">Films the world argues about</h3>
+                <span className="text-[11px] text-white/35">
+                  {contested.measured_films.toLocaleString()} films with a readable histogram
+                </span>
+              </div>
+              <p className="mt-1.5 text-xs leading-5 text-white/50">
+                <strong className="text-white/85">
+                  {contested.contested_films.toLocaleString()}
+                </strong>{' '}
+                of their films are ones Letterboxd splits over, against{' '}
+                <strong className="text-white/85">
+                  {contested.agreed_films.toLocaleString()}
+                </strong>{' '}
+                the crowd broadly agrees on
+                {contested.lean_ratio >= 1.25
+                  ? ' — they seek out the arguments'
+                  : contested.lean_ratio <= 0.8
+                    ? ' — they stay with the settled ones'
+                    : ' — no strong pull either way'}
+                .
+              </p>
+              {contested.most_contested.length > 0 ? (
+                <p className="mt-1 line-clamp-2 text-[11px] text-white/30">
+                  Most divided: {contested.most_contested.slice(0, 4).map((film) => film.title).join(' · ')}
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <ListSection
             title="Furthest above the crowd"

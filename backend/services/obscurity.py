@@ -37,6 +37,7 @@ describe the same set of films.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import sqrt
 from statistics import median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -56,6 +57,13 @@ LEAN_PERCENTILE_MARGIN = 15.0
 # Half-star ratings are exact multiples of 0.5, but they arrive as floats;
 # compare with a tolerance so 3.5 is never excluded from its own bucket.
 _RATING_EPSILON = 1e-9
+
+# Below this many ratings a histogram's shape is sampling noise, not a verdict.
+MIN_SPREAD_RATINGS = 100
+# Guard against calling a decile from a library too small to have one.
+MIN_LIBRARY_FILMS = 200
+CONTESTED_DECILE = 0.90
+AGREED_DECILE = 0.10
 
 
 @dataclass(frozen=True)
@@ -256,6 +264,49 @@ def _share_at_or_below(distribution: Any, rating: float) -> Optional[float]:
     return at_or_below / total
 
 
+def _crowd_spread(distribution: Any) -> Optional[float]:
+    """How divided the crowd was about a film, as the histogram's own spread.
+
+    ``letterboxd_average_rating`` cannot answer this: a film averaging 3.5
+    because everybody rated it 3.5 and a film averaging 3.5 because half the
+    world rated it 1 and half rated it 5 are opposite experiences reduced to the
+    same number. The standard deviation of the histogram separates them.
+
+    Returns ``None`` below ``MIN_SPREAD_RATINGS``, where the shape is sampling
+    noise rather than an argument.
+    """
+
+    buckets = _numeric_buckets(distribution)
+    total = sum(buckets.values())
+    if total < MIN_SPREAD_RATINGS:
+        return None
+    mean = sum(star * size for star, size in buckets.items()) / total
+    variance = sum(size * (star - mean) ** 2 for star, size in buckets.items()) / total
+    return sqrt(variance)
+
+
+def _library_spread_thresholds(db: Session) -> Optional[Tuple[float, float]]:
+    """The contested and agreed-on deciles across every film we hold.
+
+    Thresholds come from the whole library rather than from the profile being
+    measured, so "contested" means the same thing on every profile's panel.
+    """
+
+    spreads: List[float] = []
+    for (distribution,) in db.query(Movie.letterboxd_rating_distribution).filter(
+        Movie.letterboxd_rating_distribution.isnot(None)
+    ):
+        spread = _crowd_spread(distribution)
+        if spread is not None:
+            spreads.append(spread)
+    if len(spreads) < MIN_LIBRARY_FILMS:
+        return None
+    spreads.sort()
+    contested = spreads[int(len(spreads) * CONTESTED_DECILE)]
+    agreed = spreads[int(len(spreads) * AGREED_DECILE)]
+    return contested, agreed
+
+
 def _film_identities(db: Session, movie_ids: Iterable[int]) -> Dict[int, Dict[str, Any]]:
     """Display fields for the handful of films that reached an output list.
 
@@ -379,6 +430,29 @@ def build_obscurity_index(
     all_shares = [share for _, share in positioned]
     typical_share = median(all_shares) if all_shares else None
 
+    # Not how big the crowd was, nor where this rating sat inside it, but
+    # whether the crowd agreed with itself at all.
+    thresholds = _library_spread_thresholds(db)
+    contested_films: List[Tuple[_RatedFilm, float]] = []
+    measured_spreads: List[float] = []
+    contested_count = agreed_count = 0
+    if thresholds is not None:
+        contested_cut, agreed_cut = thresholds
+        for film in films:
+            spread = _crowd_spread(film.distribution)
+            if spread is None:
+                continue
+            measured_spreads.append(spread)
+            if spread >= contested_cut:
+                contested_count += 1
+                contested_films.append((film, spread))
+            elif spread <= agreed_cut:
+                agreed_count += 1
+    contested_films.sort(
+        key=lambda pair: (-pair[1], pair[0].title.casefold(), pair[0].movie_id)
+    )
+    most_contested = [pair[0] for pair in contested_films[:limit]]
+
     identities = _film_identities(
         db,
         [
@@ -386,6 +460,7 @@ def build_obscurity_index(
             for film in (
                 *most_obscure,
                 *most_mainstream,
+                *most_contested,
                 *(pair[0] for pair in crowd_position),
             )
         ],
@@ -438,5 +513,26 @@ def build_obscurity_index(
                 else "harsh" if typical_share < 0.45
                 else "typical"
             ),
+        },
+        # Whether this person gravitates toward films the world argues about.
+        # Every film's contestedness comes from Letterboxd's own histogram --
+        # tens of thousands of ratings -- rather than from the handful of
+        # tracked profiles who happen to have rated it.
+        "contested_taste": {
+            "measured_films": len(measured_spreads),
+            "contested_films": contested_count,
+            "agreed_films": agreed_count,
+            "median_spread": (
+                _round(median(measured_spreads), 3) if measured_spreads else None
+            ),
+            # Above 1 leans toward films that divide the crowd, below 1 toward
+            # films it agrees on. Null rather than infinity when a profile has
+            # no agreed-on films at all: a ratio needs a denominator.
+            "lean_ratio": (
+                _round(contested_count / agreed_count, 2) if agreed_count else None
+            ),
+            "most_contested": [
+                _audience_entry(film, identity(film)) for film in most_contested
+            ],
         },
     }
