@@ -1468,6 +1468,18 @@ export interface ProfileStatsResponse {
   /** Crew whose credits TMDB stores on most enriched films and nothing read
    *  until now: the people shaping what you watch without being counted. */
   top_composers: ProfileStatsPerson[];
+  /** The rest of the crew TMDB credits — stored since enrichment began and
+   *  never surfaced, while Letterboxd's own stats page lists them all. */
+  top_producers: ProfileStatsPerson[];
+  top_executive_producers: ProfileStatsPerson[];
+  top_writers: ProfileStatsPerson[];
+  top_production_designers: ProfileStatsPerson[];
+  top_costume_designers: ProfileStatsPerson[];
+  top_casting: ProfileStatsPerson[];
+  /** Series worked through. Counted over films held, never "8 of 8": TMDB's
+   *  collection size is not in the film payload and a denominator would be a
+   *  guess. Singles are excluded — one film is not a franchise. */
+  franchises: Array<{ name: string; films: number; average_rating: number | null }>;
   top_cinematographers: ProfileStatsPerson[];
   top_editors: ProfileStatsPerson[];
   director_gender: {

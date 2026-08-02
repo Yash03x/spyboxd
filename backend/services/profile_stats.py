@@ -82,6 +82,8 @@ class _FilmRow:
     editors: List[_Value]
     actors: List[_Value]
     studios: List[_Value]
+    extra_crew: Dict[str, List[_Value]]
+    collection: Optional[str]
 
     @property
     def decades(self) -> List[_Value]:
@@ -161,6 +163,18 @@ BELOW_THE_LINE_JOBS = {
     "editor": "Editor",
 }
 
+# The rest of the crew TMDB already credits. Letterboxd's own stats page lists
+# these beside the director; ours stored them and showed three. Each key is the
+# exact TMDB job string, because a near-miss silently yields an empty list.
+EXTRA_CREW_JOBS = {
+    "producer": "Producer",
+    "executive_producer": "Executive Producer",
+    "writer": "Screenplay",
+    "production_designer": "Production Design",
+    "costume_designer": "Costume Design",
+    "casting": "Casting",
+}
+
 
 def _crew_values(credits: Any, job: str) -> List[_Value]:
     """Names credited with one specific crew job."""
@@ -177,6 +191,19 @@ def _crew_values(credits: Any, job: str) -> List[_Value]:
             ]
         )
     )
+
+
+def _collection_name(payload: Any) -> Optional[str]:
+    """The franchise TMDB places a film in, if any.
+
+    Most films belong to none, which is why this is nullable rather than a
+    bucket: a standalone film is not a one-film franchise.
+    """
+
+    if not isinstance(payload, Mapping):
+        return None
+    name = str(payload.get("name") or "").strip()
+    return name or None
 
 
 def _director_genders(credits: Any) -> List[int]:
@@ -229,6 +256,9 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
 
     production_companies = MovieEnrichment.raw_payload["details"]["production_companies"]
     spoken_languages = MovieEnrichment.raw_payload["details"]["spoken_languages"]
+    # TMDB names the franchise a film belongs to; 1,143 of the 4,554 enriched
+    # films carry one and nothing had ever read it.
+    belongs_to_collection = MovieEnrichment.raw_payload["details"]["belongs_to_collection"]
     rows = (
         db.query(
             ProfileFilm.rating,
@@ -248,6 +278,7 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
             MovieEnrichment.production_countries,
             production_companies.label("production_companies"),
             spoken_languages.label("spoken_languages"),
+            belongs_to_collection.label("belongs_to_collection"),
         )
         .join(Movie, Movie.id == ProfileFilm.movie_id)
         .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
@@ -293,6 +324,11 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
                 editors=_crew_values(credits, BELOW_THE_LINE_JOBS["editor"]),
                 actors=_actor_values(credits),
                 studios=_plain_values(_as_string_list(row.production_companies)),
+                extra_crew={
+                    key: _crew_values(row.credits, job)
+                    for key, job in EXTRA_CREW_JOBS.items()
+                },
+                collection=_collection_name(row.belongs_to_collection),
             )
         )
     return films
@@ -1195,6 +1231,23 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
     editors = _collect(films, lambda film: film.editors)
     actors = _collect(films, lambda film: film.actors)
     studios = _collect(films, lambda film: film.studios)
+    extra_crew_buckets = {
+        key: _collect(films, lambda film, key=key: film.extra_crew.get(key, []))
+        for key in EXTRA_CREW_JOBS
+    }
+
+    # Franchise completion: how much of a series this profile has worked
+    # through. Counted over the films they hold, so it says "you have seen 8
+    # Harry Potter films", never "8 of 8" -- TMDB's collection size is not in
+    # the film payload and inventing a denominator would be a guess.
+    franchises: Dict[str, int] = defaultdict(int)
+    franchise_ratings: Dict[str, List[float]] = defaultdict(list)
+    for film in films:
+        if not film.collection:
+            continue
+        franchises[film.collection] += 1
+        if film.rating is not None:
+            franchise_ratings[film.collection].append(float(film.rating))
 
     return {
         "username": profile.username,
@@ -1247,6 +1300,32 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
         "director_gender": _director_gender_split(films),
         "top_actors": _ranked(actors, label_key="name"),
         "top_studios": _ranked(studios, label_key="name"),
+        # The rest of the crew TMDB credits, which were stored and never shown.
+        "top_producers": _ranked(extra_crew_buckets["producer"], label_key="name"),
+        "top_executive_producers": _ranked(
+            extra_crew_buckets["executive_producer"], label_key="name"
+        ),
+        "top_writers": _ranked(extra_crew_buckets["writer"], label_key="name"),
+        "top_production_designers": _ranked(
+            extra_crew_buckets["production_designer"], label_key="name"
+        ),
+        "top_costume_designers": _ranked(
+            extra_crew_buckets["costume_designer"], label_key="name"
+        ),
+        "top_casting": _ranked(extra_crew_buckets["casting"], label_key="name"),
+        # Series worked through, most-watched first. A single film is not a
+        # franchise anybody is following, so two is the floor.
+        "franchises": [
+            {
+                "name": name,
+                "films": count,
+                "average_rating": _round(_average(franchise_ratings.get(name, [])), 2),
+            }
+            for name, count in sorted(
+                franchises.items(), key=lambda item: (-item[1], item[0])
+            )
+            if count >= 2
+        ][:MAX_LIST_ENTRIES],
         "genres": _ranked(genres),
         "countries": _ranked(countries, include_code=True),
         "languages": _ranked(languages),
