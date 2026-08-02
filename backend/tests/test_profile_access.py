@@ -1591,3 +1591,39 @@ def test_no_resolved_likes_yield_no_authors_rather_than_an_empty_name():
         target_username = None
 
     assert _liked_authors([_Like(), _Like()]) == []
+
+
+def test_like_target_resolution_is_admin_only(database):
+    """Naming who a member likes is an identity surface, not a public one."""
+    from fastapi import HTTPException
+    from backend.api.routes.member_archive import resolve_like_targets
+
+    with pytest.raises(HTTPException) as raised:
+        resolve_like_targets(
+            username="alpha",
+            payload={"resolutions": {}},
+            db=database,
+            user=_user("ordinary"),
+        )
+
+    assert raised.value.status_code == 403
+
+
+def test_like_target_resolution_rejects_a_payload_it_cannot_read(database):
+    """Access is settled before the body is read, so the profile must exist."""
+    from fastapi import HTTPException
+    from backend.api.routes.member_archive import resolve_like_targets
+
+    database.add(_profile(1, "Alpha"))
+    database.commit()
+    admin = _legacy_user(database, "admin", admin=True)
+
+    with pytest.raises(HTTPException) as raised:
+        resolve_like_targets(
+            username="Alpha",
+            payload={"resolutions": ["not", "a", "mapping"]},
+            db=database,
+            user=admin,
+        )
+
+    assert raised.value.status_code == 400

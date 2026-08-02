@@ -85,3 +85,8 @@ def test_existing_mutations_keep_admin_or_ingestion_auth():
         _route("POST", "/api/films/letterboxd-ratings")
     )
     assert "get_current_user" in _dependency_names(_route("POST", "/profiles/{profile_id}/tracking"))
+    # Writes an export-only surface that only an admin may touch; the handler
+    # also rejects non-admins, but the dependency must be there regardless.
+    assert "get_current_user" in _dependency_names(
+        _route("POST", "/api/profiles/{username}/archive/like-targets")
+    )

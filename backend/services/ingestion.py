@@ -914,6 +914,7 @@ def _upsert_member_content_likes(
     frame_name: str,
     authoritative: bool,
     db: Session,
+    resolutions: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> int:
     """Reconcile the export-only liked-reviews/liked-lists surfaces.
 
@@ -951,6 +952,20 @@ def _upsert_member_content_likes(
         liked_date = parse_date(first_value(row, ("Date",)))
         if liked_date is not None:
             like.liked_date = liked_date
+        # A resolved target may ride along in the bundle. Letterboxd blocks the
+        # datacenter addresses production runs on, so the boxd.it redirect can
+        # only be followed from the same residential machine that scraped the
+        # export -- the resolution travels with the upload rather than being
+        # refetched here.
+        resolved = resolutions.get(target_url) if resolutions else None
+        if resolved:
+            author = clean_text(resolved.get("author"), max_length=255)
+            if author:
+                like.target_username = author
+                like.target_film_slug = clean_text(
+                    resolved.get("film_slug"), max_length=250
+                )
+                like.target_resolved_at = _utcnow()
         like.last_seen_profile_sync_id = sync.id
         like.removed_at = None
 
@@ -1987,6 +2002,7 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             frame_name="liked_reviews",
             authoritative=liked_reviews_authoritative,
             db=db,
+            resolutions=getattr(analyzer_profile, "like_resolutions", None),
         )
         liked_lists_count = _upsert_member_content_likes(
             analyzer_profile=analyzer_profile,
@@ -1996,6 +2012,7 @@ def unified_data_loader(analyzer_profile, profile_id: int, db: Session):
             frame_name="liked_lists",
             authoritative=liked_lists_authoritative,
             db=db,
+            resolutions=getattr(analyzer_profile, "like_resolutions", None),
         )
         comment_count = _upsert_member_comments(
             analyzer_profile=analyzer_profile,

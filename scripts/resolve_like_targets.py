@@ -84,6 +84,15 @@ def main() -> int:
         help="Re-resolve rows that already carry a resolution.",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--write-bundle",
+        help=(
+            "Directory of a scraped bundle; writes likes_resolved.json beside "
+            "the CSVs so the resolution uploads with the export. Production "
+            "cannot follow these redirects itself: Letterboxd blocks the "
+            "datacenter addresses it runs on."
+        ),
+    )
     args = parser.parse_args()
 
     fetch = build_fetch(args.timeout)
@@ -127,6 +136,33 @@ def main() -> int:
             time.sleep(args.pause)
         session.commit()
         print(f"resolved {resolved}, left unresolved {unresolved}")
+
+        if args.write_bundle:
+            import json
+
+            target_dir = Path(args.write_bundle).resolve()
+            target_dir.mkdir(parents=True, exist_ok=True)
+            # Everything resolved for this profile, not just this run's rows,
+            # so a re-upload carries the whole mapping.
+            export_query = session.query(MemberContentLike).filter(
+                MemberContentLike.removed_at.is_(None),
+                MemberContentLike.target_username.isnot(None),
+            )
+            if args.username:
+                export_query = export_query.join(
+                    Profile, Profile.id == MemberContentLike.profile_id
+                ).filter(Profile.username.ilike(args.username))
+            payload = {
+                row.target_url: {
+                    "author": row.target_username,
+                    "film_slug": row.target_film_slug,
+                }
+                for row in export_query.all()
+                if row.target_url
+            }
+            out = target_dir / "likes_resolved.json"
+            out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+            print(f"wrote {len(payload)} resolution(s) to {out}")
     finally:
         session.close()
     return 0

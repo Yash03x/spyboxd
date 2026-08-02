@@ -5,7 +5,7 @@ import io
 import math
 import json
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -67,6 +67,11 @@ class LoadedProfileData:
     source_fingerprint: str
     source_files: Dict[str, Dict[str, Any]]
     manifest: Dict[str, Any]
+    # {boxd.it url: {"author": str, "film_slug": str | None}} produced by the
+    # residential resolver. Letterboxd blocks the datacenter addresses the API
+    # runs on, so the redirect can only be followed where the export was
+    # scraped; the answer travels in the bundle instead of being refetched.
+    like_resolutions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def _safe_read_csv(path: str, label: str, *, strict: bool = False) -> pd.DataFrame:
@@ -186,6 +191,23 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
             source_files["manifest.json"] = _file_info(manifest_path, 0)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError(f"Invalid scrape manifest: {exc}") from exc
+
+    like_resolutions: Dict[str, Dict[str, Any]] = {}
+    resolved_path = resolved_profile_path / "likes_resolved.json"
+    if resolved_path.exists():
+        try:
+            with resolved_path.open("r", encoding="utf-8") as handle:
+                decoded_resolutions = json.load(handle)
+            if isinstance(decoded_resolutions, dict):
+                like_resolutions = {
+                    str(url): value
+                    for url, value in decoded_resolutions.items()
+                    if isinstance(value, dict) and value.get("author")
+                }
+            source_files["likes_resolved.json"] = _file_info(resolved_path, 0)
+        except (OSError, ValueError, json.JSONDecodeError):
+            # A malformed sidecar loses an enrichment, never the import.
+            like_resolutions = {}
 
     profile_csv = resolved_profile_path / "profile.csv"
     if profile_csv.exists():
@@ -423,6 +445,7 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
         source_fingerprint=source_fingerprint,
         source_files=source_files,
         manifest=manifest,
+        like_resolutions=like_resolutions,
     )
 
 
