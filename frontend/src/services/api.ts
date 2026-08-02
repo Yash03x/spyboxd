@@ -1388,6 +1388,15 @@ export interface ProfileStatsReviews {
   longest: ProfileStatsLongestReview | null;
   most_liked: ProfileStatsLikedReview[];
   reviews_by_year: ProfileStatsReviewYear[];
+  /** Share of each year's watching that got written about. `share` is null when
+   *  the counts imply more than 100%: reviews are dated by publication and
+   *  films by viewing, so the two describe overlapping but different sets. */
+  writing_rate_by_year: Array<{
+    year: number;
+    reviews: number;
+    films_watched: number;
+    share: number | null;
+  }>;
   average_rating_reviewed: number | null;
   average_rating_unreviewed: number | null;
 }
@@ -1396,6 +1405,15 @@ export interface ProfileStatsResponse {
   username: string;
   coverage: ProfileStatsCoverage;
   totals: ProfileStatsTotals;
+  /** Days several films were watched in one sitting. Days whose films add up
+   *  to more hours than a day has are import artifacts, not sittings, and are
+   *  excluded — `import_artifact_days` says how many. */
+  marathons: {
+    count: number;
+    biggest: { date: string; films: number; runtime_minutes: number | null; titles: string[] } | null;
+    recent: Array<{ date: string; films: number; runtime_minutes: number | null; titles: string[] }>;
+    import_artifact_days: number;
+  };
   /** Rhythm rather than volume: the same film count reads differently if it
    *  arrived weekly or in two binges either side of a silence. */
   cadence: {
