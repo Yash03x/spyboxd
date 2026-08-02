@@ -121,8 +121,20 @@ export default function RewatchEchoesPanel({
   const followNote = followGraph && followGraph.follow_backed_gap_events > 0
     ? [
         `A follow marker appears on ${followGraph.follow_backed_gap_events} of the ${followGraph.gap_events} echoes with a day between them: the later watcher already followed the earlier one. That is an observed social link, not evidence that one watch caused another.`,
+        // The evidence against, which was computed and left unsaid. Reporting
+        // only the follow-backed and the unknown lets a reader treat the
+        // remainder as undisclosed rather than as checked and ruled out.
+        followGraph.coincidental_gap_events > 0
+          ? `${followGraph.coincidental_gap_events} were checked and carry no follow in either direction.`
+          : null,
         followGraph.undetermined_gap_events > 0
           ? `${followGraph.undetermined_gap_events} stay undetermined because no authoritative following import covers them.`
+          : null,
+        // Why they stay undetermined, which the count alone does not say. The
+        // backend already writes this sentence with the real denominator, so it
+        // is quoted rather than reconstructed from the coverage ratio.
+        followGraph.undetermined_gap_events > 0
+          ? followGraph.warnings?.find((warning) => warning.includes('authoritative')) ?? null
           : null,
       ]
         .filter((part): part is string => part !== null)

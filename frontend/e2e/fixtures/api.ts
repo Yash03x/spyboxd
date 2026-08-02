@@ -554,6 +554,27 @@ export const watchlistInsights = {
       ],
     },
     {
+      // A gamble rather than a safe pick: a real shot at being loved and a real
+      // shot at being hated, which the ceiling alone would hide.
+      title: 'Divisive Queue Entry',
+      year: 2021,
+      poster_url: null,
+      letterboxd_url: 'https://letterboxd.com/film/divisive-queue-entry/',
+      group_average: 3.5,
+      group_raters: 2,
+      liked_by: 1,
+      letterboxd_average: 3.02,
+      crowd_ceiling: 0.31,
+      crowd_floor: 0.22,
+      streaming_on: [],
+      added_date: '2025-01-05',
+      days_waiting: 209,
+      raters: [
+        { username: 'bravo', rating: 5 },
+        { username: 'charlie', rating: 2 },
+      ],
+    },
+    {
       title: 'Undated Queue Entry',
       year: null,
       poster_url: null,
@@ -882,10 +903,10 @@ const watchTogether = {
   region: 'ALL',
   coverage: readyCoverage,
   summary: {
-    candidates: 1,
-    on_every_watchlist: 0,
+    candidates: 6,
+    on_every_watchlist: 2,
     unseen_by_everyone: 1,
-    available_in_region: 1,
+    available_in_region: 3,
   },
   recommendations: [
     {
@@ -913,7 +934,94 @@ const watchTogether = {
       blind_spot_source: null,
       list_context: null,
     },
+    {
+      // Seen and liked by part of the group, so "already watched 1" has a name
+      // behind it and the row can say who it would still be new to.
+      movie: {
+        movie_id: 9_402,
+        title: 'Seen By One Fixture',
+        year: 2019,
+        poster_url: null,
+        runtime_minutes: 118,
+        genres: ['Drama', 'Mystery'],
+        certification: null,
+        providers: [],
+      },
+      on_watchlist_by: ['bravo'],
+      watched_by: ['charlie'],
+      unseen_by: ['alpha', 'bravo'],
+      liked_by: ['charlie'],
+      group_fit_score: 74,
+      reasons: ['Seen by one of the group'],
+      blind_spot_source: null,
+      list_context: null,
+    },
   ],
+};
+
+
+/**
+ * The Taste Through Time panel had no fixture at all, so every run 404'd it and
+ * the panel rendered its error state. `bravo` deliberately rates far fewer
+ * films than they watch: the period average rests on the rated ones, and the
+ * watch count beside it is not its denominator.
+ */
+const tasteTimeline = {
+  selected_profiles: ['alpha', 'bravo'],
+  coverage: readyCoverage,
+  filters: { dimensions: ['genre'], from_year: null, to_year: null, trait_limit: 6, year_limit: 5 },
+  summary: {
+    first_year: 2025,
+    last_year: 2026,
+    years: 2,
+    returned_years: 2,
+    truncated_years: 0,
+    dated_watch_events: 240,
+    total_known_watches: 260,
+    undated_known_watches: 20,
+    date_basis: 'watched',
+    logged_date_events: 0,
+    date_coverage_ratio: 0.92,
+    rated_dated_events: 96,
+    rating_coverage_ratio: 0.8,
+    trait_metadata_coverage_ratio: 0.95,
+  },
+  yearly: [
+    {
+      key: '2026',
+      label: '2026',
+      year: 2026,
+      season: null,
+      watch_events: 120,
+      unique_films: 118,
+      rated_events: 96,
+      average_rating: 3.6,
+      rewatch_count: 2,
+      liked_count: 14,
+      top_traits: [],
+      per_profile: [
+        {
+          username: 'alpha',
+          watch_events: 80,
+          unique_films: 79,
+          rated_events: 80,
+          average_rating: 3.7,
+          rewatch_count: 1,
+          liked_count: 9,
+        },
+        {
+          username: 'bravo',
+          watch_events: 40,
+          unique_films: 39,
+          rated_events: 16,
+          average_rating: 3.4,
+          rewatch_count: 1,
+          liked_count: 5,
+        },
+      ],
+    },
+  ],
+  seasonal: [],
 };
 
 function json(route: Route, body: unknown) {
@@ -1132,15 +1240,16 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         date_coverage_ratio: 1,
       },
       follow_graph: {
-        gap_events: 1,
+        gap_events: 3,
         follow_backed_gap_events: 1,
-        coincidental_gap_events: 0,
-        undetermined_gap_events: 0,
+        coincidental_gap_events: 1,
+        undetermined_gap_events: 1,
         same_day_events: 0,
-        profiles_with_social_sync: ['alpha', 'bravo'],
-        social_sync_coverage_ratio: 1,
+        profiles_with_social_sync: ['alpha'],
+        social_sync_coverage_ratio: 0.5,
         warnings: [
           'A follow edge is an observed social link, not evidence that one member\'s watch caused another\'s.',
+          '1 of 2 selected profiles have an authoritative following/followers import; pairs without one stay undetermined rather than counting as unconnected.',
         ],
       },
       echoes: [
@@ -1243,7 +1352,32 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         metadata_coverage_ratio: 0.92,
         tmdb_status: 'connected',
       },
-      shared_signature: [],
+      shared_signature: [
+        {
+          id: 'genre:music',
+          label: 'Music',
+          dimension: 'genre' as const,
+          group_score: 77,
+          sample_size: 57,
+          average_rating: 3.46,
+          like_rate: 0.333,
+          watch_share: 1,
+          per_profile: [],
+          top_movies: [],
+        },
+        {
+          id: 'genre:animation',
+          label: 'Animation',
+          dimension: 'genre' as const,
+          group_score: 74,
+          sample_size: 312,
+          average_rating: 3.44,
+          like_rate: 0.131,
+          watch_share: 1,
+          per_profile: [],
+          top_movies: [],
+        },
+      ],
       contrasts: [],
       // Carries entries on purpose. The backend returned a hard-coded empty
       // list from the first commit, and because the fixture omitted the field
@@ -1334,6 +1468,10 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         total: 0,
       });
     }
+  }
+
+  if (path === '/api/taste-timeline') {
+    return json(route, tasteTimeline);
   }
 
   return route.fulfill({

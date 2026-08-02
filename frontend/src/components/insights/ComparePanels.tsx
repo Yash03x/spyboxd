@@ -113,6 +113,10 @@ function PairComparisonTable({ title, rows, tone }: {
 
 function PairTimeline({ data }: { data: PairDossierResponse }) {
   const paths = data.influence_paths ?? [];
+  // Co-watches this panel structurally cannot rank: with both viewings on one
+  // day there is no first. Left unsaid, the shorter list reads as missing data
+  // rather than as a question that does not apply.
+  const sameDay = (data.co_watches ?? []).filter((event) => event.day_gap === 0).length;
   return (
     <section className="panel-insight">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
@@ -123,6 +127,12 @@ function PairTimeline({ data }: { data: PairDossierResponse }) {
         </h3>
         <span className="text-xs text-white/35">Sequence is not proof of influence</span>
       </div>
+      {sameDay > 0 ? (
+        <p className="border-b border-white/10 px-4 py-2 text-[11px] text-white/35">
+          {sameDay.toLocaleString()} further {sameDay === 1 ? 'co-watch is' : 'co-watches are'} the same day, where
+          neither of them was first.
+        </p>
+      ) : null}
       {paths.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-white/40">No directional watch pattern is available for this pair.</p>
       ) : (
@@ -432,7 +442,18 @@ export function TasteDnaPanel({ data, coverage, profiles }: {
                 <div className="divide-y divide-white/[0.07]">
                   {(data.shared_signature ?? []).slice(0, 8).map((trait) => (
                     <div key={trait.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-4 py-2.5 text-sm">
-                      <span className="truncate text-white/70">{trait.label}</span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-white/70">{trait.label}</span>
+                        {/* Liking is a separate act from rating, and the average
+                            hides it: two traits can share a rating while one is
+                            liked twice as often. Computed all along, never shown. */}
+                        {trait.like_rate !== null && trait.like_rate !== undefined ? (
+                          <span className="mt-0.5 block text-[11px] text-white/35">
+                            {Math.round(trait.like_rate * 100)}% liked
+                            {trait.sample_size ? ` of ${trait.sample_size.toLocaleString()}` : ''}
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="font-semibold text-cinema-300">{Math.round(trait.group_score)}%</span>
                     </div>
                   ))}

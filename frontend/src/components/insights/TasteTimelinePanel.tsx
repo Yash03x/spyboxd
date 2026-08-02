@@ -182,7 +182,13 @@ export default function TasteTimelinePanel({ data, coverage }: {
                   <span className="text-xs font-semibold text-white/65">{period.label}</span>
                   <span className="flex min-w-0 gap-4">
                     {period.per_profile.slice(0, 2).map((profile, index) => (
-                      <span key={profile.username} className="min-w-0 truncate text-xs text-white/45"><i className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${index === 0 ? 'bg-cinema-500' : 'bg-blue-500'}`} />{rating(profile.average_rating)} avg · {profile.watch_events} watches</span>
+                      <span key={profile.username} className="min-w-0 truncate text-xs text-white/45"><i className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${index === 0 ? 'bg-cinema-500' : 'bg-blue-500'}`} />{rating(profile.average_rating)} avg
+                        {/* The average rests on the rated films, not the watched
+                            ones. Printing the watch count beside it invited the
+                            larger number to be read as its denominator. */}
+                        {profile.rated_events > 0 && profile.rated_events !== profile.watch_events
+                          ? ` of ${profile.rated_events} rated`
+                          : ''} · {profile.watch_events} watches</span>
                     ))}
                   </span>
                   <span className="text-right text-xs font-semibold text-white/60">{period.unique_films}</span>
