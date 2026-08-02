@@ -276,6 +276,8 @@ export const profileAnalysis = {
         year: 1999,
         poster_url: null,
         letterboxd_url: 'https://letterboxd.com/film/favourite-one/',
+        in_library: true,
+        own_rating: 5,
       },
       {
         position: 2,
@@ -283,6 +285,8 @@ export const profileAnalysis = {
         year: 2004,
         poster_url: null,
         letterboxd_url: 'https://letterboxd.com/film/favourite-two/',
+        in_library: false,
+        own_rating: null,
       },
     ],
     synced_films: 1_200,
@@ -375,15 +379,27 @@ export const profileStats = {
     import_artifact_days: 2,
   },
   top_directors: [
-    { name: 'Akira Kurosawa', count: 18, average_rating: 4.3 },
-    { name: 'Agnès Varda', count: 12, average_rating: 4.1 },
-    { name: 'Mani Ratnam', count: 9, average_rating: null },
+    { name: 'Akira Kurosawa', count: 18, rated_count: 16, average_rating: 4.3 },
+    { name: 'Agnès Varda', count: 12, rated_count: 10, average_rating: 4.1 },
+    { name: 'Mani Ratnam', count: 9, rated_count: 7, average_rating: null },
   ],
+  top_composers: [
+    { name: 'Joe Hisaishi', count: 21, rated_count: 19, average_rating: 4.2 },
+  ],
+  top_cinematographers: [
+    { name: 'Roger Deakins', count: 16, rated_count: 14, average_rating: 4.1 },
+  ],
+  top_editors: [
+    { name: 'Thelma Schoonmaker', count: 11, rated_count: 9, average_rating: 4.0 },
+  ],
+  // Films where TMDB records no director gender are excluded from the split,
+  // so measured_films is deliberately lower than the profile's film count.
+  director_gender: { measured_films: 940, women: 96, men: 832, mixed: 12, women_share: 0.115 },
   top_actors: [
-    { name: 'Toshiro Mifune', count: 14, average_rating: 4.2 },
-    { name: 'Tilda Swinton', count: 11, average_rating: 3.9 },
+    { name: 'Toshiro Mifune', count: 14, rated_count: 12, average_rating: 4.2 },
+    { name: 'Tilda Swinton', count: 11, rated_count: 9, average_rating: 3.9 },
   ],
-  top_studios: [{ name: 'Studio Ghibli', count: 16, average_rating: 4.4 }],
+  top_studios: [{ name: 'Studio Ghibli', count: 16, rated_count: 14, average_rating: 4.4 }],
   genres: [
     { label: 'Drama', count: 420, average_rating: 3.9 },
     { label: 'Comedy', count: 210, average_rating: 3.4 },
@@ -413,6 +429,17 @@ export const profileStats = {
   },
   // Folded into the same panel. One rewatched film is unrated and one review
   // has no publication date, so both omission branches render.
+  // Paired: the same person, the same film, two viewings. A much smaller set
+  // than the revisit count, because both viewings have to carry a rating.
+  return_journeys: {
+    revisited_films: 12,
+    median_days_to_return: 674,
+    rated_twice: 12,
+    rating_rose: 5,
+    rating_fell: 1,
+    rating_held: 6,
+    average_change: 0.38,
+  },
   rewatches: {
     total_rewatches: 64,
     films_rewatched: 41,
@@ -488,6 +515,7 @@ export const watchlistInsights = {
       letterboxd_average: 4.11,
       crowd_ceiling: 0.42,
       crowd_floor: 0.03,
+      streaming_on: ['MUBI'],
       added_date: '2024-02-11',
       days_waiting: 871,
       raters: [
@@ -637,6 +665,7 @@ export const ratingComparison = {
       letterboxd_average: 3.21,
       crowd_ceiling: 0.42,
       crowd_floor: 0.03,
+      streaming_on: ['MUBI'],
     },
     {
       title: 'Unenriched Champion',
@@ -663,6 +692,7 @@ export const ratingComparison = {
       letterboxd_average: 3.94,
       crowd_ceiling: 0.42,
       crowd_floor: 0.03,
+      streaming_on: ['MUBI'],
     },
   ],
   most_divisive: [
@@ -674,6 +704,7 @@ export const ratingComparison = {
       rating_spread: 3,
       rater_count: 6,
       group_rater_count: 5,
+      crowd_consensus: 0.41,
       group_average: 3.08,
       profile_rating: 4.5,
     },
@@ -685,6 +716,7 @@ export const ratingComparison = {
       rating_spread: 2.5,
       rater_count: 4,
       group_rater_count: 3,
+      crowd_consensus: 0.41,
       group_average: 2.88,
       profile_rating: null,
     },

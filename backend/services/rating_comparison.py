@@ -74,6 +74,10 @@ class _FilmRow:
     title: str
     profile_rating: Optional[float]
     letterboxd_average: Optional[float]
+    # How settled the wider crowd is about this film, from its ten-bucket
+    # histogram: the share sitting in the single most popular bucket. A high
+    # value means Letterboxd has largely made up its mind.
+    crowd_consensus: Optional[float]
     other_ratings: Tuple[float, ...]
 
     @property
@@ -111,6 +115,30 @@ def _clamp_limit(limit: Optional[int]) -> int:
     except (TypeError, ValueError):
         return DEFAULT_LIMIT
     return max(1, min(value, MAX_LIMIT))
+
+
+def _crowd_consensus(distribution: Any) -> Optional[float]:
+    """Share of the crowd in the film's most popular half-star bucket.
+
+    A film everyone scores 4 sits near 1.0; one the world argues about spreads
+    across the buckets and sits low. Null when no histogram has been imported,
+    which is not the same as no consensus.
+    """
+
+    if not isinstance(distribution, dict) or not distribution:
+        return None
+    counts = []
+    for value in distribution.values():
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count >= 0:
+            counts.append(count)
+    total = sum(counts)
+    if total <= 0:
+        return None
+    return round(max(counts) / total, 4)
 
 
 def _letterboxd_average(value: Any) -> Optional[float]:
@@ -168,6 +196,7 @@ def _library_rows(db: Session, profile_id: int) -> List[_FilmRow]:
             ProfileFilm.rating,
             Movie.title,
             Movie.letterboxd_average_rating,
+            Movie.letterboxd_rating_distribution,
         )
         .join(Movie, Movie.id == ProfileFilm.movie_id)
         .filter(
@@ -183,6 +212,7 @@ def _library_rows(db: Session, profile_id: int) -> List[_FilmRow]:
             title=row.title or "",
             profile_rating=_safe_float(row.rating),
             letterboxd_average=_letterboxd_average(row.letterboxd_average_rating),
+            crowd_consensus=_crowd_consensus(row.letterboxd_rating_distribution),
             other_ratings=tuple(others.get(int(row.movie_id), ())),
         )
         for row in rows
@@ -271,6 +301,10 @@ def _divisive_entry(row: _FilmRow, identity: Dict[str, Any]) -> Dict[str, Any]:
         # so each figure now carries its own denominator.
         "rater_count": len(ratings),
         "group_rater_count": len(row.other_ratings),
+        # The point of the pairing: a film this circle splits over that the
+        # wider crowd has already settled is an argument that belongs to this
+        # group rather than to the film.
+        "crowd_consensus": row.crowd_consensus,
         "group_average": _round(row.group_average, 2),
         "profile_rating": _round(row.profile_rating, 2),
     }
