@@ -1160,6 +1160,13 @@ class MemberContentLike(Base):
     content_type = Column(String(10), nullable=False)  # 'review' | 'list'
     target_url = Column(String(500), nullable=False)
     liked_date = Column(Date, nullable=True)
+
+    # Where the short link actually points. An export gives only the boxd.it
+    # token; resolving it once yields the author and, for a review, the film.
+    # Null means unresolved or unresolvable, never "no author".
+    target_username = Column(String(255), nullable=True, index=True)
+    target_film_slug = Column(String(250), nullable=True)
+    target_resolved_at = Column(DateTime(timezone=True), nullable=True)
     first_seen_profile_sync_id = Column(
         BigInteger, ForeignKey("profile_syncs.id", ondelete="SET NULL"), nullable=True
     )

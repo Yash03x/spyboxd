@@ -1548,3 +1548,46 @@ def test_a_favourite_reports_whether_its_owner_ever_logged_it(database):
     assert favourites["Unrated"]["in_library"] is True
     assert favourites["Unrated"]["own_rating"] is None
     assert favourites["Absent"]["in_library"] is False
+
+
+# A like is a `boxd.it` token until its redirect is resolved. Unresolved, 46 of
+# them render as the number 46; resolved, they say whose writing a member rates.
+
+def test_liked_authors_rank_by_how_often_their_writing_was_liked():
+    from api.routes.member_archive import _liked_authors
+
+    class _Like:
+        def __init__(self, username):
+            self.target_username = username
+
+    likes = [_Like("er3nweeber")] * 3 + [_Like("zoerosebryant")] * 2 + [_Like("peanat")]
+
+    ranked = _liked_authors(likes)
+
+    assert [row["username"] for row in ranked] == ["er3nweeber", "zoerosebryant", "peanat"]
+    assert ranked[0]["likes"] == 3
+
+
+def test_unresolved_likes_are_reported_rather_than_bucketed_as_an_author():
+    """A dead or unresolvable link is not a member called None."""
+    from api.routes.member_archive import _liked_authors
+
+    class _Like:
+        def __init__(self, username):
+            self.target_username = username
+
+    ranked = _liked_authors([_Like("er3nweeber"), _Like(None), _Like(None)])
+
+    assert [row["username"] for row in ranked] == ["er3nweeber"]
+    # Stated, so a short list reads as partial resolution rather than as a
+    # short history.
+    assert ranked[0]["unresolved_likes"] == 2
+
+
+def test_no_resolved_likes_yield_no_authors_rather_than_an_empty_name():
+    from api.routes.member_archive import _liked_authors
+
+    class _Like:
+        target_username = None
+
+    assert _liked_authors([_Like(), _Like()]) == []

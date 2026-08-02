@@ -65,7 +65,30 @@ def comment_plain_text(comment_html: Optional[str]) -> Optional[str]:
     return parser.text or None
 
 
+def _liked_authors(likes) -> list[dict]:
+    """Authors ranked by how often this member liked their writing.
+
+    Unresolved likes are excluded rather than bucketed under an "unknown"
+    author, and the caller is told how many were left out so a short list is
+    read as partial resolution rather than as a short history.
+    """
+
+    counts: dict[str, int] = {}
+    unresolved = 0
+    for like in likes:
+        if like.target_username:
+            counts[like.target_username] = counts.get(like.target_username, 0) + 1
+        else:
+            unresolved += 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [
+        {"username": username, "likes": total, "unresolved_likes": unresolved}
+        for username, total in ranked[:10]
+    ]
+
+
 @router.get("/profiles/{username}/archive")
+
 def get_member_archive(
     username: str,
     limit: int = Query(default=100, ge=1, le=500),
@@ -112,15 +135,29 @@ def get_member_archive(
     return {
         "username": profile.username,
         "liked_reviews": [
-            {"target_url": like.target_url, "liked_date": _iso(like.liked_date)}
+            {
+                "target_url": like.target_url,
+                "liked_date": _iso(like.liked_date),
+                "author": like.target_username,
+                "film_slug": like.target_film_slug,
+            }
             for like in likes
             if like.content_type == "review"
         ],
         "liked_lists": [
-            {"target_url": like.target_url, "liked_date": _iso(like.liked_date)}
+            {
+                "target_url": like.target_url,
+                "liked_date": _iso(like.liked_date),
+                "author": like.target_username,
+            }
             for like in likes
             if like.content_type == "list"
         ],
+        # Whose writing this member actually rates. A like is an opaque
+        # `boxd.it` token until its redirect is resolved, so 46 of them
+        # rendered as the number 46; resolved, one author accounts for 12 of
+        # the 44 that resolve and the next accounts for 2.
+        "liked_authors": _liked_authors(likes),
         "comments": [
             {
                 "target_url": comment.target_url,
