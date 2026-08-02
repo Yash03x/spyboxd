@@ -1376,6 +1376,57 @@ class FollowAwareSignalTests(unittest.TestCase):
         # The pair's own relationship is not tied to any single event.
         self.assertIsNone(payload["follow_graph"]["relationship"]["later_watcher"])
         self.assertEqual(payload["summary"]["directional_leader"], "Leader")
+        # Naming a leader without saying how much each of them watches invites
+        # the reader to mistake volume for being early.
+        lead = payload["summary"]["lead"]
+        self.assertEqual(lead["leader"], "Leader")
+        self.assertEqual(lead["decided_films"], 1)
+        self.assertEqual(lead["lead_share"], 1.0)
+        self.assertIsNotNone(lead["expected_share"])
+        self.assertIsNotNone(lead["beats_volume"])
+
+    def test_a_lead_no_bigger_than_the_watch_gap_does_not_beat_volume(self) -> None:
+        """Somebody who watches far more reaches a shared film first for free.
+
+        Leader wins the one contested film, but also watched three films the
+        other never touched, so leading once is exactly what volume predicts
+        rather than evidence of being early.
+        """
+        extra = [
+            event(
+                event_id=10 + index,
+                profile_id=1,
+                username="Leader",
+                watched_date=date(2026, 6, index + 1),
+                movie=Movie(
+                    id=100 + index,
+                    canonical_key=f"letterboxd:solo-{index}",
+                    title=f"Solo {index}",
+                    normalized_title=f"solo {index}",
+                    release_year=2026,
+                    letterboxd_slug=f"solo-{index}",
+                ),
+            )
+            for index in range(3)
+        ]
+        self.service._resolve_profiles = lambda *_a, **_k: self.profiles
+        self.service._event_rows = lambda *_a, **_k: self.gap_rows + extra
+        self.service._state_rows = lambda *_a, **_k: []
+        self.service._feature_coverage = lambda *_a, **_k: {
+            "status": "ready", "score": 100, "dated_watch_events": 2,
+            "total_watch_events": 2, "blockers": [], "warnings": [], "last_updated": None,
+        }
+        self.service._follow_graph = lambda _p: follow_graph(self.profiles)
+        self.service.db = MagicMock()
+        self.service.db.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
+
+        lead = self.service.pair_dossier(["Leader", "Follower"], gap_days=1)["summary"]["lead"]
+
+        self.assertEqual(lead["leader"], "Leader")
+        self.assertEqual(lead["lead_share"], 1.0)
+        # Four first-watches against one: volume alone predicts leading.
+        self.assertEqual(lead["expected_share"], 0.8)
+        self.assertTrue(lead["beats_volume"])
 
     def test_edges_and_authority_load_in_bounded_queries(self) -> None:
         engine = create_engine("sqlite:///:memory:")
