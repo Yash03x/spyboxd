@@ -130,6 +130,12 @@ export default function RewatchEchoesPanel({
         followGraph.undetermined_gap_events > 0
           ? `${followGraph.undetermined_gap_events} stay undetermined because no authoritative following import covers them.`
           : null,
+        // Why they stay undetermined, which the count alone does not say. The
+        // backend already writes this sentence with the real denominator, so it
+        // is quoted rather than reconstructed from the coverage ratio.
+        followGraph.undetermined_gap_events > 0
+          ? followGraph.warnings?.find((warning) => warning.includes('authoritative')) ?? null
+          : null,
       ]
         .filter((part): part is string => part !== null)
         .join(' ')

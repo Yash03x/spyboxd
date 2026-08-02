@@ -22,4 +22,6 @@ test('the echo note accounts for every gap echo, including the ones ruled out', 
   // The evidence against, stated rather than left to subtraction.
   await expect(note).toContainText('1 were checked and carry no follow in either direction');
   await expect(note).toContainText('1 stay undetermined');
+  // And why they stay that way, which the count alone does not say.
+  await expect(note).toContainText('1 of 2 selected profiles have an authoritative');
 });

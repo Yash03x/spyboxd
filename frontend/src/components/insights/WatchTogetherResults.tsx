@@ -234,7 +234,21 @@ function WhyPanel({ candidate, onClose, availability, selectedList }: {
         <h3 className="font-semibold text-white">Group signals</h3>
         <div className="flex items-center justify-between gap-4 text-white/50"><span>Appears on watchlists</span><strong className="text-white/80">{candidate.on_watchlist_by.length}</strong></div>
         <div className="flex items-center justify-between gap-4 text-white/50"><span>Already watched</span><strong className="text-white/80">{candidate.watched_by.length}</strong></div>
+        {/* Which of them, not just how many. "Already watched 1" cannot say
+            whether the one who has seen it would sit through it again, and the
+            names were in the payload the whole time. */}
+        {candidate.watched_by.length > 0 ? (
+          <p className="-mt-2 text-[11px] text-white/35">{candidate.watched_by.map((name) => `@${name}`).join(', ')}</p>
+        ) : null}
+        {candidate.unseen_by.length > 0 && candidate.watched_by.length > 0 ? (
+          <p className="-mt-2 text-[11px] text-white/30">
+            New to {candidate.unseen_by.map((name) => `@${name}`).join(', ')}
+          </p>
+        ) : null}
         <div className="flex items-center justify-between gap-4 text-white/50"><span>Liked by</span><strong className="text-white/80">{candidate.liked_by.length}</strong></div>
+        {candidate.liked_by.length > 0 ? (
+          <p className="-mt-2 text-[11px] text-white/35">{candidate.liked_by.map((name) => `@${name}`).join(', ')}</p>
+        ) : null}
         <div className="flex items-center justify-between gap-4 text-white/50"><span>Where to watch</span><strong className="max-w-40 truncate text-white/80">{providerSummary(candidate, availability)}</strong></div>
       </div>
 
