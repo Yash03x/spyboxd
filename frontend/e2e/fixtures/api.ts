@@ -635,6 +635,24 @@ export const obscurity = {
   // Where they usually land, plus the opposite tail: somebody can be out on a
   // limb in both directions at once.
   crowd_percentile: { measured_films: 706, typical_share: 0.653, lean: 'generous' },
+  // Leans toward films the site splits over: 86 contested against 47 agreed-on.
+  contested_taste: {
+    measured_films: 706,
+    contested_films: 86,
+    agreed_films: 47,
+    median_spread: 0.863,
+    lean_ratio: 1.83,
+    most_contested: [
+      {
+        title: 'Divisive Fixture Film',
+        year: 2023,
+        poster_url: null,
+        letterboxd_url: 'https://letterboxd.com/film/divisive-fixture-film/',
+        rating_count: 367_241,
+        profile_rating: 3.0,
+      },
+    ],
+  },
   crowd_position_below: [
     {
       title: 'Adored By Everyone Else',
