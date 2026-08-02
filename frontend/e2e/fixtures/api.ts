@@ -490,6 +490,15 @@ export const profileStats = {
       },
       { title: 'Undated Fixture Review', year: null, likes_count: 12, published_date: null },
     ],
+    // A habit that grew, plus a year whose reviews outnumber its watching --
+    // reviews are dated by publication, films by viewing, so that row carries
+    // no share rather than a clamped 100%.
+    writing_rate_by_year: [
+      { year: 2023, reviews: 27, films_watched: 61, share: 0.443 },
+      { year: 2024, reviews: 93, films_watched: 138, share: 0.674 },
+      { year: 2025, reviews: 110, films_watched: 165, share: 0.667 },
+      { year: 2026, reviews: 88, films_watched: 40, share: null },
+    ],
     reviews_by_year: [
       { year: 2024, count: 12 },
       { year: 2025, count: 18 },

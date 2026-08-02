@@ -870,9 +870,50 @@ def median_length_chars(lengths: Sequence[int]) -> Optional[int]:
     return (ordered[middle - 1] + ordered[middle]) // 2
 
 
+def _writing_rate_by_year(
+    reviews_per_year: Mapping[int, int],
+    watch_dates: Sequence[date],
+) -> List[Dict[str, Any]]:
+    """Share of a year's watching that got written about.
+
+    A rising review count can simply mean a busier year, so the count alone
+    cannot say whether somebody is writing more. Only years with watching to
+    measure against appear; a year of reviews whose films carry no date is left
+    out rather than reported as an impossible rate.
+    """
+
+    watched_per_year: Dict[int, int] = defaultdict(int)
+    for watched in watch_dates:
+        if watched is not None:
+            watched_per_year[watched.year] += 1
+
+    rows = []
+    for year in sorted(set(reviews_per_year) | set(watched_per_year)):
+        watched = watched_per_year.get(year, 0)
+        if watched <= 0:
+            continue
+        written = reviews_per_year.get(year, 0)
+        rows.append(
+            {
+                "year": year,
+                "reviews": written,
+                "films_watched": watched,
+                # Reviews are counted by the year they were published, films by
+                # the year they were watched, so the two describe overlapping
+                # but different sets -- somebody can publish in 2022 about films
+                # seen earlier. Where the counts imply a share above 100% they
+                # are not a share of anything, and clamping to 1.0 would have
+                # presented "127 reviews of 35 films" as a tidy 100%.
+                "share": _round(written / watched, 3) if written <= watched else None,
+            }
+        )
+    return rows
+
+
 def _review_block(
     reviews: Sequence[_ReviewRow],
     films: Sequence[_FilmRow],
+    watch_dates: Sequence[date] = (),
 ) -> Dict[str, Any]:
     """Writing habits, and how a profile rates the films it writes about.
 
@@ -950,6 +991,11 @@ def _review_block(
         "reviews_by_year": [
             {"year": year, "count": per_year[year]} for year in sorted(per_year)
         ],
+        # Whether the habit is growing or fading. A raw count per year rises
+        # simply because somebody watched more, so this is reviews against
+        # films watched in the same year -- the share of viewing they chose to
+        # write about.
+        "writing_rate_by_year": _writing_rate_by_year(per_year, watch_dates),
         "average_rating_reviewed": _round(_average(reviewed), 2),
         "average_rating_unreviewed": _round(_average(unreviewed), 2),
     }
@@ -1048,6 +1094,6 @@ def build_profile_stats(db: Session, profile: Profile) -> Dict[str, Any]:
         # A genuine paired measurement, unlike the two averages inside
         # ``rewatches``: the same person, the same film, two viewings.
         "return_journeys": build_return_journeys(_return_events(db, profile.id)),
-        "reviews": _review_block(reviews, films),
+        "reviews": _review_block(reviews, films, watch_dates),
         "letterboxd_reported": profile.stats_snapshot,
     }

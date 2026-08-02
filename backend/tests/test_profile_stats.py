@@ -1009,6 +1009,8 @@ def test_a_profile_with_no_reviews_returns_the_block_with_nulls_not_absence(
         "longest": None,
         "most_liked": [],
         "reviews_by_year": [],
+        # No watching to measure the writing against.
+        "writing_rate_by_year": [],
         "average_rating_reviewed": None,
         "average_rating_unreviewed": None,
     }
@@ -1110,6 +1112,8 @@ def test_route_serves_the_payload_for_a_tracked_profile(database: Session, clien
         "longest",
         "most_liked",
         "reviews_by_year",
+        # Share of each year's watching that got written about.
+        "writing_rate_by_year",
         "average_rating_reviewed",
         "average_rating_unreviewed",
     }
@@ -1171,6 +1175,54 @@ def test_a_bucket_reports_the_denominator_its_average_was_built_from(database):
     assert horror["rated_count"] == 2
     assert horror["average_rating"] == 5.0
 
+
+def test_the_writing_rate_measures_reviews_against_that_year_s_watching(database):
+    """A rising review count can just mean a busier year.
+
+    The share of viewing somebody chose to write about is the question, so the
+    denominator has to be that year's watching rather than the total.
+    """
+    profile = _profile(database, "viewer")
+    for index in range(4):
+        movie = _film(database, profile, title=f"Watched {index}")
+        _watch(database, profile, movie, date(2026, 3, 1))
+    _review(database, profile, title="Watched 0", published=date(2026, 3, 2))
+    _review(database, profile, title="Watched 1", published=date(2026, 3, 3))
+
+    rows = build_profile_stats(database, profile)["reviews"]["writing_rate_by_year"]
+
+    assert rows == [{"year": 2026, "reviews": 2, "films_watched": 4, "share": 0.5}]
+
+
+def test_a_year_with_reviews_but_no_dated_watching_is_left_out(database):
+    """An impossible rate is worse than an absent one."""
+    profile = _profile(database, "viewer")
+    _film(database, profile, title="Undated")
+    _review(database, profile, title="Undated", published=date(2026, 3, 2))
+
+    rows = build_profile_stats(database, profile)["reviews"]["writing_rate_by_year"]
+
+    assert rows == []
+
+
+def test_more_reviews_than_films_watched_reports_no_share(database):
+    """Reviews are dated by publication, films by viewing.
+
+    Somebody can publish this year about films seen years ago, so the counts
+    can imply a share above 100%. That is not a share of anything, and
+    clamping it to 100% would present "127 reviews of 35 films" as tidy.
+    """
+    profile = _profile(database, "viewer")
+    movie = _film(database, profile, title="One Film")
+    _watch(database, profile, movie, date(2026, 3, 1))
+    for index in range(3):
+        _review(database, profile, title=f"Older {index}", published=date(2026, 3, 2))
+
+    row = build_profile_stats(database, profile)["reviews"]["writing_rate_by_year"][0]
+
+    assert row["reviews"] == 3
+    assert row["films_watched"] == 1
+    assert row["share"] is None
 
 # A day whose films add up to more hours than a day has did not happen. A
 # Letterboxd export can date an entire backlog to the day it was imported, and

@@ -1385,6 +1385,15 @@ export interface ProfileStatsReviews {
   longest: ProfileStatsLongestReview | null;
   most_liked: ProfileStatsLikedReview[];
   reviews_by_year: ProfileStatsReviewYear[];
+  /** Share of each year's watching that got written about. `share` is null when
+   *  the counts imply more than 100%: reviews are dated by publication and
+   *  films by viewing, so the two describe overlapping but different sets. */
+  writing_rate_by_year: Array<{
+    year: number;
+    reviews: number;
+    films_watched: number;
+    share: number | null;
+  }>;
   average_rating_reviewed: number | null;
   average_rating_unreviewed: number | null;
 }
