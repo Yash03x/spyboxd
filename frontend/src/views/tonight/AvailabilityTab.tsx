@@ -40,10 +40,19 @@ export default function AvailabilityTab({
           onRetry: () => availabilityQuery.refetch(),
           errorTitle: 'Availability could not be read',
           errorBody: 'Every other panel on this tab is unaffected.',
-          empty: {
-            title: `Nothing queued is carried in ${region}`,
-            body: 'That is a fact about this region at the last reading, not about the films. Another region may carry them.',
-          },
+          // "Nothing is carried here" and "we have never looked here" are
+          // opposite facts, and the panel below already refuses to conflate
+          // them. Availability said the first while meaning the second.
+          empty:
+            availabilityQuery.data && !availabilityQuery.data.region_read
+              ? {
+                  title: `${region} has never been read`,
+                  body: 'No provider reading exists for this region, so this is empty for want of a fetch rather than for want of availability. The panel below names the regions we do hold.',
+                }
+              : {
+                  title: `Nothing queued is carried in ${region}`,
+                  body: 'That is a fact about this region at the last reading, not about the films. Another region may carry them.',
+                },
         }) ?? (
           <Posters
             items={(availabilityQuery.data?.films ?? []).slice(0, 10).map((film) => ({

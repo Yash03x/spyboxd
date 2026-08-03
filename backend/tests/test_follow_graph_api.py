@@ -511,4 +511,6 @@ def test_suggestions_empty_for_user_with_no_tracked_profiles(database, client_fo
 
     payload = client_for(outsider).get("/api/follow-graph/suggestions").json()
 
-    assert payload == {"suggestions": []}
+    # The denominator travels with the counts: they are taken across every
+    # monitored profile, and a caller that supplied its own rendered "10 of 6".
+    assert payload == {"suggestions": [], "monitored_profiles": 0}

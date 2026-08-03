@@ -9,6 +9,7 @@ different claim from a country breakdown.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import func
@@ -24,13 +25,33 @@ from database.models import (
 )
 
 
-def _library(db: Session, profile_ids: Sequence[int]):
-    """Active film rows for the selection, joined to whatever enrichment exists."""
+def _library(db: Session, profile_ids: Sequence[int], *enrichment_columns):
+    """Active film rows for the selection, joined to whatever enrichment exists.
+
+    Only the columns a panel actually reads are selected. Loading whole
+    ``MovieEnrichment`` entities pulled ``raw_payload`` — the entire TMDB
+    response, watch providers included — for every film in the selection, and
+    five Films panels ask at once on first paint. On a library this size that
+    was enough to stop the API answering anything at all, so the fragments
+    anybody needs out of a large JSON column are extracted by path in the
+    database rather than shipped whole. ``profile_stats`` already did this; this
+    module was written without it.
+    """
 
     if not profile_ids:
         return []
     return (
-        db.query(ProfileFilm, Movie, MovieEnrichment)
+        db.query(
+            ProfileFilm.rating,
+            ProfileFilm.is_liked,
+            Movie.id.label("movie_id"),
+            Movie.title,
+            Movie.release_year,
+            Movie.poster_url,
+            Movie.tmdb_id,
+            MovieEnrichment.movie_id.label("enrichment_movie_id"),
+            *enrichment_columns,
+        )
         .join(Movie, Movie.id == ProfileFilm.movie_id)
         .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
         .filter(ProfileFilm.profile_id.in_(profile_ids), ProfileFilm.removed_at.is_(None))
@@ -40,8 +61,9 @@ def _library(db: Session, profile_ids: Sequence[int]):
 
 def _coverage(rows) -> Dict[str, Any]:
     distinct: Dict[int, bool] = {}
-    for _film, movie, enrichment in rows:
-        distinct[movie.id] = distinct.get(movie.id, False) or enrichment is not None
+    for row in rows:
+        enriched = row.enrichment_movie_id is not None
+        distinct[row.movie_id] = distinct.get(row.movie_id, False) or enriched
     total = len(distinct)
     enriched = sum(1 for value in distinct.values() if value)
     return {
@@ -67,16 +89,16 @@ def build_keywords(db: Session, profiles: Sequence[Profile], *, limit: int = 12)
     Genre says drama. Keywords say grief, one location, unreliable narrator.
     """
 
-    rows = _library(db, [profile.id for profile in profiles])
+    rows = _library(db, [profile.id for profile in profiles], MovieEnrichment.keywords)
     coverage = _coverage(rows)
 
     counts: Counter[str] = Counter()
     seen: set[int] = set()
-    for _film, movie, enrichment in rows:
-        if enrichment is None or movie.id in seen:
+    for row in rows:
+        if row.enrichment_movie_id is None or row.movie_id in seen:
             continue
-        seen.add(movie.id)
-        for keyword in enrichment.keywords or []:
+        seen.add(row.movie_id)
+        for keyword in row.keywords or []:
             label = (keyword.get("name") if isinstance(keyword, dict) else str(keyword)) or ""
             label = label.strip().lower()
             if label:
@@ -113,17 +135,17 @@ def build_runtime(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     """
 
     profile_ids = [profile.id for profile in profiles]
-    rows = _library(db, profile_ids)
+    rows = _library(db, profile_ids, MovieEnrichment.runtime_minutes)
     coverage = _coverage(rows)
 
     watched: Counter[str] = Counter()
     seen: set[int] = set()
-    for _film, movie, enrichment in rows:
-        if enrichment is None or enrichment.runtime_minutes is None or movie.id in seen:
+    for row in rows:
+        if row.enrichment_movie_id is None or row.runtime_minutes is None or row.movie_id in seen:
             continue
-        seen.add(movie.id)
+        seen.add(row.movie_id)
         for label, low, high in RUNTIME_BANDS:
-            if enrichment.runtime_minutes >= low and (high is None or enrichment.runtime_minutes <= high):
+            if row.runtime_minutes >= low and (high is None or row.runtime_minutes <= high):
                 watched[label] += 1
                 break
 
@@ -173,22 +195,27 @@ def build_runtime(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
 def build_atlas(db: Session, profiles: Sequence[Profile], *, limit: int = 12) -> Dict[str, Any]:
     """Countries, and how much of the library needs reading."""
 
-    rows = _library(db, [profile.id for profile in profiles])
+    rows = _library(
+        db,
+        [profile.id for profile in profiles],
+        MovieEnrichment.production_countries,
+        MovieEnrichment.original_language,
+    )
     coverage = _coverage(rows)
 
     countries: Counter[str] = Counter()
     languages: Counter[str] = Counter()
     seen: set[int] = set()
-    for _film, movie, enrichment in rows:
-        if enrichment is None or movie.id in seen:
+    for row in rows:
+        if row.enrichment_movie_id is None or row.movie_id in seen:
             continue
-        seen.add(movie.id)
-        for country in enrichment.production_countries or []:
+        seen.add(row.movie_id)
+        for country in row.production_countries or []:
             name = (country.get("name") if isinstance(country, dict) else str(country)) or ""
             if name.strip():
                 countries[name.strip()] += 1
-        if enrichment.original_language:
-            languages[enrichment.original_language] += 1
+        if row.original_language:
+            languages[row.original_language] += 1
 
     measured = sum(languages.values())
     non_english = measured - languages.get("en", 0)
@@ -214,25 +241,34 @@ def build_collections(db: Session, profiles: Sequence[Profile], *, limit: int = 
     denominator would be invented.
     """
 
-    rows = _library(db, [profile.id for profile in profiles])
+    # TMDB nests this under `details`, which is where profile_stats has always
+    # read it. Reading the top level found nothing, so the panel was empty for
+    # every selection rather than wrong in a visible way.
+    rows = _library(
+        db,
+        [profile.id for profile in profiles],
+        MovieEnrichment.raw_payload["details"]["belongs_to_collection"].label(
+            "belongs_to_collection"
+        ),
+    )
     coverage = _coverage(rows)
 
     grouped: Dict[str, Dict[str, Any]] = {}
     seen: set[int] = set()
-    for film, movie, enrichment in rows:
-        if enrichment is None or movie.id in seen:
+    for row in rows:
+        if row.enrichment_movie_id is None or row.movie_id in seen:
             continue
-        seen.add(movie.id)
-        collection = (enrichment.raw_payload or {}).get("belongs_to_collection")
-        if not isinstance(collection, dict):
+        seen.add(row.movie_id)
+        collection = row.belongs_to_collection
+        if not isinstance(collection, Mapping):
             continue
-        name = (collection.get("name") or "").strip()
+        name = str(collection.get("name") or "").strip()
         if not name:
             continue
         entry = grouped.setdefault(name, {"name": name, "films": 0, "ratings": []})
         entry["films"] += 1
-        if film.rating is not None:
-            entry["ratings"].append(film.rating)
+        if row.rating is not None:
+            entry["ratings"].append(row.rating)
 
     series = [
         {
@@ -263,27 +299,33 @@ def build_collections(db: Session, profiles: Sequence[Profile], *, limit: int = 
 def build_filmographies(db: Session, profiles: Sequence[Profile], *, limit: int = 12) -> Dict[str, Any]:
     """How much of one director's work the group holds."""
 
-    rows = _library(db, [profile.id for profile in profiles])
+    # Only the crew list, not the full credits document: the cast is by far the
+    # larger half and no panel here reads it.
+    rows = _library(
+        db,
+        [profile.id for profile in profiles],
+        MovieEnrichment.credits["crew"].label("crew"),
+    )
     coverage = _coverage(rows)
 
     grouped: Dict[str, Dict[str, Any]] = {}
     seen: set[int] = set()
-    for film, movie, enrichment in rows:
-        if enrichment is None or movie.id in seen:
+    for row in rows:
+        if row.enrichment_movie_id is None or row.movie_id in seen:
             continue
-        seen.add(movie.id)
-        crew = (enrichment.credits or {}).get("crew") or []
+        seen.add(row.movie_id)
+        crew = row.crew if isinstance(row.crew, list) else []
         for member in crew:
-            if not isinstance(member, dict) or member.get("job") != "Director":
+            if not isinstance(member, Mapping) or member.get("job") != "Director":
                 continue
-            name = (member.get("name") or "").strip()
+            name = str(member.get("name") or "").strip()
             if not name:
                 continue
             entry = grouped.setdefault(name, {"director": name, "films": 0, "ratings": [], "titles": []})
             entry["films"] += 1
-            entry["titles"].append(movie.title)
-            if film.rating is not None:
-                entry["ratings"].append(film.rating)
+            entry["titles"].append(row.title)
+            if row.rating is not None:
+                entry["ratings"].append(row.rating)
 
     directors = [
         {
@@ -323,9 +365,9 @@ def build_liked_vs_rated(db: Session, profiles: Sequence[Profile]) -> Dict[str, 
     liked_only = 0
     high_only = 0
     neither = 0
-    for film, _movie, _enrichment in rows:
-        liked = bool(film.is_liked)
-        high = film.rating is not None and film.rating >= 4.0
+    for row in rows:
+        liked = bool(row.is_liked)
+        high = row.rating is not None and row.rating >= 4.0
         if liked and high:
             high_and_liked += 1
         elif liked:
@@ -512,21 +554,21 @@ def build_metadata_gaps(db: Session, profiles: Sequence[Profile], *, limit: int 
     rows = _library(db, profile_ids)
 
     exposure: Dict[int, Dict[str, Any]] = {}
-    for _film, movie, enrichment in rows:
-        if enrichment is not None:
+    for row in rows:
+        if row.enrichment_movie_id is not None:
             continue
         entry = exposure.setdefault(
-            movie.id,
+            row.movie_id,
             {
-                "title": movie.title,
-                "year": movie.release_year,
-                "poster_url": movie.poster_url,
+                "title": row.title,
+                "year": row.release_year,
+                "poster_url": row.poster_url,
                 "profiles": 0,
                 "missing": [],
             },
         )
         entry["profiles"] += 1
-        if not movie.poster_url and "poster" not in entry["missing"]:
+        if not row.poster_url and "poster" not in entry["missing"]:
             entry["missing"].append("poster")
 
     films = sorted(exposure.values(), key=lambda item: -item["profiles"])
@@ -554,8 +596,8 @@ def build_match_rate(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]
     coverage = _coverage(rows)
 
     distinct: Dict[int, Optional[int]] = {}
-    for _film, movie, _enrichment in rows:
-        distinct[movie.id] = movie.tmdb_id
+    for row in rows:
+        distinct[row.movie_id] = row.tmdb_id
 
     with_id = sum(1 for value in distinct.values() if value)
 

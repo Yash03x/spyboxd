@@ -95,6 +95,19 @@ test('Tonight refuses to invent a leaving countdown', async ({ page }) => {
   await expect(freshness).toContainText('Stale — shown greyed, not hidden');
 });
 
+test('Tonight reconciles the list counts its own panels disagreed about', async ({ page }) => {
+  await page.goto('/tonight?tab=lists');
+
+  // On production this tab reported 1, 49 and 17 for the same word: one panel
+  // read only public lists, one read every list in the store including other
+  // people's, and one counted the owner's private export lists flat. The
+  // cadence table now shows both numbers so the smaller ones read as a scope
+  // rather than a fault.
+  const cadence = page.locator('.terminal-root section', { hasText: 'WHO KEEPS THEIR LISTS ALIVE' }).first();
+  await expect(cadence).toContainText('SHOWN');
+  await expect(cadence).toContainText('appear in no other panel on this tab');
+});
+
 test('Data separates a surface never read from one that came back empty', async ({ page }) => {
   await page.goto('/data?tab=refreshes');
 

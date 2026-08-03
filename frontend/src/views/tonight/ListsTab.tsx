@@ -43,7 +43,7 @@ export default function ListsTab({ profiles }: { profiles: string[] }) {
         blurb="Was “list mission”. Every public list the group can see, with how much of it is imported."
         caveat={
           listsQuery.data
-            ? `${listsQuery.data.summary.available_lists.toLocaleString()} readable lists holding ${listsQuery.data.summary.total_movie_items.toLocaleString()} entries. A private list cannot be counted at all, so an absence here is not a list nobody started.`
+            ? `${listsQuery.data.summary.available_lists.toLocaleString()} public ${listsQuery.data.summary.available_lists === 1 ? 'list holds' : 'lists hold'} ${listsQuery.data.summary.total_movie_items.toLocaleString()} entries. A private list cannot be counted at all, so an absence here is not a list nobody started.`
             : undefined
         }
       >
@@ -120,7 +120,12 @@ export default function ListsTab({ profiles }: { profiles: string[] }) {
           errorBody: 'Every other panel on this tab is unaffected.',
           empty: {
             title: 'No canonical blind spot',
-            body: 'Everything on two or more readable lists has been watched by somebody in the selection.',
+            // Two different absences, and the old copy asserted the second
+            // whichever one was true.
+            body:
+              (listsQuery.data?.summary.available_lists ?? 0) < 2
+                ? 'A canonical blind spot needs a film on two of the selection’s own public lists, and there are fewer than two to cross. Nothing has been watched or missed here yet.'
+                : 'Everything on two or more of those lists has been watched by somebody in the selection.',
           },
         }) ?? (
           <Posters
@@ -153,8 +158,11 @@ export default function ListsTab({ profiles }: { profiles: string[] }) {
           empty: { title: 'No profiles selected', body: 'Choose at least one profile above.' },
         }) ?? (
           <Rows
-            columns="minmax(0,1fr) 52px 80px minmax(0,1fr)"
-            head={['PROFILE', ['LISTS', 'right'], ['LAST EDIT', 'right'], 'READ']}
+            columns="minmax(0,1fr) 52px 62px 80px minmax(0,1fr)"
+            // SHOWN is the count the other three panels on this tab work from.
+            // Without it a profile reading "16 lists" here beside "1 readable
+            // list" above looks like one of the two is broken.
+            head={['PROFILE', ['LISTS', 'right'], ['SHOWN', 'right'], ['LAST EDIT', 'right'], 'READ']}
             rows={(cadenceQuery.data?.profiles ?? []).map((entry) => {
               const tone =
                 entry.lists === 0
@@ -170,6 +178,11 @@ export default function ListsTab({ profiles }: { profiles: string[] }) {
                 cells: [
                   cell(`@${entry.username}`),
                   cell(String(entry.lists), { align: 'right', tone: 'var(--ink)' }),
+                  cell(String(entry.public_lists), {
+                    align: 'right',
+                    size: '10px',
+                    tone: entry.public_lists < entry.lists ? 'var(--accent)' : 'var(--muted)',
+                  }),
                   cell(
                     entry.last_edit_days === null ? '—' : `${entry.last_edit_days}d ago`,
                     { align: 'right', size: '10px', tone: 'var(--muted)' },
