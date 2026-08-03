@@ -842,7 +842,30 @@ const dataCoverage = {
       total_films: profile.total_films,
     },
     overall_score: 100,
-    surfaces: [],
+    // Real surfaces, so the three honesty tiers on Overlaps › How sure have
+    // something to classify. `status` is deliberately never "complete" here:
+    // it cannot be while any watch is undated, which is exactly why the tier
+    // must be read from the profile's own coverage rather than from this field.
+    surfaces: [
+      {
+        surface: 'watch_events',
+        status: 'partial',
+        captured: Math.round(profile.total_films * 0.8),
+        expected: profile.total_films,
+        ratio: 0.8,
+        last_updated: '2026-07-29T12:00:00Z',
+        warnings: [],
+      },
+      {
+        surface: 'ratings',
+        status: 'complete',
+        captured: profile.rated_films,
+        expected: profile.rated_films,
+        ratio: 1,
+        last_updated: '2026-07-29T12:00:00Z',
+        warnings: [],
+      },
+    ],
   })),
   feature_readiness: [
     'spy_signals',

@@ -7,6 +7,8 @@ import Panel from '../../components/terminal/Panel';
 import Bars from '../../components/terminal/bodies/Bars';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
+import { useScopedProfiles } from '../../hooks/useScopedProfiles';
+import { importTier } from '../../components/terminal/profileState';
 import { activityApi, insightsApi, type SurfaceCoverage } from '../../services/api';
 
 function surface(surfaces: SurfaceCoverage[], name: SurfaceCoverage['surface']) {
@@ -14,6 +16,13 @@ function surface(surfaces: SurfaceCoverage[], name: SurfaceCoverage['surface']) 
 }
 
 export default function HowSureTab({ profiles }: { profiles: string[] }) {
+  // The same source Overview's roster reads. Deriving the tier from the
+  // coverage endpoint's `status` instead put every profile in the middle tier,
+  // so this panel reported nobody with a full diary while the roster reported
+  // almost everybody -- two panels contradicting each other about the same
+  // profiles is worse than either being wrong alone.
+  const scopedQuery = useScopedProfiles();
+
   const coverageQuery = useQuery({
     queryKey: ['data-coverage', profiles],
     queryFn: () => insightsApi.getDataCoverage(profiles),
@@ -40,24 +49,28 @@ export default function HowSureTab({ profiles }: { profiles: string[] }) {
   // and the tier a reader cares about is the one behind the row they are
   // looking at.
   const tiers = React.useMemo(() => {
+    const byUsername = new Map(
+      (scopedQuery.data ?? []).map((profile) => [profile.username.toLowerCase(), profile]),
+    );
     let full = 0;
     let onePerFilm = 0;
-    let undated = 0;
+    let unaccounted = 0;
     perProfile.forEach((entry) => {
       const events = surface(entry.surfaces, 'watch_events');
       const captured = events?.captured ?? 0;
       const expected = events?.expected ?? null;
-      if (events?.status === 'complete') {
+      const profile = byUsername.get(entry.profile.username.toLowerCase());
+      if (profile && importTier(profile) === 'full') {
         full += captured;
       } else {
         onePerFilm += captured;
       }
-      if (expected !== null && expected > captured) undated += expected - captured;
+      if (expected !== null && expected > captured) unaccounted += expected - captured;
     });
-    return { full, onePerFilm, undated };
-  }, [perProfile]);
+    return { full, onePerFilm, unaccounted };
+  }, [perProfile, scopedQuery.data]);
 
-  const tierTotal = tiers.full + tiers.onePerFilm + tiers.undated;
+  const tierTotal = tiers.full + tiers.onePerFilm + tiers.unaccounted;
 
   const datedTotal = perProfile.reduce(
     (sum, entry) => sum + (surface(entry.surfaces, 'watch_events')?.captured ?? 0),
@@ -78,11 +91,11 @@ export default function HowSureTab({ profiles }: { profiles: string[] }) {
         title="HOW SURE WE ARE"
         src="profile_films.source · watch_events"
         blurb="Not every overlap is equally real. A diary row with a date is evidence; a rating snapshot with one inferred date is a guess, and it is labelled as one."
-        caveat="Overlaps built on the lower two tiers are shown with the tier named on the row. Nothing is hidden, and nothing is presented as firmer than it is."
+        caveat="Overlaps built on the lower two tiers are shown with the tier named on the row. The bottom tier is the difference between Letterboxd's own stated total and the dated events we hold, so it mixes rows that carry no date with rows we never imported at all — Data › What's missing separates those two."
       >
         {panelState({
-          isLoading: coverageQuery.isLoading,
-          error: coverageQuery.error,
+          isLoading: coverageQuery.isLoading || scopedQuery.isLoading,
+          error: coverageQuery.error ?? scopedQuery.error,
           isEmpty: tierTotal === 0,
           onRetry: () => coverageQuery.refetch(),
           errorTitle: 'Coverage could not be read',
@@ -110,10 +123,13 @@ export default function HowSureTab({ profiles }: { profiles: string[] }) {
                 tone: 'var(--accent)',
               },
               {
-                name: 'No date at all',
-                weight: tiers.undated,
-                value: tiers.undated.toLocaleString(),
-                sub: `${Math.round((tiers.undated / tierTotal) * 100)}%`,
+                // Not "no date at all": this is everything Letterboxd counts
+                // that we hold no dated event for, which is undated rows and
+                // unimported rows together.
+                name: 'No dated event',
+                weight: tiers.unaccounted,
+                value: tiers.unaccounted.toLocaleString(),
+                sub: `${Math.round((tiers.unaccounted / tierTotal) * 100)}%`,
                 tone: 'var(--barmuted)',
               },
             ]}

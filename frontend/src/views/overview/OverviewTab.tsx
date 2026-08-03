@@ -10,6 +10,7 @@ import Spark from '../../components/terminal/bodies/Spark';
 import { CoWatchMatrix } from '../../components/terminal/bodies/Matrix';
 import { BarsSkeleton, PanelSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
+import { importState, sinceLabel } from '../../components/terminal/profileState';
 import { useAdminScope } from '../../hooks/useAdminScope';
 import { useScopedProfiles } from '../../hooks/useScopedProfiles';
 import {
@@ -46,48 +47,6 @@ function relativeDays(iso: string | null | undefined): string {
   if (hours < 1) return 'just now';
   if (hours < 48) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
-}
-
-/**
- * The three-tier honesty label used everywhere a profile's provenance matters.
- * Was "authoritative diary" / "legacy rating snapshot", which described our
- * plumbing rather than what the reader gets.
- */
-export function importState(profile: ProfileInfo): { label: string; tone: string } {
-  const status = profile.scraping_status;
-  if (status === 'failed' || status === 'error') {
-    return { label: 'Nothing since — feed backing off', tone: 'var(--bad)' };
-  }
-  const coverage = profile.data_coverage;
-  if (coverage?.is_partial === false) {
-    return { label: 'Full diary imported', tone: 'var(--ok)' };
-  }
-  if (coverage?.is_partial === true) {
-    return { label: 'Recent window only', tone: 'var(--accent)' };
-  }
-  if (profile.total_films) {
-    return { label: 'One date per film only', tone: 'var(--accent)' };
-  }
-  return { label: 'Nothing imported yet', tone: 'var(--muted)' };
-}
-
-/**
- * How far back we can see this profile.
- *
- * Letterboxd publishes no join date on a public profile page — it exists only
- * in an account's own export — so a scraped profile used to read "Member since:
- * unknown". The first diary entry answers the same question honestly and we
- * hold it for everyone, so it is preferred and labelled for what it is.
- */
-export function sinceLabel(profile: ProfileInfo): { label: string; tone: string } {
-  const logged = profile.first_logged_date;
-  if (logged) {
-    return { label: new Date(logged).getFullYear().toString(), tone: 'var(--muted)' };
-  }
-  if (profile.join_date) {
-    return { label: new Date(profile.join_date).getFullYear().toString(), tone: 'var(--muted)' };
-  }
-  return { label: 'no dates', tone: 'var(--dim)' };
 }
 
 /** Plain-English summary of one detected change, plus where it is explained. */
