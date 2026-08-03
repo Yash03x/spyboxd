@@ -160,10 +160,7 @@ export default function PicksTab({
                     size: '10px',
                     tone: 'var(--muted)',
                   }),
-                  cell(
-                    seen ? `${seen} · ${candidate.watched_by.map((name) => `@${name}`).join(', ')}` : '0',
-                    { align: 'right', size: '10px', tone: 'var(--muted)' },
-                  ),
+                  cell(String(seen), { align: 'right', size: '10px', tone: 'var(--muted)' }),
                   cell(
                     candidate.movie.runtime_minutes === null
                       ? '—'
@@ -260,7 +257,9 @@ export default function PicksTab({
               {
                 label: 'How sure the fit is',
                 text: top!.reasons.length
-                  ? `Fit is a rank across the selected room, not a rating. ${top!.reasons.join(' ')}`
+                  ? `Fit is a rank across the selected room, not a rating. ${top!.reasons
+                      .map((reason) => (reason.endsWith('.') ? reason : `${reason}.`))
+                      .join(' ')}`
                   : 'Fit is a rank across the selected room, not a rating: it only means something against the other rows in the table above.',
               },
             ]}
