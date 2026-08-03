@@ -1244,6 +1244,172 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
       ],
     });
   }
+  {
+    const peopleMatch = path.match(/^\/api\/people\/([^/]+)\/(unrated|silent-fives|rewatch-shifts|favourites|member-card)$/);
+    if (peopleMatch) {
+      const username = decodeURIComponent(peopleMatch[1]);
+      const kind = peopleMatch[2];
+      if (kind === 'unrated') {
+        return json(route, {
+          username,
+          unrated: 318,
+          library: 2_184,
+          share: 0.1456,
+          films: [
+            {
+              title: 'Unrated Fixture', year: 2024, poster_url: null, letterboxd_url: null,
+              watch_count: 1, first_watched_date: '2026-01-04', latest_watched_date: '2026-01-04',
+              has_review: false,
+            },
+            {
+              title: 'Second Unrated', year: 2023, poster_url: null, letterboxd_url: null,
+              watch_count: 2, first_watched_date: '2025-08-02', latest_watched_date: '2026-02-02',
+              has_review: true,
+            },
+          ],
+          caveat: '318 of 2,184 films in their library carry no rating. Every star comparison in the product skips these rather than treating an absent rating as a low one.',
+        });
+      }
+      if (kind === 'silent-fives') {
+        return json(route, {
+          username,
+          silent: 61,
+          top_rated: 1_104,
+          films: [
+            { title: 'Silent Fixture', year: 2000, poster_url: null, letterboxd_url: null, rating: 5, watch_count: 3 },
+          ],
+          caveat: '61 of their 1,104 five-star ratings carry no review. Against a 19% review rate overall, silence at the top of the scale is the pattern rather than the exception.',
+        });
+      }
+      if (kind === 'rewatch-shifts') {
+        return json(route, {
+          username,
+          shifts: [
+            { title: 'Changed Fixture', year: 2017, poster_url: null, before: 3.5, after: 4.5, shift: 1, detected_at: '2026-07-29T11:00:00Z' },
+            { title: 'Cooled Fixture', year: 2014, poster_url: null, before: 5, after: 4, shift: -1, detected_at: '2026-07-20T11:00:00Z' },
+          ],
+          count: 2, rose: 1, fell: 1,
+          caveat: '2 ratings changed between reads — 1 up, 1 down.',
+        });
+      }
+      if (kind === 'favourites') {
+        return json(route, {
+          username,
+          favourites: [
+            { title: 'Favourite One', year: 2000, poster_url: null, letterboxd_url: null, position: 1, rating: 5, first_seen: '2019-03-01T00:00:00Z' },
+            { title: 'Favourite Two', year: 1979, poster_url: null, letterboxd_url: null, position: 2, rating: 5, first_seen: '2019-03-01T00:00:00Z' },
+          ],
+          changes: [
+            { change_type: 'favorite_removed', title: 'Whiplash', year: 2014, detected_at: '2026-01-14T00:00:00Z', before: {}, after: {} },
+          ],
+          caveat: 'Four slots, chosen deliberately and changed rarely. A swap is only visible as the difference between two authoritative reads — Letterboxd publishes no history for it — so the list of changes starts empty and fills from the second refresh onward.',
+        });
+      }
+      return json(route, {
+        username,
+        display_name: 'Fixture Member',
+        badge: 'Patron',
+        pronoun: null,
+        location: 'Mumbai, India',
+        bio: 'Watching everything, ranking nothing.',
+        join_date: null,
+        first_logged_date: '2019-03-04',
+        external_links: [],
+        followers_count: 741,
+        following_count: 268,
+        caveat: 'Pronouns and location come from an official export only. Where a profile has not supplied one, the row is absent rather than filled with a guess — and Letterboxd publishes no join date on a public page at all.',
+      });
+    }
+  }
+  if (path === '/api/people/quiet') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : [profiles[0].username];
+    return json(route, {
+      profiles: chosen.map((username, index) => ({
+        username,
+        silent_days: 2 + index * 12,
+        usual_gap_days: 2,
+        multiple: Number((((2 + index * 12) / 2)).toFixed(2)),
+        read: index === 0 ? 'Normal' : 'Nearly seven times their normal gap — watch this one',
+      })),
+      caveat: "Silence is measured against each profile's own median gap, not a global threshold, and only once at least 5 gaps exist. A profile whose feed is failing looks identical here to one that stopped watching — the refresh ledger in Data tells those two apart.",
+    });
+  }
+  if (path === '/api/people/reviews-per-watch') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 2).map((p) => p.username);
+    return json(route, {
+      profiles: chosen.map((username, index) => ({
+        username, reviews: 412 - index * 170, films: 2_184 - index * 280,
+        ratio: Number(((412 - index * 170) / (2_184 - index * 280)).toFixed(4)),
+      })),
+      caveat: 'Reviews divided by films held. A review that never resolved to a film in the library still counts in the numerator, so a profile whose reviews outrun its diary can exceed one — that is a coverage gap, not a reading habit.',
+    });
+  }
+  if (path === '/api/people/tag-overlap') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 2).map((p) => p.username);
+    return json(route, {
+      tags: [
+        { tag: 'rewatch', profiles: chosen.slice(0, 2), counts: { [chosen[0]]: 84, [chosen[1] ?? chosen[0]]: 72 }, total: 156 },
+        { tag: 'theatre', profiles: chosen.slice(0, 2), counts: { [chosen[0]]: 61, [chosen[1] ?? chosen[0]]: 48 }, total: 109 },
+      ],
+      count: 2,
+      profiles_with_tags: chosen.slice(0, 2),
+      profiles_selected: chosen.length,
+      caveat: `${Math.min(2, chosen.length)} of ${chosen.length} selected profiles carry any tags at all. Tags are read from the diary surface, so a profile last read by an older importer shows none — which is not the same as using none.`,
+    });
+  }
+  if (path === '/api/people/decade-drift') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 2).map((p) => p.username);
+    const series: Record<string, Array<{ year: number; average_release_year: number; films: number }>> = {};
+    chosen.forEach((username, index) => {
+      series[username] = [2024, 2025, 2026].map((year, offset) => ({
+        year,
+        average_release_year: 2005 - index * offset * 3,
+        films: 300 - offset * 40,
+      }));
+    });
+    return json(route, {
+      profiles: series,
+      caveat: 'Average release year of what was watched, by year of watching. Films with no release year are excluded rather than dated to the present, so a year with few enriched films carries a thin average.',
+    });
+  }
+  if (path === '/api/people/pair-blind-spots') {
+    return json(route, {
+      films: [
+        { title: 'Blind Spot Fixture', year: 1997, poster_url: null, letterboxd_url: null, raters: ['charlie', 'delta'], rater_count: 2, average_rating: 4.4 },
+      ],
+      count: 1,
+      caveat: 'Rated at least 4.0 by 2 or more of the other tracked profiles, and logged by neither of the pair. 1 qualify.',
+    });
+  }
+  if (path === '/api/people/reach') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 3).map((p) => p.username);
+    return json(route, {
+      profiles: chosen.map((username, index) => ({
+        username, followers: 1_284 - index * 400, following: 312 - index * 40,
+        ratio: Number(((1_284 - index * 400) / (312 - index * 40)).toFixed(3)),
+      })),
+      caveat: `${chosen.length} of ${chosen.length} selected profiles have had their header read. Both counts are Letterboxd's own and cover the whole site, not the monitored set — a profile with no reading has null on both, which is not the same as zero.`,
+    });
+  }
+  if (path === '/api/people/rename-resilience') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 3).map((p) => p.username);
+    return json(route, {
+      profiles: chosen.map((username, index) => ({
+        username,
+        member_id: index === chosen.length - 1 ? null : 1_000_000 + index,
+        survives_rename: index !== chosen.length - 1,
+      })),
+      resilient: chosen.slice(0, -1),
+      fragile: chosen.slice(-1),
+      caveat: `${chosen.length - 1} of ${chosen.length} selected profiles carry the member id a rename survives — those get renamed in place on the next read instead of duplicated as a new account. The previous username is not retained: the row is updated, not versioned, so this panel reports what a rename would cost rather than listing renames nobody recorded.`,
+    });
+  }
   if (path === '/api/activity/marathons') {
     // Two real marathon days plus one day set aside as an import artifact, so
     // the caveat has something honest to report rather than a fixed sentence.
@@ -1614,12 +1780,60 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   {
     const followGraphMatch = path.match(/^\/api\/profiles\/([^/]+)\/follow-graph$/);
     if (followGraphMatch) {
+      const subject = decodeURIComponent(followGraphMatch[1]).toLowerCase();
+      const tracked = new Set(profiles.map((profile) => profile.username.toLowerCase()));
+      const edges: Array<Record<string, unknown>> = [];
+      let position = 0;
+      FOLLOW_PAIRS.forEach(([a, b, aFollowsB, bFollowsA]) => {
+        const push = (counterpart: string, direction: 'following' | 'follower') => {
+          position += 1;
+          edges.push({
+            direction,
+            counterpart_username: counterpart,
+            counterpart_display_name: null,
+            counterpart_avatar_url: null,
+            counterpart_profile_url: `https://letterboxd.com/${counterpart}/`,
+            position,
+            is_imported_profile: tracked.has(counterpart),
+            counterpart_profile_id: tracked.has(counterpart) ? position : null,
+            removed_at: null,
+          });
+        };
+        if (a === subject && aFollowsB) push(b, 'following');
+        if (a === subject && bFollowsA) push(b, 'follower');
+        if (b === subject && bFollowsA) push(a, 'following');
+        if (b === subject && aFollowsB) push(a, 'follower');
+      });
+      // One account the group orbits that was never synced, and one edge that
+      // disappeared between reads -- both are states the panels must render.
+      edges.push({
+        direction: 'following',
+        counterpart_username: 'filmnoirfan',
+        counterpart_display_name: null,
+        counterpart_avatar_url: null,
+        counterpart_profile_url: 'https://letterboxd.com/filmnoirfan/',
+        position: position + 1,
+        is_imported_profile: false,
+        counterpart_profile_id: null,
+        removed_at: null,
+      });
+      edges.push({
+        direction: 'following',
+        counterpart_username: 'oldaccount',
+        counterpart_display_name: null,
+        counterpart_avatar_url: null,
+        counterpart_profile_url: 'https://letterboxd.com/oldaccount/',
+        position: position + 2,
+        is_imported_profile: false,
+        counterpart_profile_id: null,
+        removed_at: '2026-08-02T00:00:00Z',
+      });
       return json(route, {
         username: decodeURIComponent(followGraphMatch[1]),
-        following_count: null,
-        followers_count: null,
-        edges: [],
-        total: 0,
+        following_count: 268,
+        followers_count: 741,
+        edges,
+        total: edges.length,
       });
     }
   }

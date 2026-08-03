@@ -1908,6 +1908,227 @@ export interface SharedFirstsResponse {
   caveat: string;
 }
 
+// ---------------------------------------------------------------------------
+// People — one person, two people, and what a rename would cost.
+// ---------------------------------------------------------------------------
+
+export interface PeopleFilmRef {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  letterboxd_url: string | null;
+}
+
+export interface UnratedResponse {
+  username: string;
+  unrated: number;
+  library: number;
+  share: number | null;
+  films: Array<
+    PeopleFilmRef & {
+      watch_count: number;
+      first_watched_date: string | null;
+      latest_watched_date: string | null;
+      has_review: boolean;
+    }
+  >;
+  caveat: string;
+}
+
+export interface SilentFivesResponse {
+  username: string;
+  silent: number;
+  top_rated: number;
+  films: Array<PeopleFilmRef & { rating: number | null; watch_count: number }>;
+  caveat: string;
+}
+
+export interface RewatchShiftsResponse {
+  username: string;
+  shifts: Array<{
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+    before: number;
+    after: number;
+    shift: number;
+    detected_at: string | null;
+  }>;
+  count: number;
+  rose: number;
+  fell: number;
+  caveat: string;
+}
+
+export interface FavouritesResponse {
+  username: string;
+  favourites: Array<PeopleFilmRef & { position: number; rating: number | null; first_seen: string | null }>;
+  changes: Array<{
+    change_type: string;
+    title: string;
+    year: number | null;
+    detected_at: string | null;
+    before: Record<string, unknown>;
+    after: Record<string, unknown>;
+  }>;
+  caveat: string;
+}
+
+export interface MemberCardResponse {
+  username: string;
+  display_name: string | null;
+  badge: string | null;
+  /** Export-only. Absent rather than guessed when not supplied. */
+  pronoun: string | null;
+  location: string | null;
+  bio: string | null;
+  join_date: string | null;
+  /** Earliest dated diary entry — the honest answer to "how far back can we see". */
+  first_logged_date: string | null;
+  external_links: Array<{ label?: string; url?: string }>;
+  followers_count: number | null;
+  following_count: number | null;
+  caveat: string;
+}
+
+export interface QuietProfile {
+  username: string;
+  silent_days: number | null;
+  usual_gap_days: number | null;
+  /** Silence as a multiple of their own median gap. */
+  multiple: number | null;
+  read: string;
+}
+
+export interface QuietResponse {
+  profiles: QuietProfile[];
+  caveat: string;
+}
+
+export interface ReviewsPerWatchResponse {
+  profiles: Array<{ username: string; reviews: number; films: number; ratio: number | null }>;
+  caveat: string;
+}
+
+export interface TagOverlapResponse {
+  tags: Array<{ tag: string; profiles: string[]; counts: Record<string, number>; total: number }>;
+  count: number;
+  profiles_with_tags: string[];
+  profiles_selected: number;
+  caveat: string;
+}
+
+export interface DecadeDriftResponse {
+  profiles: Record<string, Array<{ year: number; average_release_year: number; films: number }>>;
+  caveat: string;
+}
+
+export interface PairBlindSpotsResponse {
+  films: Array<PeopleFilmRef & { raters: string[]; rater_count: number; average_rating: number }>;
+  count: number;
+  caveat: string;
+}
+
+export interface ReachResponse {
+  profiles: Array<{
+    username: string;
+    /** Letterboxd's own header figure. Null means never read, not zero. */
+    followers: number | null;
+    following: number | null;
+    ratio: number | null;
+  }>;
+  caveat: string;
+}
+
+export interface RenameResilienceResponse {
+  profiles: Array<{ username: string; member_id: number | null; survives_rename: boolean }>;
+  resilient: string[];
+  fragile: string[];
+  caveat: string;
+}
+
+export const peopleApi = {
+  getUnrated: async (username: string, limit = 12): Promise<UnratedResponse> => {
+    const response = await api.get(`/api/people/${encodeURIComponent(username)}/unrated`, {
+      params: { limit },
+    });
+    return response.data;
+  },
+
+  getSilentFives: async (username: string, limit = 12): Promise<SilentFivesResponse> => {
+    const response = await api.get(`/api/people/${encodeURIComponent(username)}/silent-fives`, {
+      params: { limit },
+    });
+    return response.data;
+  },
+
+  getRewatchShifts: async (username: string, limit = 12): Promise<RewatchShiftsResponse> => {
+    const response = await api.get(`/api/people/${encodeURIComponent(username)}/rewatch-shifts`, {
+      params: { limit },
+    });
+    return response.data;
+  },
+
+  getFavourites: async (username: string): Promise<FavouritesResponse> => {
+    const response = await api.get(`/api/people/${encodeURIComponent(username)}/favourites`);
+    return response.data;
+  },
+
+  getMemberCard: async (username: string): Promise<MemberCardResponse> => {
+    const response = await api.get(`/api/people/${encodeURIComponent(username)}/member-card`);
+    return response.data;
+  },
+
+  getQuiet: async (profiles: string[]): Promise<QuietResponse> => {
+    const response = await api.get('/api/people/quiet', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+
+  getReviewsPerWatch: async (profiles: string[]): Promise<ReviewsPerWatchResponse> => {
+    const response = await api.get('/api/people/reviews-per-watch', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+
+  getTagOverlap: async (profiles: string[], limit = 12): Promise<TagOverlapResponse> => {
+    const params = selectedProfileParams(profiles);
+    params.set('limit', String(limit));
+    const response = await api.get('/api/people/tag-overlap', { params });
+    return response.data;
+  },
+
+  getDecadeDrift: async (profiles: string[]): Promise<DecadeDriftResponse> => {
+    const response = await api.get('/api/people/decade-drift', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+
+  getPairBlindSpots: async (profiles: string[], limit = 12): Promise<PairBlindSpotsResponse> => {
+    const params = selectedProfileParams(profiles);
+    params.set('limit', String(limit));
+    const response = await api.get('/api/people/pair-blind-spots', { params });
+    return response.data;
+  },
+
+  getReach: async (profiles: string[]): Promise<ReachResponse> => {
+    const response = await api.get('/api/people/reach', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+
+  getRenameResilience: async (profiles: string[]): Promise<RenameResilienceResponse> => {
+    const response = await api.get('/api/people/rename-resilience', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+};
+
 export const firstWatchApi = {
   getOrder: async (profiles: string[]): Promise<FirstWatchOrderResponse> => {
     const response = await api.get('/api/insights/first-watch-order', {

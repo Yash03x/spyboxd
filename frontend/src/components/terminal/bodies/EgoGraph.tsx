@@ -166,6 +166,10 @@ export default function EgoGraph({ centre, leaves, onSelect }: EgoGraphProps) {
               <button
                 key={`node-${leaf.username}`}
                 type="button"
+                // Named explicitly: the visible label is initials plus handle,
+                // which makes the computed name "BR @bravo" and unreachable by
+                // the handle alone.
+                aria-label={`@${leaf.username}`}
                 onClick={() => onSelect(leaf.username)}
                 className={`${className} cursor-pointer border-none bg-transparent p-0`}
                 style={style}

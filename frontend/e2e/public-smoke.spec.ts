@@ -143,99 +143,72 @@ test('watching activity identifies month-to-date events and excludes them from t
     activity.getByLabel('July 2026, month to date: 90 watch events; 70 unique films; average rating 3.9'),
   ).toBeVisible();
 });
-test('analysis list panels keep intrinsic heights without animated glass artifacts', async ({ page }) => {
-  await page.goto('/analysis');
+test('terminal panels are flat: no blur, no shadow, nothing slower than 120ms', async ({ page }) => {
+  await page.goto('/people?tab=one&subject=alpha');
 
-  const watchesPanel = page.getByRole('heading', { name: 'Recent Watches', exact: true }).locator('..');
-  const ratingsPanel = page.getByRole('heading', { name: 'Recent Ratings', exact: true }).locator('..');
-  const reviewsPanel = page.getByRole('heading', { name: 'Recent Reviews', exact: true }).locator('..');
+  const panels = page.locator('.terminal-root section');
+  expect(await panels.count()).toBeGreaterThan(5);
 
-  await expect(ratingsPanel).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Coverage Notes', exact: true })).toHaveCount(0);
-  for (const panel of [watchesPanel, ratingsPanel, reviewsPanel]) {
-    const compositorStyles = await panel.evaluate((element) => {
-      const styles = window.getComputedStyle(element);
+  const styles = await panels.evaluateAll((elements) =>
+    elements.map((element) => {
+      const computed = window.getComputedStyle(element);
       return {
-        backdropFilter: styles.backdropFilter,
-        boxShadow: styles.boxShadow,
-        transitionDuration: styles.transitionDuration,
+        backdropFilter: computed.backdropFilter,
+        boxShadow: computed.boxShadow,
+        borderRadius: computed.borderRadius,
+        transitionSeconds: Math.max(
+          ...computed.transitionDuration.split(',').map((value) => parseFloat(value) || 0),
+        ),
       };
-    });
-    expect(compositorStyles).toEqual({
-      backdropFilter: 'none',
-      boxShadow: 'none',
-      transitionDuration: '0s',
-    });
-  }
+    }),
+  );
 
-  if ((page.viewportSize()?.width ?? 0) >= 1280) {
-    const [ratingsBox, reviewsBox] = await Promise.all([
-      ratingsPanel.boundingBox(),
-      reviewsPanel.boundingBox(),
-    ]);
-    expect(reviewsBox!.height).toBeLessThan(ratingsBox!.height);
+  for (const style of styles) {
+    expect(style.backdropFilter).toBe('none');
+    expect(style.boxShadow).toBe('none');
+    expect(style.borderRadius).toBe('0px');
+    // "No transitions longer than 120ms anywhere in the product."
+    expect(style.transitionSeconds).toBeLessThanOrEqual(0.12);
   }
-
-  const shimmers = page.getByTestId('stats-card-shimmer');
-  expect(await shimmers.count()).toBeGreaterThan(0);
-  const shimmerTransformsBefore = await shimmers.evaluateAll((elements) => (
-    elements.map((element) => window.getComputedStyle(element).transform)
-  ));
-  await page.waitForTimeout(300);
-  const shimmerTransformsAfter = await shimmers.evaluateAll((elements) => (
-    elements.map((element) => window.getComputedStyle(element).transform)
-  ));
-  expect(shimmerTransformsAfter).toEqual(shimmerTransformsBefore);
 });
 
-test('analysis keeps spoiler review prose hidden until an accessible reveal action', async ({ page }) => {
-  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/[^/]+\/analysis$/, (route) => {
-    const username = new URL(route.request().url()).pathname.split('/')[2];
-    const reviewText = username === 'bravo'
-      ? 'A different spoiler review for bravo.'
-      : 'A concise fixture review.';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        ...profileAnalysis,
-        username,
-        recent_reviews: [
-          { ...profileAnalysis.recent_reviews[0], review_text: reviewText },
-          profileAnalysis.recent_reviews[1],
-        ],
-      }),
-    });
-  });
-  await page.goto('/analysis');
+test('a shared-film review keeps spoiler prose hidden until an accessible reveal', async ({ page }) => {
+  await page.goto('/people?tab=two');
 
-  const spoilerText = page.getByText('A concise fixture review.', { exact: true });
-  const reveal = page.getByRole('button', {
-    name: 'Reveal spoiler review for Short Review (2026)',
+  const panel = page.locator('.terminal-root section').filter({ hasText: 'THE SAME FILM' }).first();
+  const spoilerText = panel.getByText(
+    'The identity loop changes how every earlier scene reads.',
+    { exact: true },
+  );
+  const reveal = panel.getByRole('button', {
+    name: "Reveal spoiler review for alpha's review of Predestination (2014)",
   });
 
   await expect(spoilerText).toBeHidden();
   await expect(reveal).toHaveAttribute('aria-expanded', 'false');
-  await expect(page.getByText('A second concise fixture review.', { exact: true })).toBeVisible();
 
   await reveal.click();
   await expect(spoilerText).toBeVisible();
-  await expect(page.getByRole('button', {
-    name: 'Hide spoiler review for Short Review (2026)',
-  })).toHaveAttribute('aria-expanded', 'true');
-
-  const profilePicker = page.getByRole('combobox', { name: 'Profile' });
-  await profilePicker.click();
-  await profilePicker.fill('brav');
-  await page.getByRole('option', { name: /@bravo/ }).click();
-  const nextSpoilerText = page.getByText('A different spoiler review for bravo.', { exact: true });
-  await expect(nextSpoilerText).toBeHidden();
-  await expect(page.getByRole('button', {
-    name: 'Reveal spoiler review for Short Review (2026)',
-  })).toHaveAttribute('aria-expanded', 'false');
+  await expect(
+    panel.getByRole('button', {
+      name: "Hide spoiler review for alpha's review of Predestination (2014)",
+    }),
+  ).toHaveAttribute('aria-expanded', 'true');
 });
 
-test('analysis shows Coverage Notes only for actionable limitations', async ({ page }) => {
+test('one written review is a spotlight, not a dropped face-off', async ({ page }) => {
+  await page.goto('/people?tab=two');
+
+  // The pair fixture has prose on one side only. Showing nothing would lose the
+  // review entirely; showing it as a face-off would claim a second one exists.
+  await expect(page.getByText('▸ THE SAME FILM, ONE REVIEW', { exact: false })).toBeVisible();
+  const panel = page.locator('.terminal-root section').filter({ hasText: 'THE SAME FILM' }).first();
+  // The side that wrote nothing is labelled as such rather than left blank.
+  await expect(panel.getByText('@bravo · 5.0★ · no written review', { exact: true })).toBeVisible();
+  await expect(panel.getByText('No written review', { exact: true })).toBeVisible();
+});
+
+test('coverage notes appear only when the import actually reported one', async ({ page }) => {
   let limitations: string[] = [];
   await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/[^/]+\/analysis$/, (route) => (
     route.fulfill({
@@ -252,10 +225,12 @@ test('analysis shows Coverage Notes only for actionable limitations', async ({ p
     })
   ));
 
-  await page.goto('/analysis');
+  await page.goto('/people?tab=one&subject=alpha');
 
-  const coverageNotes = page.getByRole('heading', { name: 'Coverage Notes', exact: true });
-  await expect(coverageNotes).toHaveCount(0);
+  // An empty "what is missing" heading reads as a fact we failed to fetch,
+  // which is the opposite of what the panel is for.
+  const heading = page.getByText('▸ WHAT THIS IMPORT COULD NOT REACH', { exact: false });
+  await expect(heading).toHaveCount(0);
 
   limitations = [
     'RSS-only data can omit older diary entries.',
@@ -263,118 +238,27 @@ test('analysis shows Coverage Notes only for actionable limitations', async ({ p
   ];
   await page.reload();
 
-  await expect(coverageNotes).toBeVisible();
-  await expect(page.getByRole('listitem').filter({ hasText: 'RSS-only data can omit older diary entries.' })).toBeVisible();
-  await expect(page.getByRole('listitem').filter({ hasText: 'This partial import does not include the watchlist.' })).toBeVisible();
+  await expect(heading).toBeVisible();
+  const panel = page
+    .locator('.terminal-root section')
+    .filter({ hasText: 'WHAT THIS IMPORT COULD NOT REACH' })
+    .first();
+  await expect(panel).toContainText('RSS-only data can omit older diary entries.');
+  await expect(panel).toContainText('This partial import does not include the watchlist.');
 });
 
-test('profiles can be searched without hiding matching data', async ({ page }) => {
-  await page.goto('/profiles');
+test('Two people changes a profile and recomputes the pair', async ({ page }) => {
+  await page.goto('/people?tab=two');
 
-  await expect(page.getByRole('heading', { level: 1, name: 'My Profiles', exact: true })).toBeVisible();
-  await page.getByPlaceholder('Search profiles...').fill('charlie');
-  const trackedGrid = page.getByTestId('tracked-profile-grid');
-  await expect(trackedGrid.getByText('@charlie', { exact: true })).toBeVisible();
-  await expect(page.getByText('1 of 10 tracked profiles')).toBeVisible();
-  await expect(trackedGrid.getByText('@alpha', { exact: true })).toHaveCount(0);
-});
-
-test('a signed-in user can choose an existing profile from the catalog', async ({ page }) => {
-  await page.goto('/profiles');
-
-  await expect(page.getByText('10 monitored', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Stop monitoring bravo' }).click();
-  await expect(page.getByText('9 monitored', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Monitor bravo' }).click();
-  await expect(page.getByText('10 monitored', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Stop monitoring bravo' })).toBeVisible();
-});
-
-test('available-profile search is server-backed and reports the bounded result set', async ({ page }) => {
-  const catalogRequests: URL[] = [];
-  page.on('request', (request) => {
-    const url = new URL(request.url());
-    if (url.pathname === '/profiles/catalog') catalogRequests.push(url);
-  });
-
-  await page.goto('/profiles');
-  const catalog = page.getByRole('region', { name: 'Choose profiles to monitor' });
-  await catalog.getByPlaceholder('Search available profiles...').fill('juliet');
-
-  await expect(catalog.getByTestId('profile-catalog-result-summary')).toHaveText('1 matching synced profile');
-  await expect(catalog.getByText(/^@juliet · /)).toBeVisible();
-  await expect(catalog.getByText(/^@alpha · /)).toHaveCount(0);
-  await expect.poll(() => catalogRequests.some((url) => (
-    url.searchParams.get('search') === 'juliet'
-      && url.searchParams.get('limit') === '100'
-  ))).toBe(true);
-});
-
-test('a new Letterboxd username becomes a visible pending request', async ({ page }) => {
-  await page.goto('/profiles');
-
-  await page.getByPlaceholder('Letterboxd username').fill('newprofile');
-  await page.getByRole('button', { name: 'Add or request' }).click();
-
-  await expect(page.getByText('@newprofile', { exact: true })).toBeVisible();
-  await expect(page.getByText('Awaiting review', { exact: true })).toBeVisible();
-  await expect(page.getByText('Request sent. You can follow its status below.')).toBeVisible();
-});
-
-test('ordinary request history does not expose internal admin fields', async ({ page }) => {
-  await page.goto('/profiles');
-
-  await expect(page.getByText('@queuedprofile', { exact: true })).toBeVisible();
-  await expect(page.getByText('Accepted for the next sync.', { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/Requester user_e2e/)).toHaveCount(0);
-});
-
-test('stopping tracking removes only the profile from the user set', async ({ page }) => {
-  page.on('dialog', (dialog) => dialog.accept());
-  await page.goto('/profiles');
-
-  await page.getByRole('button', { name: 'Remove alpha from My Profiles' }).click();
-
-  await expect(page.getByText('@alpha', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('9 of 9 tracked profiles')).toBeVisible();
-  await expect(page.getByText(/shared data was not deleted/i)).toBeVisible();
-});
-
-test('compare changes a profile and applies the selected pair', async ({ page }) => {
-  await page.goto('/compare');
-
-  await expect(page.getByRole('heading', { name: 'Compare Profiles' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'People', exact: true })).toBeVisible();
   await expectAccountControl(page);
-  const profileA = page.getByRole('combobox', { name: 'Profile A' });
-  await profileA.click();
-  await profileA.fill('charl');
-  await page.getByRole('option', { name: /@charlie/ }).click();
-  await expect(profileA).toHaveValue('Charlie');
-  await page.getByRole('button', { name: 'Compare', exact: true }).click();
+
+  await page.getByRole('button', { name: '@charlie', exact: true }).click();
 
   await expect(page).toHaveURL(/profiles=charlie/);
-  await expect(page.getByRole('tabpanel', { name: 'Pair Dossier' })).toBeVisible();
-  await expect(page.getByText('Who watched first?')).toBeVisible();
-});
-
-test('compare labels a single written review as a spotlight and protects spoiler prose', async ({ page }) => {
-  await page.goto('/compare');
-
-  const dossier = page.getByRole('tabpanel', { name: 'Pair Dossier' });
-  const spoilerText = dossier.getByText(
-    'The identity loop changes how every earlier scene reads.',
-    { exact: true },
-  );
-
-  await expect(dossier.getByRole('heading', { name: 'Review Spotlight', exact: true })).toBeVisible();
-  await expect(dossier.getByRole('heading', { name: 'Review Face-off', exact: true })).toHaveCount(0);
-  await expect(dossier.getByText('No written review', { exact: true })).toBeVisible();
-  await expect(spoilerText).toBeHidden();
-
-  await dossier.getByRole('button', {
-    name: "Reveal spoiler review for alpha's review of Predestination (2014)",
-  }).click();
-  await expect(spoilerText).toBeVisible();
+  await expect(page.getByText('▸ HEAD TO HEAD', { exact: false })).toBeVisible();
+  // Lead share without its volume baseline is a number that means nothing.
+  await expect(page.getByText('Gets there first', { exact: true })).toBeVisible();
 });
 
 test('the Overlaps profile chips stay visible and rescan on click', async ({ page }) => {

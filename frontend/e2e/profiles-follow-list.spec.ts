@@ -32,8 +32,8 @@ test('the follows panel links to the real graph, centred on that profile', async
   const link = page.getByRole('link', { name: /in the network graph/i }).first();
   await expect(link).toBeVisible();
   const href = await link.getAttribute('href');
-  expect(href).toMatch(/^\/network\?focus=/);
+  expect(href).toMatch(/^\/people\?tab=circle&subject=/);
 
   await link.click();
-  await expect(page).toHaveURL(/\/network\?focus=/);
+  await expect(page).toHaveURL(/\/people\?tab=circle&subject=/);
 });

@@ -20,9 +20,12 @@ export interface DivergeProps {
   axis: string;
   /** Largest absolute value the axis should represent. */
   max?: number;
+  /**
+   * Width of the label column. A decade fits in 64px; a film title does not,
+   * and truncating one to "Champion…" loses the row's whole subject.
+   */
+  labelWidth?: string;
 }
-
-const GRID = '64px minmax(0,1fr) 62px 42px';
 
 function signed(value: number): string {
   const rounded = Math.abs(value).toFixed(2);
@@ -36,14 +39,15 @@ function signed(value: number): string {
  * what this body kind exists to show -- somebody can be harsh on comedy and
  * generous with documentary, and the mean of those two is nothing at all.
  */
-export default function Diverge({ items, label, axis, max }: DivergeProps) {
+export default function Diverge({ items, label, axis, max, labelWidth = '64px' }: DivergeProps) {
   const ceiling = max ?? Math.max(...items.map((item) => Math.abs(item.value)), 0.01);
+  const grid = `${labelWidth} minmax(0,1fr) 62px 42px`;
 
   return (
     <div>
       <div
         className="grid gap-[9px] border-b border-term-rule2 px-[10px] py-[5px] text-t9 tracking-tab text-term-muted2"
-        style={{ gridTemplateColumns: GRID }}
+        style={{ gridTemplateColumns: grid }}
       >
         <span>{label}</span>
         <span>{axis}</span>
@@ -61,7 +65,7 @@ export default function Diverge({ items, label, axis, max }: DivergeProps) {
           <div
             key={`${item.name}-${index}`}
             className="grid items-center gap-[9px] border-b border-term-rule2 px-[10px] py-[5px] hover:bg-term-panelhd"
-            style={{ gridTemplateColumns: GRID }}
+            style={{ gridTemplateColumns: grid }}
           >
             <span className="terminal-num truncate text-t11 text-term-ink2">{item.name}</span>
             <span className="relative block h-[9px] bg-term-track">

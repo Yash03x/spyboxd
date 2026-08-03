@@ -32,6 +32,8 @@ export function useTerminalSelection(options: TerminalSelectionOptions = {}) {
     defaultCount: options.defaultCount ?? Math.min(available.length, 6),
   });
 
+  const applyProfiles = selection.applyProfiles;
+
   const toggle = useCallback(
     (username: string) => {
       const current = selection.appliedProfiles;
@@ -52,6 +54,7 @@ export function useTerminalSelection(options: TerminalSelectionOptions = {}) {
     isInitialized: selection.isInitialized,
     isLoading: profilesQuery.isLoading,
     error: profilesQuery.error,
+    applyProfiles,
     replaceParams: selection.replaceParams,
     minSelection,
   };

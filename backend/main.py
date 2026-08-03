@@ -21,6 +21,7 @@ from api.routes.follow_graph import router as follow_graph_router
 from api.routes.insights import router as insights_router
 from api.routes.member_archive import router as member_archive_router
 from api.routes.obscurity import router as obscurity_router
+from api.routes.people import router as people_router
 from api.routes.profile_access import router as profile_access_router
 from api.routes.profile_stats import router as profile_stats_router
 from api.routes.watchlist_insights import router as watchlist_insights_router
@@ -387,6 +388,7 @@ app.include_router(profile_stats_router)
 app.include_router(rating_comparison_router)
 app.include_router(watchlist_insights_router)
 app.include_router(obscurity_router)
+app.include_router(people_router)
 # Letterboxd film ratings can only be scraped from a residential IP, so they
 # arrive over the same ingestion-token boundary as /upload/ rather than being
 # enriched on this server the way TMDB data is.
