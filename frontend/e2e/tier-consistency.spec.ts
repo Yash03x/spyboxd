@@ -20,22 +20,23 @@ test.beforeEach(async ({ page }) => {
 test('a profile with a full diary is counted as one in both panels', async ({ page }) => {
   await page.goto('/overview');
 
+  // Both panels render a skeleton first, so every read here waits for the
+  // classified row to arrive. Counting whatever is on screen the instant
+  // navigation resolves measured the skeleton, not the tier.
   const roster = page.locator('.terminal-root section', { hasText: 'EVERYONE WE ARE WATCHING' }).first();
-  const rosterFull = await roster.getByText('Full diary imported').count();
-  expect(rosterFull).toBeGreaterThan(0);
+  await expect(roster.getByText('Full diary imported').first()).toBeVisible();
 
   await page.goto('/overlaps?tab=sure');
   const tiers = page.locator('.terminal-root section', { hasText: 'HOW SURE WE ARE' }).first();
-  await expect(tiers).toBeVisible();
+  await expect(tiers.getByText('One date per film only')).toBeVisible();
 
   // The top tier must carry events, not zero, whenever the roster says a
   // profile has a full diary.
-  const fullRow = tiers.locator('div').filter({ hasText: 'Full diary imported' }).last();
-  const text = await fullRow.innerText();
-  const share = Number(text.match(/(\d+)%/)?.[1] ?? '0');
-  const events = Number((text.match(/([\d,]+)/)?.[1] ?? '0').replace(/,/g, ''));
-  expect(events).toBeGreaterThan(0);
-  expect(share).toBeGreaterThan(0);
+  const text = await tiers.innerText();
+  const row = text.match(/Full diary imported\s+([\d,]+)\s+(\d+)%/);
+  expect(row, `no top-tier row in:\n${text}`).not.toBeNull();
+  expect(Number(row![1].replace(/,/g, ''))).toBeGreaterThan(0);
+  expect(Number(row![2])).toBeGreaterThan(0);
 });
 
 test('the bottom tier says what it actually mixes together', async ({ page }) => {
