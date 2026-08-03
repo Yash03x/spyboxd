@@ -42,6 +42,9 @@ PRIVATE_UI_PATHS = (
 # so the canary asserted /analysis sends anonymous traffic to /sign-in when it
 # now sends everybody to /people — and failed on a working deployment. They are
 # still worth checking, against what they actually do.
+# Deliberately not a route. See _validate_absent_api_route.
+ABSENT_API_PATH = "/api/films/this-endpoint-does-not-exist"
+
 LEGACY_UI_REDIRECTS = (
     ("/dashboard", "/overview"),
     ("/spy-signals", "/overlaps"),
@@ -58,10 +61,53 @@ PRIVATE_API_PATHS = (
     "/public/profile/privacy-check",
     "/api/dashboard/analytics",
     "/api/spy-signals",
+    "/profiles/privacy-check/analysis",
+    # Every endpoint the redesign added. Three of these were here and the other
+    # thirty-seven were not, so the sections that shipped last were the ones the
+    # canary could not see. On the API a missing route answers 404 and a guarded
+    # one answers 401, so listing them is a real existence check -- unlike the
+    # UI paths, where a route that does not exist redirects to sign-in exactly
+    # like one that does.
     "/api/activity/marathons",
     "/api/activity/weekday",
+    "/api/activity/season",
+    "/api/activity/logging-lag",
     "/api/insights/shared-firsts",
-    "/profiles/privacy-check/analysis",
+    "/api/insights/first-watch-order",
+    "/api/people/quiet",
+    "/api/people/reach",
+    "/api/people/reviews-per-watch",
+    "/api/people/tag-overlap",
+    "/api/people/decade-drift",
+    "/api/people/rename-resilience",
+    "/api/people/privacy-check/unrated",
+    "/api/people/privacy-check/silent-fives",
+    "/api/films/keywords",
+    "/api/films/runtime",
+    "/api/films/atlas",
+    "/api/films/collections",
+    "/api/films/filmographies",
+    "/api/films/liked-vs-rated",
+    "/api/films/decade-divergence",
+    "/api/films/queue-age",
+    "/api/films/language-ladder",
+    "/api/films/metadata-gaps",
+    "/api/films/match-rate",
+    "/api/tonight/blind-spot-favourites",
+    "/api/tonight/list-progress",
+    "/api/tonight/list-only-films",
+    "/api/tonight/list-cadence",
+    "/api/tonight/availability",
+    "/api/data-health/ledger",
+    "/api/data-health/feeds",
+    "/api/data-health/importers",
+    "/api/data-health/counts",
+    "/api/data-health/private",
+    "/api/data-health/removed",
+    "/api/data-health/request-latency",
+    "/api/data-health/freshness",
+    "/api/data-health/lost",
+    "/api/data-health/lost-lists",
     "/api/data-coverage",
     "/api/pair-dossier",
     "/api/signal-calendar",
@@ -218,6 +264,24 @@ def _load_health_validator(path: Path) -> ModuleType:
     return module
 
 
+def _validate_absent_api_route(response: Response) -> None:
+    """A route that does not exist must answer 404, not 401.
+
+    The list above proves the redesign's endpoints are deployed only because a
+    missing one would answer differently. If the API ever started answering 401
+    to everything — a catch-all guard, a proxy in front of it — the whole sweep
+    would pass while every endpoint was gone. This is the control that keeps
+    the sweep meaningful, and it is the check the UI paths cannot have: there,
+    a route that does not exist redirects to sign-in exactly like one that does.
+    """
+
+    if response.status != 404:
+        raise CanaryError(
+            "a fabricated API path answered "
+            f"{response.status} rather than 404, so a 401 no longer proves an endpoint exists"
+        )
+
+
 def _validate_legacy_redirect(
     web_base: str, path: str, destination: str, response: Response
 ) -> None:
@@ -346,6 +410,7 @@ def run_canary(
         )
     for path in PRIVATE_API_PATHS:
         _validate_anonymous_api(request_client.get(f"{api_base}{path}"))
+    _validate_absent_api_route(request_client.get(f"{api_base}{ABSENT_API_PATH}"))
 
     return {
         "revision": revision,
