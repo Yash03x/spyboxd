@@ -248,3 +248,43 @@ class WorkflowControlsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthCanaryDiagnosticsTests(unittest.TestCase):
+    """The guardian's reason has to reach the log, or the job is undiagnosable.
+
+    For a fortnight the job reported "The VPS guardian did not publish a canary
+    plan" while the guardian had in fact run, failed its preflight, and written
+    the reason to its status file. The workflow read that status, took the
+    branch for a timeout, and threw the diagnosis away.
+    """
+
+    def test_the_guardian_records_why_it_failed(self) -> None:
+        guardian = read_repo_file("deploy/run-production-auth-canary.py")
+
+        self.assertIn('status_payload["reason"]', guardian)
+        self.assertIn("def lease_failure_reason(", guardian)
+        self.assertIn('commands.add_parser("reason")', guardian)
+        # Only a message this file wrote: anything else contributes its type,
+        # because a traceback can carry DATABASE_URL.
+        self.assertIn("if isinstance(reported, AuthCanaryError)", guardian)
+        self.assertIn("type(reported).__name__", guardian)
+
+    def test_the_workflow_reports_a_failure_as_a_failure_not_as_a_timeout(self) -> None:
+        workflow = read_repo_file(".github/workflows/production-canary.yml")
+
+        self.assertIn("The VPS guardian failed before publishing a plan", workflow)
+        self.assertIn("did not publish a canary plan before its deadline", workflow)
+        self.assertIn('"${REMOTE_CANARY_PATH}" reason --lease-id', workflow)
+        # `set -u` is on and the loop may break on its first iteration.
+        self.assertLess(
+            workflow.index("guardian_status=running\n          for _ in $(seq 1 60)"),
+            workflow.index('"${REMOTE_CANARY_PATH}" reason --lease-id'),
+        )
+
+    def test_the_guardian_stderr_stays_closed(self) -> None:
+        """The reason travels through the status file, never through a traceback."""
+
+        workflow = read_repo_file(".github/workflows/production-canary.yml")
+
+        self.assertIn("2>/dev/null", workflow)
