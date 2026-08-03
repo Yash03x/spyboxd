@@ -7,77 +7,43 @@ import { usePathname } from 'next/navigation';
 import { SignOutButton, UserButton, useAuth } from '@clerk/nextjs';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  HomeIcon,
-  ChartBarIcon,
-  UserGroupIcon,
-  SignalIcon,
-  ScaleIcon,
-} from '@heroicons/react/24/outline';
-import {
-  HomeIcon as HomeIconSolid,
-  ChartBarIcon as ChartBarIconSolid,
-  SignalIcon as SignalIconSolid,
-  ScaleIcon as ScaleIconSolid,
-} from '@heroicons/react/24/solid';
-import { LogOut, Menu, UsersRound, Waypoints, X } from 'lucide-react';
+  Clapperboard,
+  Database,
+  LayoutGrid,
+  LogOut,
+  Menu,
+  Popcorn,
+  Radio,
+  UsersRound,
+  X,
+} from 'lucide-react';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import AdminScopeToggle from './AdminScopeToggle';
+import { SECTIONS } from './terminal/sections';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
 
-const NAVIGATION_ITEMS = [
-  {
-    path: '/dashboard',
-    label: 'My Dashboard',
-    icon: HomeIcon,
-    activeIcon: HomeIconSolid,
-    description: 'Your Profile Overview',
-  },
-  {
-    path: '/spy-signals',
-    label: 'Spy Signals',
-    icon: SignalIcon,
-    activeIcon: SignalIconSolid,
-    description: 'Same-day & Gap Alerts',
-  },
-  {
-    path: '/compare',
-    label: 'Compare',
-    icon: ScaleIcon,
-    activeIcon: ScaleIconSolid,
-    description: 'Understand Overlap',
-  },
-  {
-    path: '/watch-together',
-    label: 'Watch Together',
-    icon: UsersRound,
-    activeIcon: UsersRound,
-    description: 'Find a Group Pick',
-  },
-  {
-    path: '/network',
-    label: 'Network',
-    icon: Waypoints,
-    activeIcon: Waypoints,
-    description: 'The Follow Graph',
-  },
-  {
-    path: '/profiles',
-    label: 'My Profiles',
-    icon: UserGroupIcon,
-    activeIcon: UserGroupIcon,
-    description: 'Track & Manage',
-  },
-  {
-    path: '/analysis',
-    label: 'Analysis',
-    icon: ChartBarIcon,
-    activeIcon: ChartBarIconSolid,
-    description: 'Profile Deep Dive',
-  },
-] as const;
+const SECTION_ICONS = {
+  'layout-grid': LayoutGrid,
+  radio: Radio,
+  'users-round': UsersRound,
+  popcorn: Popcorn,
+  clapperboard: Clapperboard,
+  database: Database,
+} as const;
+
+// One nav definition for the whole product. The sections that have already
+// moved to the terminal shell link to their new route; the rest still link to
+// the page they will replace, so this list never contains a dead link.
+const NAVIGATION_ITEMS = SECTIONS.map((section) => ({
+  path: section.legacyPath ?? `/${section.id}`,
+  label: section.name,
+  icon: SECTION_ICONS[section.icon],
+  activeIcon: SECTION_ICONS[section.icon],
+  description: section.question,
+}));
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const pathname = usePathname();
@@ -102,7 +68,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     // and because opacity multiplies down the tree that made the whole app's
     // visibility depend on an animation finishing -- stranded, the page read as
     // blank. Nothing decorative is worth that.
-    <div className="min-h-screen flex flex-col lg:flex-row">
+    <div className="legacy-shell min-h-screen flex flex-col lg:flex-row">
       {/* Sidebar Navigation */}
       <motion.nav 
         className="relative z-50 w-full flex-shrink-0 border-b border-white/10 bg-[#081321]/95 backdrop-blur-xl lg:sticky lg:top-0 lg:h-screen lg:w-72 lg:border-b-0 lg:border-r lg:bg-black/20"
@@ -203,7 +169,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               const Icon = isActive(item.path) ? item.activeIcon : item.icon;
               return (
                 <motion.div
-                  key={item.path}
+                  // Keyed on the label, not the path: two sections can share a
+                  // legacy path while they are still being moved across.
+                  key={item.label}
                   initial={{ x: -50 }}
                   animate={{ x: 0 }}
                   transition={{ delay: 0.3 + (index * 0.1) }}

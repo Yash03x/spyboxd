@@ -13,8 +13,12 @@ async function expectAccountControl(page: Page) {
   const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
   await expect(signOut).toBeVisible();
   await expectInsideViewport(page, signOut);
-  if ((page.viewportSize()?.width ?? 0) < 1024) {
-    await page.getByRole('button', { name: 'Open navigation' }).click();
+  // The redesigned sections keep the account control in the status bar at
+  // every width. The not-yet-migrated views still hide theirs behind the
+  // mobile navigation drawer, so both shells are accepted here.
+  const drawerToggle = page.getByRole('button', { name: 'Open navigation' });
+  if ((page.viewportSize()?.width ?? 0) < 1024 && (await drawerToggle.count()) > 0) {
+    await drawerToggle.click();
     await expect(page.getByRole('button', { name: 'Open user menu' })).toBeVisible();
     await page.getByRole('button', { name: 'Close navigation' }).click();
     return;
@@ -57,24 +61,25 @@ test.afterEach(async ({ page }, testInfo: TestInfo) => {
   expect(errors, 'The page must not emit console errors or uncaught exceptions').toEqual([]);
 });
 
-test('signed-in private dashboard renders the scoped data and navigates to My Profiles', async ({ page }) => {
-  await page.goto('/dashboard');
+test('Overview renders the scoped data and links on to the rest of the product', async ({ page }) => {
+  await page.goto('/overview');
 
   await expect(page).toHaveTitle(/Spyboxd/);
-  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard', exact: true })).toBeVisible();
-  await expect(page.getByText('Monitored Profiles', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('10 profiles loaded')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
+  await expect(page.getByText('10 PROFILES', { exact: false }).first()).toBeVisible();
+  await expect(page.getByText('▸ EVERYONE WE ARE WATCHING', { exact: false })).toBeVisible();
   await expectAccountControl(page);
 
-  const manageProfiles = page.getByRole('button', { name: 'Choose monitored profiles' });
-  await expect(manageProfiles).toBeVisible();
-  await manageProfiles.click();
-  await expect(page).toHaveURL(/\/profiles$/);
-  await expect(page.getByRole('heading', { level: 1, name: 'My Profiles', exact: true })).toBeVisible();
+  // The rail is the way on: Data still lives at its pre-redesign path until
+  // that section moves across, and the link has to resolve either way.
+  const dataSection = page.getByRole('link', { name: '06 Data' });
+  await expect(dataSection).toBeVisible();
+  await dataSection.click();
+  await expect(page).toHaveURL(/\/(data|profiles)$/);
 });
 
 test('private workspace sign out returns to the anonymous dashboard', async ({ page }) => {
-  await page.goto('/dashboard');
+  await page.goto('/overview');
 
   const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
   await expect(signOut).toBeVisible();
@@ -117,39 +122,27 @@ test('signed-in public homepage remains aggregate-only', async ({ page }) => {
 test('watching activity identifies month-to-date events and excludes them from the completed-month average', async ({ page }) => {
   await page.goto('/');
 
-  const activityChart = page.getByRole('region', { name: 'Watching Activity' });
-  await expect(activityChart).toBeVisible();
-  await expect(activityChart.getByText(
-    'Monthly watch events · July 2026 is month to date; average uses completed months',
+  const activity = page.locator('section', { hasText: 'ACTIVITY, MONTH BY MONTH' }).first();
+  await expect(activity).toBeVisible();
+
+  // A month still in progress is not a month with less watching in it. Both
+  // the exclusion and the number of months the average was taken over are
+  // stated, so the figure cannot be read as covering the partial month too.
+  await expect(activity.getByText(
+    'July 2026 is month to date and is excluded from the completed-month average, which is taken over 2 completed months.',
     { exact: true },
   )).toBeVisible();
-  await expect(activityChart.getByLabel('Average watch events per completed month')).toHaveText('15.0');
-  await expect(activityChart.getByLabel('Average unique films per completed month')).toHaveText('12.0');
-  await expect(activityChart.getByText('Watch Events/Mo', { exact: true })).toBeVisible();
-  await expect(activityChart.getByText('Unique Films/Mo', { exact: true })).toBeVisible();
-  await expect(activityChart.getByRole('img')).toHaveAccessibleName(
-    /July 2026 is month to date and is excluded from the completed-month average.*15\.0 watch events and 12\.0 unique films per completed month/,
-  );
-  await expect(activityChart.getByRole('list', { name: 'Watching Activity data points' })).toContainText(
-    'July 2026, month to date: 90 watch events; 70 unique films; average rating 3.9',
-  );
+  await expect(activity.getByText('15.0', { exact: true })).toBeVisible();
+  await expect(activity.getByText('WATCHES / MONTH', { exact: true })).toBeVisible();
+  await expect(activity.getByText('12.0', { exact: true })).toBeVisible();
+  await expect(activity.getByText('UNIQUE FILMS / MONTH', { exact: true })).toBeVisible();
 
-  // The chart canvas must stay inside the fixed-height card so the x-axis
-  // labels are never painted over by the following section.
-  const cardBox = await activityChart.boundingBox();
-  const canvasBox = await activityChart.getByRole('img').boundingBox();
-  expect(cardBox).not.toBeNull();
-  expect(canvasBox).not.toBeNull();
-  expect(canvasBox!.y + canvasBox!.height).toBeLessThanOrEqual(cardBox!.y + cardBox!.height + 1);
-
-  // Stat captions must render on a single line, not flex-shrunk into two.
-  for (const caption of ['Watch Events/Mo', 'Unique Films/Mo']) {
-    const captionBox = await activityChart.getByText(caption, { exact: true }).boundingBox();
-    expect(captionBox).not.toBeNull();
-    expect(captionBox!.height).toBeLessThanOrEqual(20);
-  }
+  // Each bar carries the figures behind it, so the chart needs no legend and
+  // no axis to be readable.
+  await expect(
+    activity.getByLabel('July 2026, month to date: 90 watch events; 70 unique films; average rating 3.9'),
+  ).toBeVisible();
 });
-
 test('analysis list panels keep intrinsic heights without animated glass artifacts', async ({ page }) => {
   await page.goto('/analysis');
 
@@ -384,20 +377,20 @@ test('compare labels a single written review as a spotlight and protects spoiler
   await expect(spoilerText).toBeVisible();
 });
 
-test('spy signal selector opens, remains visible, and updates the scan', async ({ page }) => {
-  await page.goto('/spy-signals');
+test('the Overlaps profile chips stay visible and rescan on click', async ({ page }) => {
+  await page.goto('/overlaps');
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Spy Signals', exact: true })).toBeVisible();
-  const selector = page.getByRole('button', { name: /Profiles \(10 selected\)/ });
-  await selector.click();
-  const options = page.getByRole('group', { name: /Profiles \(10 selected\)/ });
-  await expect(options).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Overlaps', exact: true })).toBeVisible();
 
-  await options.locator('label').filter({ hasText: 'juliet' }).getByRole('checkbox').uncheck();
-  await expect(page.getByText('Profiles (9 selected)')).toBeVisible();
-  await page.getByRole('button', { name: 'Scan Signals' }).click();
+  // The selection is a permanently visible row rather than a dialog: it is the
+  // input to every panel below it, so hiding it behind a click made the tab's
+  // most important control the least reachable one.
+  const juliet = page.getByRole('button', { name: '@juliet', exact: true });
+  await expect(juliet).toBeVisible();
+  await juliet.click();
 
-  await expect(page).toHaveURL(/gap_days=1/);
+  // Selection lives in the URL so the tab is linkable and survives a reload.
+  await expect(page).toHaveURL(/profiles=juliet/);
   await expect(page.getByText('Shared Fixture Film').first()).toBeVisible();
 });
 

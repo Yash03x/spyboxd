@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import { ClerkProvider } from '@clerk/nextjs';
 import Providers from './providers';
+import { ibmPlexSans, jetbrainsMono } from './fonts';
+import { THEME_INIT_SCRIPT } from '../components/terminal/theme';
 import '../index.css';
 
 export const metadata: Metadata = {
@@ -19,7 +21,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         formFieldInputPlaceholder__emailAddress_username: 'Enter email or Letterboxd username',
       }}
     >
-      <html lang="en">
+      <html
+        lang="en"
+        className={`${jetbrainsMono.variable} ${ibmPlexSans.variable}`}
+        suppressHydrationWarning
+      >
+        <head>
+          {/* Sets data-theme before first paint. Without it the page renders in
+              the default theme and then snaps to the stored one, which on a
+              dense terminal layout is the whole screen flashing. */}
+          <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        </head>
         <body>
           <Providers>{children}</Providers>
         </body>

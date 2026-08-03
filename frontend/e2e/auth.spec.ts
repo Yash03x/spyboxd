@@ -48,8 +48,14 @@ test('the aggregate dashboard is the anonymous landing page', async ({ page }) =
   await signInLink.click();
   await expect(page).toHaveURL(/\/sign-in(?:\/|\?|$)/);
   await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  // The auth pages follow the product theme rather than being pinned to dark,
+  // so the contract is that `color-scheme` is declared and agrees with the
+  // theme -- an undeclared one leaves Clerk's inputs at the browser default and
+  // renders light controls on a dark card.
+  const theme = await page.evaluate(() => document.documentElement.dataset.theme);
+  expect(theme === 'dark' || theme === 'light').toBe(true);
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme))
-    .toContain('dark');
+    .toContain(theme);
 });
 
 test('sign-up uses one required Letterboxd username as the Spyboxd identity', async ({ page }) => {
@@ -88,7 +94,10 @@ for (const authenticated of [false, true]) {
     await page.goto('/');
 
     await expectPublicAuthControl(page, authenticated);
-    await expect(page.getByText('Loading Spyboxd totals…')).toBeVisible();
+    // Skeletons matching the panel's own row geometry, never a spinner: the
+    // shape of what is coming is visible while it loads, and nothing jumps
+    // when it arrives.
+    await expect(page.locator('.terminal-skeleton').first()).toBeVisible();
 
     releaseRequest();
     await expect(page.getByRole('heading', { name: /without exposing anyone's profile/i })).toBeVisible();

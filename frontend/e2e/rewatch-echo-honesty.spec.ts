@@ -14,7 +14,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('the echo note accounts for every gap echo, including the ones ruled out', async ({ page }) => {
-  await page.goto('/spy-signals?tab=echoes');
+  await page.goto('/overlaps?tab=echoes');
 
   const note = page.getByText(/A follow marker appears on/);
   await expect(note).toBeVisible();

@@ -1244,6 +1244,133 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
       ],
     });
   }
+  if (path === '/api/activity/marathons') {
+    // Two real marathon days plus one day set aside as an import artifact, so
+    // the caveat has something honest to report rather than a fixed sentence.
+    return json(route, {
+      marathons: [
+        {
+          date: '2026-07-26',
+          username: profiles[1].username,
+          films: 4,
+          runtime_minutes: 431,
+          titles: ['Fixture Film', 'Second Fixture', 'Third Fixture', 'Fourth Fixture'],
+        },
+        {
+          date: '2026-07-12',
+          username: profiles[0].username,
+          films: 3,
+          runtime_minutes: 322,
+          titles: ['Dekalog One', 'Dekalog Two', 'Dekalog Three'],
+        },
+      ],
+      count: 2,
+      import_artifact_days: 1,
+      caveat:
+        '2 days across the selection with 3 or more films logged by one person. 1 further day held more film than a day holds and was set aside as an import artifact rather than counted.',
+    });
+  }
+  if (path === '/api/activity/weekday') {
+    const counts = [1_642, 1_518, 1_721, 1_893, 3_104, 4_812, 4_353];
+    const total = counts.reduce((sum, value) => sum + value, 0);
+    return json(route, {
+      days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(
+        (label, index) => ({
+          label,
+          watches: counts[index],
+          share: Number((counts[index] / total).toFixed(4)),
+        }),
+      ),
+      total,
+      undated: 116,
+      caveat:
+        'Diary entries carry a date but no clock, so weekday is as fine-grained as time gets. 116 undated entries are excluded rather than placed on a guessed day.',
+    });
+  }
+  if (path === '/api/activity/season') {
+    const counts = [1_418, 1_284, 1_861, 1_642, 1_391, 1_204, 1_338, 1_241, 1_587, 2_094, 1_512, 981];
+    const labels = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+    const names = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ];
+    const total = counts.reduce((sum, value) => sum + value, 0);
+    return json(route, {
+      months: counts.map((watches, index) => ({
+        label: labels[index],
+        name: names[index],
+        watches,
+        share: Number((watches / total).toFixed(4)),
+      })),
+      total,
+      years_covered: 8,
+      busiest: 'October',
+      quietest: 'December',
+      caveat:
+        'Folded from 8 years of dated watches. A month that looks quiet here is a habit, not a bad month — the years are stacked.',
+    });
+  }
+  if (path === '/api/activity/logging-lag') {
+    const buckets = [
+      { label: 'Same day', events: 8_412 },
+      { label: 'Next day', events: 3_184 },
+      { label: '2–7 days', events: 2_461 },
+      { label: '1–4 weeks', events: 1_204 },
+      { label: 'Over a month', events: 618 },
+    ];
+    const measured = buckets.reduce((sum, bucket) => sum + bucket.events, 0);
+    return json(route, {
+      buckets: buckets.map((bucket) => ({
+        ...bucket,
+        share: Number((bucket.events / measured).toFixed(4)),
+      })),
+      measured,
+      total: 19_043,
+      caveat:
+        '15,879 of 19,043 dated watches carry a log date. Log dates come from the official export only — public pages never publish one, so scraped-only profiles cannot appear here at all.',
+    });
+  }
+  if (path === '/api/insights/first-watch-order') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 5).map((p) => p.username);
+    return json(route, {
+      profiles: chosen.map((username, index) => ({
+        username,
+        firsts: 147 - index * 24,
+        comparable: 241 - index * 20,
+        share: Number(((147 - index * 24) / (241 - index * 20)).toFixed(4)),
+      })),
+      undated_pairs: 312,
+      caveat:
+        '312 shared-film pairings have no first-watch date on one or both sides and are excluded rather than assumed late. That is why the shares below do not sum to anything meaningful.',
+    });
+  }
+  if (path === '/api/insights/shared-firsts') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 2).map((p) => p.username);
+    return json(route, {
+      shared_firsts: [
+        {
+          title: 'Fixture Film',
+          year: 2024,
+          poster_url: null,
+          date: '2026-03-14',
+          usernames: chosen.slice(0, 2),
+        },
+        {
+          title: 'Second Fixture',
+          year: 2023,
+          poster_url: null,
+          date: '2025-11-02',
+          usernames: chosen.slice(0, 2),
+        },
+      ],
+      count: 2,
+      profiles_with_first_watch_dates: chosen.slice(0, 3),
+      profiles_selected: chosen.length,
+      caveat: `Needs a first-watch date on both sides, so this only fires for the ${Math.min(3, chosen.length)} of ${chosen.length} selected profiles that have one. 2 qualifying films in total.`,
+    });
+  }
   if (path === '/api/spy-signals') {
     const selected = url.searchParams.getAll('profiles');
     return json(route, {
@@ -1499,6 +1626,38 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
 
   if (path === '/api/taste-timeline') {
     return json(route, tasteTimeline);
+  }
+
+  if (path === '/api/signal-calendar') {
+    // The window ends on the pair's own most recent overlap, not on today —
+    // the grid is anchored to `to`, so a fixed past date here is what proves
+    // the panel is not silently drawing eight empty weeks up to now.
+    const buckets = [
+      { date: '2026-07-04', signal_count: 2 },
+      { date: '2026-07-05', signal_count: 4 },
+      { date: '2026-07-11', signal_count: 1 },
+      { date: '2026-07-18', signal_count: 3 },
+      { date: '2026-07-19', signal_count: 5 },
+      { date: '2026-07-26', signal_count: 2 },
+    ].map((bucket) => ({
+      ...bucket,
+      pair_hits: bucket.signal_count,
+      distinct_profiles: 2,
+      intensity: bucket.signal_count / 5,
+    }));
+    return json(route, {
+      selected_profiles: url.searchParams.getAll('profiles'),
+      gap_days: Number(url.searchParams.get('gap_days') ?? 1),
+      from: '2026-06-01',
+      to: '2026-07-26',
+      coverage: { status: 'ready', score: 92, blockers: [], warnings: [] },
+      buckets,
+      events: [],
+      monthly_summary: [
+        { month: '2026-06', signal_count: 4, pair_hits: 4 },
+        { month: '2026-07', signal_count: 13, pair_hits: 13 },
+      ],
+    });
   }
 
   return route.fulfill({
