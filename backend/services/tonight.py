@@ -174,9 +174,9 @@ def build_list_progress(
         "lists": lists[:limit],
         "count": len(lists),
         "caveat": (
-            f"{len(lists)} public lists belong to this selection. A private list is not counted "
-            "at all — including one an account export brought in — so an absent list is not a "
-            "list nobody has started."
+            f"{len(lists)} public {'list belongs' if len(lists) == 1 else 'lists belong'} to this "
+            "selection. A private list is not counted at all — including one an account export "
+            "brought in — so an absent list is not a list nobody has started."
         ),
     }
 

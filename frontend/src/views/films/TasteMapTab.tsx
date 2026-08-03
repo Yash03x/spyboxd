@@ -138,14 +138,25 @@ export default function TasteMapTab({ profiles }: { profiles: string[] }) {
         {panelState({
           isLoading: conversionQuery.isLoading,
           error: conversionQuery.error,
-          isEmpty: (conversionQuery.data?.coverage.watchlist_films ?? 0) === 0,
+          // Two different emptinesses. The guard used to check only the queue
+          // size, so a queue with entries but no added dates rendered a table
+          // header over nothing at all.
+          isEmpty:
+            (conversionQuery.data?.coverage.watchlist_films ?? 0) === 0 ||
+            (conversionQuery.data?.longest_waiting.length ?? 0) === 0,
           onRetry: () => conversionQuery.refetch(),
           errorTitle: 'Queue conversion could not be read',
           errorBody: 'Every other panel on this tab is unaffected.',
-          empty: {
-            title: 'Nothing waiting in the queue',
-            body: 'Either the watchlist is private, or everything on it has been watched.',
-          },
+          empty:
+            (conversionQuery.data?.coverage.watchlist_films ?? 0) === 0
+              ? {
+                  title: 'Nothing waiting in the queue',
+                  body: 'Either the watchlist is private, or everything on it has been watched.',
+                }
+              : {
+                  title: 'Nothing in the queue can be aged',
+                  body: 'A wait needs the date an entry was added, and that exists in an official export only. The counts above still hold; the ordering below them cannot be built.',
+                },
         }) ?? (
           <Rows
             columns="minmax(0,1fr) 76px 76px"
