@@ -1,0 +1,149 @@
+/*
+ * Design tokens for the terminal redesign.
+ *
+ * Light mode is not an inversion of dark: it is warm paper with a darker amber
+ * so the accent still passes contrast against white. The two blocks are
+ * maintained by hand for that reason -- do not derive one from the other.
+ */
+
+:root {
+  --bg: #050708;
+  --bg2: #080b0d;
+  --panel: #0a0e10;
+  --panelhd: #0d1215;
+  --track: #0f1518;
+  --heat0: #111a1d;
+  --rule: #182024;
+  --rule2: #141b1e;
+  --rule3: #2a373c;
+  --scroll: #1b2327;
+  --ink: #e2ecee;
+  --ink2: #c3d1d4;
+  --ink3: #9db0b6;
+  --muted: #61757c;
+  --muted2: #4d5f66;
+  --dim: #3f5057;
+  --dim2: #2f3d42;
+  --dim3: #222e32;
+  --barmuted: #33444a;
+  --accent: #f5a623;
+  --accent2: #f5c877;
+  --onaccent: #050708;
+  --ok: #3ddc97;
+  --bad: #ff5f56;
+  --blue: #5b9cf5;
+  --poster1: rgba(226, 236, 238, 0.09);
+  --poster2: rgba(226, 236, 238, 0.02);
+}
+
+:root[data-theme='light'] {
+  --bg: #eeece7;
+  --bg2: #faf9f6;
+  --panel: #ffffff;
+  --panelhd: #f1eee8;
+  --track: #e6e2d9;
+  --heat0: #ece8e0;
+  --rule: #dad5ca;
+  --rule2: #e5e1d8;
+  --rule3: #c2bbac;
+  --scroll: #d6d1c6;
+  --ink: #191c1d;
+  --ink2: #31373a;
+  --ink3: #5a6467;
+  --muted: #79817f;
+  --muted2: #8d9492;
+  --dim: #9aa19f;
+  --dim2: #b2b7b4;
+  --dim3: #c8ccc8;
+  --barmuted: #c0c5c1;
+  --accent: #a35c00;
+  --accent2: #7a4400;
+  --onaccent: #ffffff;
+  --ok: #0a7247;
+  --bad: #b0322a;
+  --blue: #1f57b8;
+  --poster1: rgba(25, 28, 29, 0.11);
+  --poster2: rgba(25, 28, 29, 0.03);
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+}
+
+/*
+ * The terminal shell owns the page chrome wherever it renders. Applying it to
+ * a class rather than to `body` lets the legacy views keep the old gradient
+ * until their panels are rebuilt.
+ */
+.terminal-root {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.terminal-root ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.terminal-root ::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+.terminal-root ::-webkit-scrollbar-thumb {
+  background: var(--scroll);
+  border-radius: 0;
+}
+
+/* Nothing in the terminal moves for longer than 120ms, and nothing animates
+   its own opacity from 0 -- a frozen animation clock in a background tab must
+   never be able to hide content. */
+.terminal-root * {
+  transition-duration: 120ms;
+}
+
+.terminal-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Skeleton rows pulse between two opaque greys rather than fading from
+   transparent, for the same reason. */
+@keyframes terminal-pulse {
+  0%,
+  100% {
+    background-color: var(--track);
+  }
+  50% {
+    background-color: var(--rule);
+  }
+}
+
+.terminal-skeleton {
+  animation: terminal-pulse 1.4s ease-in-out infinite;
+  background-color: var(--track);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-skeleton {
+    animation: none;
+  }
+}
+
+/*
+ * The pre-redesign views are built for one dark surface and use hardcoded
+ * white text. They paint that surface themselves rather than relying on
+ * `body`, so switching the product to light mode cannot leave them rendering
+ * white on warm paper. Delete this block when the last legacy view is gone.
+ */
+.legacy-shell {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+  background-attachment: fixed;
+  color: #f8fafc;
+  color-scheme: dark;
+}

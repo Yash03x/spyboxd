@@ -2,18 +2,36 @@
 
 import { SignOutButton, UserButton, useAuth } from '@clerk/nextjs';
 import { useQuery } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
-import Image from 'next/image';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { Activity, CalendarClock, Film, MessageCircle, Radar, Star, Users } from 'lucide-react';
-import ActivityChart from '../components/Charts/ActivityChart';
-import RatingDistributionChart from '../components/Charts/RatingDistributionChart';
-import StatsCard from '../components/Charts/StatsCard';
-import ErrorMessage from '../components/ErrorMessage';
-import LoadingSpinner from '../components/LoadingSpinner';
+
+import Panel from '../components/terminal/Panel';
+import Bars from '../components/terminal/bodies/Bars';
+import Notes from '../components/terminal/bodies/Notes';
+import Rows, { cell } from '../components/terminal/bodies/Rows';
+import Spark from '../components/terminal/bodies/Spark';
+import { BarsSkeleton, PanelError, PanelSkeleton } from '../components/terminal/states';
+import { ThemeToggle } from '../components/terminal/theme';
 import { publicDashboardApi } from '../services/api';
 
+const RATING_ORDER = ['5.0', '4.5', '4.0', '3.5', '3.0', '2.5', '2.0', '1.5', '1.0', '0.5'];
+
+const STAR_LABEL: Record<string, string> = {
+  '5.0': '★★★★★', '4.5': '★★★★½', '4.0': '★★★★', '3.5': '★★★½', '3.0': '★★★',
+  '2.5': '★★½', '2.0': '★★', '1.5': '★½', '1.0': '★', '0.5': '½',
+};
+
+const MONTH_INITIAL = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+
+/**
+ * The signed-out landing page. Deliberately outside the six sections — no rail,
+ * no tab row — but the same panels, tokens and voice, because a visitor's first
+ * impression of the product should be the product.
+ *
+ * Nothing here identifies anybody. Every figure is a database-wide total or an
+ * anonymous distribution; names, pairs, titles and dates stay inside the
+ * signed-in workspace.
+ */
 export default function PublicDashboard() {
   const { isSignedIn } = useAuth();
   const dashboardQuery = useQuery({
@@ -24,122 +42,259 @@ export default function PublicDashboard() {
   });
 
   const renderShell = (content: ReactNode) => (
-    <main className="min-h-screen px-4 py-6 sm:px-8 lg:px-12" data-testid="public-dashboard">
-      <div className="mx-auto max-w-7xl space-y-8">
-        <PublicHeader isSignedIn={isSignedIn} />
+    <main className="terminal-root min-h-screen" data-testid="public-dashboard">
+      <PublicHeader isSignedIn={isSignedIn} />
+      <div className="px-[14px] pt-[14px]">
+        <div className="flex flex-wrap items-baseline gap-[10px]">
+          <h1 className="m-0 max-w-4xl font-term-sans text-t20 font-bold tracking-head text-term-ink">
+            Movie activity at a glance, without exposing anyone&apos;s profile.
+          </h1>
+        </div>
+        <p className="m-0 mt-[6px] max-w-[54rem] font-term-sans text-t115 text-term-ink3">
+          These are database-wide totals and anonymous distributions. Sign in to choose the profiles
+          you monitor, compare people, and investigate same-day watches.
+        </p>
+      </div>
+      <div
+        className="grid items-start gap-3 p-[14px]"
+        style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(400px,100%),1fr))' }}
+      >
         {content}
       </div>
     </main>
   );
 
-  if (dashboardQuery.isLoading) return renderShell(<LoadingSpinner message="Loading Spyboxd totals…" />);
+  if (dashboardQuery.isLoading) {
+    return renderShell(
+      <>
+        <Panel title="THE WHOLE DATABASE, IN FOUR NUMBERS" src="rollups">
+          <PanelSkeleton rows={2} height={21} />
+        </Panel>
+        <Panel title="HOW EVERYBODY RATES" src="ratings.rating">
+          <BarsSkeleton rows={10} />
+        </Panel>
+      </>,
+    );
+  }
+
   if (dashboardQuery.error || !dashboardQuery.data) {
-    return renderShell(<ErrorMessage message="The public dashboard could not be loaded." />);
+    return renderShell(
+      <Panel title="PUBLIC TOTALS" src="rollups" wide>
+        <PanelError
+          severity="fatal"
+          title="The public dashboard could not be loaded."
+          body="The aggregate endpoint did not respond. Nothing on this page can be shown without it."
+          onRetry={() => dashboardQuery.refetch()}
+          actionLabel="RELOAD"
+        />
+      </Panel>,
+    );
   }
 
   const analytics = dashboardQuery.data;
   const stats = analytics.system_stats;
   const signals = analytics.signal_counts;
   const lastSync = analytics.data_health.last_synced_at
-    ? new Date(analytics.data_health.last_synced_at).toLocaleDateString()
+    ? new Date(analytics.data_health.last_synced_at).toLocaleDateString('en-GB', {
+        day: '2-digit', month: 'short', year: 'numeric',
+      })
     : 'Not yet';
+
+  const distribution = analytics.rating_distribution ?? {};
+  const ratingTotal = Object.values(distribution).reduce((sum, value) => sum + value, 0);
+  const ratingBars = RATING_ORDER.filter((key) => key in distribution).map((key) => ({
+    name: STAR_LABEL[key] ?? key,
+    weight: distribution[key],
+    value: distribution[key].toLocaleString(),
+    sub: ratingTotal ? `${Math.round((distribution[key] / ratingTotal) * 100)}%` : '',
+  }));
+
+  // A month still in progress is not a month with less watching in it. The
+  // average is taken over completed months only, and the partial one is named
+  // rather than quietly dragging the figure down.
+  const activity = analytics.activity_data ?? [];
+  const completedMonths = activity.filter((entry) => !entry.is_partial);
+  const partialMonth = activity.find((entry) => entry.is_partial);
+  const completed = {
+    months: completedMonths.length,
+    watchAverage: completedMonths.length
+      ? completedMonths.reduce((sum, entry) => sum + entry.movies_watched, 0) / completedMonths.length
+      : 0,
+    uniqueAverage: completedMonths.length
+      ? completedMonths.reduce((sum, entry) => sum + (entry.unique_movies ?? 0), 0) /
+        completedMonths.length
+      : 0,
+  };
+  const partialLabel = partialMonth
+    ? new Date(`${partialMonth.month}-01T00:00:00Z`).toLocaleDateString('en-GB', {
+        month: 'long',
+        year: 'numeric',
+        timeZone: 'UTC',
+      })
+    : null;
+  const activityCaveat = partialLabel
+    ? `${partialLabel} is month to date and is excluded from the completed-month average, which is taken over ${completed.months} completed month${completed.months === 1 ? '' : 's'}.`
+    : `Averaged over ${completed.months} completed month${completed.months === 1 ? '' : 's'}.`;
+
+  const sparkItems = activity.map((entry) => {
+    const month = Number(entry.month?.slice(5, 7) ?? '1') - 1;
+    return {
+      label: MONTH_INITIAL[Number.isNaN(month) ? 0 : month] ?? '?',
+      value: entry.movies_watched,
+      inner: entry.unique_movies ?? undefined,
+      display: entry.movies_watched === 0 ? '—' : String(entry.movies_watched),
+      partial: entry.is_partial,
+      hint: `${new Date(`${entry.month}-01T00:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' })}${entry.is_partial ? ', month to date' : ''}: ${entry.movies_watched} watch events; ${entry.unique_movies ?? 0} unique films${entry.average_rating === null ? '' : `; average rating ${entry.average_rating}`}`,
+    };
+  });
 
   return renderShell(
     <>
-      <motion.section
-        className="space-y-3 py-4"
-        initial={{ y: 16 }}
-        animate={{ y: 0 }}
+      <Panel
+        title="THE WHOLE DATABASE, IN FOUR NUMBERS"
+        src="rollups · profiles · movies"
+        stats={[
+          { big: stats.total_profiles.toLocaleString(), unit: 'PROFILES', tone: 'var(--accent)' },
+          { big: stats.total_movies_tracked.toLocaleString(), unit: 'UNIQUE FILMS' },
+          { big: stats.total_reviews.toLocaleString(), unit: 'REVIEWS' },
+          { big: stats.global_avg_rating.toFixed(2), unit: 'AVERAGE' },
+        ]}
+        caveat={`${analytics.data_health.completed_profiles} of ${stats.total_profiles} profiles are ready for analysis. Latest completed sync: ${lastSync}.`}
+      />
+
+      <Panel
+        title="HOW EVERYBODY RATES"
+        src="ratings.rating"
+        blurb="The whole distribution, not an average. Anonymous — a bar is a count of ratings, never a person."
       >
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cinema-300">Public dashboard</p>
-        <h1 className="max-w-4xl text-4xl font-bold leading-tight text-white text-glow sm:text-5xl">
-          Movie activity at a glance, without exposing anyone&apos;s profile.
-        </h1>
-        <p className="max-w-3xl text-base leading-7 text-white/60">
-          These are database-wide totals and anonymous distributions. Sign in to choose the profiles you monitor, compare people, and investigate same-day watches.
-        </p>
-      </motion.section>
+        <Bars items={ratingBars} />
+      </Panel>
 
-      <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" aria-label="Aggregate totals">
-        <StatsCard title="Profiles analyzed" value={stats.total_profiles} subtitle={`${analytics.data_health.completed_profiles} ready for analysis`} icon={Users} />
-        <StatsCard title="Unique films" value={stats.total_movies_tracked} subtitle="Across the aggregate dataset" icon={Film} gradient="from-blue-500/20 to-blue-600/10" delay={0.05} />
-        <StatsCard title="Reviews" value={stats.total_reviews} subtitle="Imported review records" icon={MessageCircle} gradient="from-purple-500/20 to-purple-600/10" delay={0.1} />
-        <StatsCard title="Average rating" value={stats.global_avg_rating.toFixed(1)} subtitle="Across rated entries" icon={Star} gradient="from-yellow-500/20 to-yellow-600/10" delay={0.15} />
-      </section>
+      <Panel
+        title="ACTIVITY, MONTH BY MONTH"
+        src="watch_events.watched_date"
+        blurb="Full bar is watches. The lighter block inside it is films nobody in the database had logged before."
+        stats={
+          completed.months
+            ? [
+                { big: completed.watchAverage.toFixed(1), unit: 'WATCHES / MONTH' },
+                { big: completed.uniqueAverage.toFixed(1), unit: 'UNIQUE FILMS / MONTH' },
+              ]
+            : undefined
+        }
+        caveat={activityCaveat}
+      >
+        <Spark items={sparkItems} />
+      </Panel>
 
-      <section className="grid grid-cols-1 gap-8 xl:grid-cols-2" aria-label="Aggregate charts">
-        <RatingDistributionChart data={analytics.rating_distribution} globalAverage={stats.global_avg_rating} />
-        <ActivityChart data={analytics.activity_data} />
-      </section>
+      <Panel
+        title="ANONYMOUS OVERLAP TOTALS"
+        src="watch_events × watch_events"
+        blurb="How much overlap exists in the dataset. Names, profile pairs, titles, ratings and watch dates stay inside the signed-in workspace."
+        wide
+      >
+        <Rows
+          columns="minmax(0,1fr) 90px"
+          head={['WHAT', ['COUNT', 'right']]}
+          rows={[
+            ['Same-day watches', signals.same_day_events],
+            ['Within a day', signals.one_day_gap_events],
+            ['Shared titles', signals.shared_titles],
+            ['Profiles carrying diary dates', signals.profiles_with_diary_dates],
+          ].map(([label, value]) => ({
+            cells: [
+              cell(label as string, { font: 's', size: '11px' }),
+              cell((value as number).toLocaleString(), { align: 'right', tone: 'var(--ink)' }),
+            ],
+          }))}
+        />
+      </Panel>
 
-      <section className="card-cinema overflow-hidden" aria-labelledby="anonymous-signals-title">
-        <div className="flex items-start gap-4">
-          <span className="rounded-2xl border border-cinema-400/30 bg-cinema-500/15 p-3 text-cinema-300"><Radar className="h-7 w-7" /></span>
-          <div>
-            <h2 id="anonymous-signals-title" className="text-2xl font-bold text-white">Anonymous spy-signal totals</h2>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-white/55">Counts show how much overlap exists in the dataset. Names, profile pairs, titles, ratings, and watch dates stay inside the signed-in workspace.</p>
-          </div>
-        </div>
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <AggregateSignal icon={Activity} label="Same-day events" value={signals.same_day_events} />
-          <AggregateSignal icon={CalendarClock} label="One-day echoes" value={signals.one_day_gap_events} />
-          <AggregateSignal icon={Film} label="Shared titles" value={signals.shared_titles} />
-          <AggregateSignal icon={Users} label="Profiles with dates" value={signals.profiles_with_diary_dates} />
-        </div>
-        <div className="mt-6 flex flex-col gap-4 border-t border-white/10 pt-6 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-white/45">Latest completed profile sync: <span className="font-medium text-white/70">{lastSync}</span></p>
-          <Link href={isSignedIn ? '/profiles' : '/sign-in?redirect_url=%2Fprofiles'} className="btn-secondary text-center">
+      <Panel title="WHAT SIGNING IN ADDS" src="the private workspace" wide>
+        <Notes
+          items={[
+            {
+              label: 'Who watched the same thing, and when',
+              text: 'Same film, close in time, named on both sides — with the honest account of how sure we are about each one.',
+            },
+            {
+              label: 'What one person is like, and how two relate',
+              text: 'Rewatches, drift, obscurity, review habits, the follow graph, and where two people part company.',
+            },
+            {
+              label: 'What to actually watch tonight',
+              text: 'Ranked across whoever is in the room, from what they have queued and what nobody has seen.',
+            },
+            {
+              label: 'Where the data came from, and what is missing',
+              text: 'Every panel names the table it reads and says what it is waiting for. Nothing here is a claim without a source.',
+            },
+          ]}
+        />
+        <div className="flex flex-wrap items-center gap-3 border-t border-term-rule2 px-[10px] py-[9px]">
+          <Link
+            href={isSignedIn ? '/overview' : '/sign-in?redirect_url=%2Fprofiles'}
+            className="rounded-[3px] border border-term-accent bg-term-accent px-3 py-[5px] text-t105 font-bold text-term-onaccent no-underline hover:no-underline"
+          >
             {isSignedIn ? 'Choose monitored profiles' : 'Sign in for private tools'}
           </Link>
+          <span className="font-term-sans text-t10 text-term-dim">
+            Latest completed profile sync: {lastSync}
+          </span>
         </div>
-      </section>
-    </>
+      </Panel>
+    </>,
   );
 }
 
 function PublicHeader({ isSignedIn }: { isSignedIn: boolean | undefined }) {
   return (
-    <header className="flex flex-col gap-5 border-b border-white/10 pb-6 sm:flex-row sm:items-center sm:justify-between">
-      <Link href="/" className="flex items-center gap-3" aria-label="Spyboxd public dashboard">
-        <Image
-          src="/icon.svg"
-          alt=""
-          width={44}
-          height={44}
-          className="h-11 w-11 rounded-xl border border-cinema-400/20 shadow-glow"
-          priority
-        />
-        <span>
-          <span className="block text-xl font-bold text-white">Spyboxd</span>
-          <span className="block text-xs text-white/45">Aggregate Letterboxd signals</span>
+    <header className="sticky top-0 z-50 flex h-[34px] items-center justify-between gap-4 border-b border-term-rule bg-term-bg2 px-3 text-t105">
+      <Link href="/" className="flex shrink-0 items-center gap-[10px] no-underline hover:no-underline" aria-label="Spyboxd public dashboard">
+        <span className="grid h-[22px] w-[22px] place-items-center rounded-[3px] bg-term-accent text-[11px] font-extrabold text-term-onaccent">
+          S
         </span>
+        <span className="font-bold tracking-crumb text-term-accent">SPYBOXD</span>
+        <span className="hidden text-term-dim2 sm:inline">›</span>
+        <span className="hidden text-term-ink3 sm:inline">PUBLIC TOTALS</span>
       </Link>
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex min-w-0 shrink-0 items-center gap-2 overflow-x-auto text-term-muted">
         {isSignedIn ? (
           <>
-            <Link href="/dashboard" className="btn-primary whitespace-nowrap">Open My Dashboard</Link>
+            <Link
+              href="/overview"
+              className="rounded-[3px] border border-term-accent px-2 py-[3px] text-term-accent no-underline hover:no-underline"
+            >
+              Open My Dashboard
+            </Link>
             <SignOutButton redirectUrl="/">
-              <button type="button" className="btn-secondary whitespace-nowrap">Sign out</button>
+              <button
+                type="button"
+                className="rounded-[3px] border border-term-rule px-2 py-[3px] hover:border-term-accent hover:text-term-accent"
+              >
+                Sign out
+              </button>
             </SignOutButton>
             <UserButton />
           </>
         ) : (
           <>
-            <Link href="/sign-up" className="btn-primary whitespace-nowrap">Create account</Link>
-            <Link href="/sign-in?redirect_url=%2Fprofiles" className="btn-secondary whitespace-nowrap">Sign in to monitor profiles</Link>
+            <Link
+              href="/sign-up"
+              className="rounded-[3px] border border-term-accent bg-term-accent px-2 py-[3px] font-bold text-term-onaccent no-underline hover:no-underline"
+            >
+              Create account
+            </Link>
+            <Link
+              href="/sign-in?redirect_url=%2Fprofiles"
+              className="rounded-[3px] border border-term-rule px-2 py-[3px] text-term-ink3 no-underline hover:border-term-accent hover:text-term-accent hover:no-underline"
+            >
+              Sign in to monitor profiles
+            </Link>
           </>
         )}
+        <ThemeToggle />
       </div>
     </header>
-  );
-}
-
-function AggregateSignal({ icon: Icon, label, value }: { icon: typeof Activity; label: string; value: number }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-black/15 p-4">
-      <Icon className="h-5 w-5 text-cinema-300" />
-      <p className="mt-3 text-2xl font-bold text-white">{value.toLocaleString()}</p>
-      <p className="mt-1 text-xs text-white/50">{label}</p>
-    </div>
   );
 }

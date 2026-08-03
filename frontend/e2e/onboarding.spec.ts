@@ -2,22 +2,25 @@ import { expect, test } from '@playwright/test';
 
 import { installApiMocks } from './fixtures/api';
 
-test('an empty profile set guides the user to My Profiles', async ({ page }) => {
+test('an empty profile set guides the user to Data', async ({ page }) => {
   await installApiMocks(page, { profileCount: 0 });
 
-  await page.goto('/dashboard');
+  await page.goto('/overview');
 
   await expect(page.getByRole('heading', { name: 'Choose your first monitored profile' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Choose or request a profile' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'CHOOSE OR REQUEST A PROFILE' })).toBeVisible();
 });
 
 test('one tracked profile explains how to unlock pair features', async ({ page }) => {
   await installApiMocks(page, { profileCount: 1 });
 
-  await page.goto('/dashboard');
+  await page.goto('/overview');
 
-  await expect(page.getByRole('heading', { name: 'Add one more profile for Spy Signals' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add or request a profile' })).toBeVisible();
+  // Overlap and star distance are both pair measures, so the panel that needs
+  // two says so where the answer would have been rather than rendering an
+  // empty grid the reader has to interpret.
+  await expect(page.getByRole('heading', { name: 'Two profiles are needed' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'CHOOSE WHO TO MONITOR' })).toBeVisible();
 });
 
 test('a synced signup profile is identified and cannot be removed', async ({ page }) => {

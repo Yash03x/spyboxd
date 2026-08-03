@@ -62,3 +62,7 @@ temp/
 # Local dev-server launch config
 .claude/launch.json
 frontend/e2e/tmp-*.spec.ts
+
+# Playwright writes its last-run marker beside the config when a run is
+# interrupted; it is a local artifact, never part of the repo.
+test-results/

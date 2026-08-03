@@ -88,20 +88,25 @@ test('admin library mutations refresh the selectable profile catalog', async ({ 
 test('an admin can switch between personal monitoring and the preserved global dashboard', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
 
-  await page.goto('/dashboard');
+  await page.goto('/overview');
 
-  await expect(page.getByText('Analytics across the complete managed profile library')).toBeVisible();
-  await page.getByRole('button', { name: 'Monitored', exact: true }).click();
-  await expect(page.getByText('Analytics across the Letterboxd profiles you monitor')).toBeVisible();
+  // The scope lens sits in the status bar beside the counts it changes, and
+  // the chip states which library those counts came from.
+  const managed = page.getByText('MANAGED LIBRARY', { exact: false });
+  const monitored = page.getByText('· MONITORED', { exact: false });
+
   await page.getByRole('button', { name: 'Global admin' }).click();
-  await expect(page.getByText('Analytics across the complete managed profile library')).toBeVisible();
-  await expect(page.getByText('Managed Profiles', { exact: true }).first()).toBeVisible();
+  await expect(managed).toBeVisible();
+  await page.getByRole('button', { name: 'Monitored', exact: true }).click();
+  await expect(monitored).toBeVisible();
+  await page.getByRole('button', { name: 'Global admin' }).click();
+  await expect(managed).toBeVisible();
 });
 
 test('the admin scope toggle appears on every analytics page and persists across pages', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
 
-  await page.goto('/spy-signals');
+  await page.goto('/overlaps');
   await expect(page.getByRole('button', { name: 'Global admin' })).toBeVisible();
 
   const trackedProfilesRequest = page.waitForRequest((request) => (
@@ -110,7 +115,7 @@ test('the admin scope toggle appears on every analytics page and persists across
   await page.getByRole('button', { name: 'Monitored', exact: true }).click();
   await trackedProfilesRequest;
 
-  for (const path of ['/analysis', '/compare', '/watch-together', '/dashboard']) {
+  for (const path of ['/analysis', '/compare', '/watch-together', '/overview', '/overlaps']) {
     await page.goto(path);
     await expect(page.getByRole('button', { name: 'Monitored', exact: true })).toHaveAttribute('aria-pressed', 'true');
   }
@@ -119,7 +124,7 @@ test('the admin scope toggle appears on every analytics page and persists across
 test('the scope toggle never renders for non-admin users', async ({ page }) => {
   await installApiMocks(page, { isAdmin: false });
 
-  for (const path of ['/dashboard', '/spy-signals', '/analysis', '/compare', '/watch-together']) {
+  for (const path of ['/overview', '/overlaps', '/analysis', '/compare', '/watch-together']) {
     await page.goto(path);
     await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Global admin' })).toHaveCount(0);

@@ -1,5 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import './terminal.css';
 
 @tailwind base;
 @tailwind components;
@@ -12,17 +11,15 @@
   
   html {
     scroll-behavior: smooth;
-    color-scheme: dark;
   }
   
   body {
     margin: 0;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
-    background-attachment: fixed;
-    color: #f8fafc;
+    background: var(--bg);
+    color: var(--ink);
     overflow-x: hidden;
   }
   

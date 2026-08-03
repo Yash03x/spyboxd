@@ -1783,4 +1783,145 @@ export const obscurityApi = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Group rhythm — when the tracked group watches, rather than what.
+// Every response carries the coverage it was computed from in `caveat`, which
+// the panel renders verbatim. Coverage is a real number here, not a sentence
+// the frontend invents.
+// ---------------------------------------------------------------------------
+
+export interface MarathonDay {
+  date: string;
+  username: string;
+  films: number;
+  runtime_minutes: number | null;
+  titles: string[];
+}
+
+export interface MarathonsResponse {
+  marathons: MarathonDay[];
+  count: number;
+  /** Days that held more film than a day holds, set aside rather than counted. */
+  import_artifact_days: number;
+  caveat: string;
+}
+
+export interface WeekdayBucket {
+  label: string;
+  watches: number;
+  share: number | null;
+}
+
+export interface WeekdayRhythmResponse {
+  days: WeekdayBucket[];
+  total: number;
+  undated: number;
+  caveat: string;
+}
+
+export interface SeasonMonth {
+  label: string;
+  name: string;
+  watches: number;
+  share: number | null;
+}
+
+export interface SeasonShapeResponse {
+  months: SeasonMonth[];
+  total: number;
+  years_covered: number;
+  busiest: string | null;
+  quietest: string | null;
+  caveat: string;
+}
+
+export interface LoggingLagBucket {
+  label: string;
+  events: number;
+  share: number | null;
+}
+
+export interface LoggingLagResponse {
+  buckets: LoggingLagBucket[];
+  measured: number;
+  total: number;
+  caveat: string;
+}
+
+export const activityApi = {
+  getMarathons: async (profiles: string[], limit = 12): Promise<MarathonsResponse> => {
+    const params = selectedProfileParams(profiles);
+    params.set('limit', String(limit));
+    const response = await api.get('/api/activity/marathons', { params });
+    return response.data;
+  },
+
+  getWeekdayRhythm: async (profiles: string[]): Promise<WeekdayRhythmResponse> => {
+    const response = await api.get('/api/activity/weekday', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+
+  getSeasonShape: async (profiles: string[]): Promise<SeasonShapeResponse> => {
+    const response = await api.get('/api/activity/season', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+
+  getLoggingLag: async (profiles: string[]): Promise<LoggingLagResponse> => {
+    const response = await api.get('/api/activity/logging-lag', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+};
+
+export interface FirstWatchOrderEntry {
+  username: string;
+  firsts: number;
+  comparable: number;
+  share: number | null;
+}
+
+export interface FirstWatchOrderResponse {
+  profiles: FirstWatchOrderEntry[];
+  /** Shared films with no first-watch date on one side, excluded not assumed. */
+  undated_pairs: number;
+  caveat: string;
+}
+
+export interface SharedFirst {
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  date: string;
+  usernames: string[];
+}
+
+export interface SharedFirstsResponse {
+  shared_firsts: SharedFirst[];
+  count: number;
+  profiles_with_first_watch_dates: string[];
+  profiles_selected: number;
+  caveat: string;
+}
+
+export const firstWatchApi = {
+  getOrder: async (profiles: string[]): Promise<FirstWatchOrderResponse> => {
+    const response = await api.get('/api/insights/first-watch-order', {
+      params: selectedProfileParams(profiles),
+    });
+    return response.data;
+  },
+
+  getSharedFirsts: async (profiles: string[], limit = 12): Promise<SharedFirstsResponse> => {
+    const params = selectedProfileParams(profiles);
+    params.set('limit', String(limit));
+    const response = await api.get('/api/insights/shared-firsts', { params });
+    return response.data;
+  },
+};
+
 export default api;
