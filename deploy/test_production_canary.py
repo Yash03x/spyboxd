@@ -140,6 +140,9 @@ def _good_responses():
         responses[f"{web}{path}"] = public_canary.Response(
             308, {**SECURITY_HEADERS, "Location": f"{destination}?tab=one"}, b""
         )
+    responses[f"{api}{public_canary.ABSENT_API_PATH}"] = _json_response(
+        {"detail": "Not Found"}, status=404
+    )
     for path in public_canary.PRIVATE_API_PATHS:
         responses[f"{api}{path}"] = _json_response(
             {"detail": "Missing authorization token"},
@@ -1279,3 +1282,36 @@ class ProductionCanaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbsentApiRouteControlTests(unittest.TestCase):
+    """The 401 sweep only proves an endpoint exists while 404 still means gone.
+
+    Forty redesign endpoints are asserted to answer 401. If the API ever
+    started answering 401 to everything, that whole sweep would pass while
+    every endpoint had disappeared.
+    """
+
+    def test_a_fabricated_path_answering_401_fails_the_canary(self):
+        responses = _good_responses()
+        responses[f"https://api.spyboxd.com{public_canary.ABSENT_API_PATH}"] = _json_response(
+            {"detail": "Missing authorization token"},
+            status=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        with self.assertRaises(public_canary.CanaryError) as caught:
+            public_canary.run_canary(
+                web_base="https://spyboxd.com",
+                api_base="https://api.spyboxd.com",
+                validator_path=DEPLOY_DIR / "check-runtime-health.py",
+                client=FakeClient(responses),
+            )
+        self.assertIn("no longer proves an endpoint exists", str(caught.exception))
+
+    def test_every_redesign_endpoint_is_covered(self):
+        """Three of forty were listed; the rest shipped unwatched."""
+
+        for prefix in ("/api/films/", "/api/tonight/", "/api/data-health/", "/api/people/"):
+            covered = [p for p in public_canary.PRIVATE_API_PATHS if p.startswith(prefix)]
+            self.assertTrue(covered, f"no {prefix} endpoint is checked by the canary")
+        self.assertGreaterEqual(len(public_canary.PRIVATE_API_PATHS), 60)

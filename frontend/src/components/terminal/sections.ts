@@ -11,7 +11,19 @@ export interface TabDef {
   /** URL value, e.g. `?tab=echoes`. */
   id: string;
   label: string;
-  /** How many panels the tab holds; shown beside the label in the tab row. */
+  /**
+   * How many panels the tab holds; shown beside the label in the tab row.
+   *
+   * Counted from what the page actually renders, not from what the handoff
+   * planned. Three of these were transcribed from the design document and then
+   * drifted as panels were added: One person said 20 against 24 on screen, Two
+   * people 10 against 11, Profiles 7 against 5. A badge in a product whose
+   * whole argument is that its numbers are true cannot be a rough estimate.
+   *
+   * Data › Profiles is the one tab whose panel count is not fixed: an admin
+   * sees an extra request-queue panel. The number here is what every reader
+   * gets; the admin panel is labelled as an addition.
+   */
   panels: number;
 }
 
@@ -69,8 +81,8 @@ export const SECTIONS: SectionDef[] = [
     blurb:
       'Merges Analysis, Compare and Network. Three doors into the same subject become one destination with four tabs.',
     tabs: [
-      { id: 'one', label: 'ONE PERSON', panels: 20 },
-      { id: 'two', label: 'TWO PEOPLE', panels: 10 },
+      { id: 'one', label: 'ONE PERSON', panels: 24 },
+      { id: 'two', label: 'TWO PEOPLE', panels: 11 },
       { id: 'circle', label: 'THE CIRCLE', panels: 7 },
       { id: 'reach', label: 'REACH', panels: 6 },
     ],
@@ -112,7 +124,7 @@ export const SECTIONS: SectionDef[] = [
     blurb:
       'Was My Profiles. Choosing who you follow sits next to the sync health that decides what you actually get, and next to the honest inventory of what we cannot read.',
     tabs: [
-      { id: 'profiles', label: 'PROFILES', panels: 7 },
+      { id: 'profiles', label: 'PROFILES', panels: 5 },
       { id: 'refreshes', label: 'REFRESHES', panels: 4 },
       { id: 'missing', label: "WHAT'S MISSING", panels: 4 },
       { id: 'lost', label: 'LOST & FOUND', panels: 3 },
