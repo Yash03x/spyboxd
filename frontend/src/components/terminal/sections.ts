@@ -26,10 +26,10 @@ export interface SectionDef {
   blurb: string;
   tabs: TabDef[];
   /**
-   * The pre-redesign route this section replaces. While a section is still
-   * being moved across, the rail sends people here rather than to a route that
-   * does not exist yet -- a half-migrated product that still works beats a
-   * fully-migrated one that 404s. Delete the field when the section lands.
+   * The pre-redesign route a section is still being served from, if any.
+   * Nothing sets it now that all six have landed; it stays because the next
+   * migration will want the same escape hatch -- a half-migrated product that
+   * still works beats a fully-migrated one that 404s.
    */
   legacyPath?: string;
 }
@@ -88,7 +88,6 @@ export const SECTIONS: SectionDef[] = [
       { id: 'lists', label: 'LISTS', panels: 4 },
       { id: 'leaving', label: 'LEAVING SOON', panels: 3 },
     ],
-    legacyPath: '/watch-together',
   },
   {
     id: 'films',
@@ -103,7 +102,6 @@ export const SECTIONS: SectionDef[] = [
       { id: 'taste', label: 'TASTE MAP', panels: 5 },
       { id: 'gaps', label: 'GAPS', panels: 2 },
     ],
-    legacyPath: '/watch-together',
   },
   {
     id: 'data',
@@ -119,7 +117,6 @@ export const SECTIONS: SectionDef[] = [
       { id: 'missing', label: "WHAT'S MISSING", panels: 4 },
       { id: 'lost', label: 'LOST & FOUND', panels: 3 },
     ],
-    legacyPath: '/profiles',
   },
 ];
 

@@ -278,46 +278,35 @@ test('the Overlaps profile chips stay visible and rescan on click', async ({ pag
   await expect(page.getByText('Shared Fixture Film').first()).toBeVisible();
 });
 
-test('watch together selector stays in the viewport and broken posters fall back', async ({ page }) => {
-  await page.goto('/watch-together');
+test('Tonight keeps its selection in the viewport and never paints a broken poster', async ({
+  page,
+}) => {
+  await page.goto('/tonight?tab=picks');
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Watch Together' })).toBeVisible();
-  const selector = page.getByRole('button', { name: 'Group profiles' });
-  await selector.click();
-  const panel = page.getByRole('group', { name: 'Group profiles' });
-  await expect(panel).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Tonight', exact: true })).toBeVisible();
 
-  const lastProfile = panel.getByText('juliet', { exact: true });
-  await lastProfile.scrollIntoViewIfNeeded();
-  await expect(lastProfile).toBeVisible();
-  const panelBox = await panel.boundingBox();
+  // The selection is a permanently visible row rather than a dialog, so the
+  // "does it fit on screen" question is about the row itself.
+  const juliet = page.getByRole('link', { name: '@juliet', exact: true });
+  await expect(juliet).toBeVisible();
+  const box = await juliet.boundingBox();
   const viewport = page.viewportSize();
-  expect(panelBox).not.toBeNull();
+  expect(box).not.toBeNull();
   expect(viewport).not.toBeNull();
-  expect(panelBox!.x).toBeGreaterThanOrEqual(0);
-  expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(viewport!.width + 1);
-  expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(viewport!.height + 1);
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width + 1);
 
-  const echoOption = panel.getByText('echo', { exact: true }).locator('xpath=ancestor::label[1]');
-  await echoOption.click();
-  await expect(echoOption.getByRole('checkbox')).toBeChecked();
-  await expect(selector).toContainText('5 selected');
-  await page.keyboard.press('Escape');
-  await expect(panel).toBeHidden();
+  await juliet.click();
+  await expect(page).toHaveURL(/profiles=juliet/);
 
-  await expect(page.getByText('Fallback Fixture', { exact: true }).filter({ visible: true }).first()).toBeVisible();
-  await expect(page.getByRole('link', { name: 'View film on Letterboxd' })).toHaveAttribute(
-    'href',
-    'https://letterboxd.com/film/fallback-fixture/',
-  );
-  await expect(page.getByRole('link', { name: 'View film on TMDB' })).toHaveAttribute(
-    'href',
-    'https://www.themoviedb.org/movie/550',
-  );
+  // A poster URL that 404s falls back to the striped placeholder rather than
+  // painting a torn icon: a stale poster path is ours to absorb.
   await expect(page.locator('img[src*="missing-poster"]')).toHaveCount(0);
-  const brokenImages = await page.locator('main img').evaluateAll((images) => images.filter((image) => {
-    const element = image as HTMLImageElement;
-    return element.complete && element.naturalWidth === 0;
-  }).length);
+  const brokenImages = await page.locator('img').evaluateAll((images) =>
+    images.filter((image) => {
+      const element = image as HTMLImageElement;
+      return element.complete && element.naturalWidth === 0;
+    }).length,
+  );
   expect(brokenImages).toBe(0);
 });

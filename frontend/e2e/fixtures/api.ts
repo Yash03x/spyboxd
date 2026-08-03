@@ -1410,6 +1410,300 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
       caveat: `${chosen.length - 1} of ${chosen.length} selected profiles carry the member id a rename survives — those get renamed in place on the next read instead of duplicated as a new account. The previous username is not retained: the row is updated, not versioned, so this panel reports what a rename would cost rather than listing renames nobody recorded.`,
     });
   }
+  if (path.startsWith('/api/films/') || path.startsWith('/api/tonight/') || path.startsWith('/api/data-health/')) {
+    const coverage = { films: 4_187, enriched: 3_643, ratio: 0.8701 };
+    const cap =
+      'Read over the 3,643 of 4,187 distinct films that carry TMDB metadata (87%). Unmatched films are excluded rather than counted as an empty value.';
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 3).map((p) => p.username);
+
+    switch (path) {
+      case '/api/films/keywords':
+        return json(route, {
+          keywords: [
+            { keyword: 'grief', films: 172, share: 0.041 },
+            { keyword: 'one location', films: 143, share: 0.034 },
+            { keyword: 'unreliable narrator', films: 121, share: 0.029 },
+          ],
+          coverage,
+          caveat: `${cap} Share is against the enriched library, so anything above roughly 4% is a real preference rather than a long tail.`,
+        });
+      case '/api/films/runtime':
+        return json(route, {
+          bands: [
+            { label: 'under 90', watched: 412, queued: 96, ratio: 4.29 },
+            { label: '90–110', watched: 1_486, queued: 341, ratio: 4.36 },
+            { label: '110–130', watched: 1_204, queued: 388, ratio: 3.1 },
+            { label: '130–150', watched: 618, queued: 297, ratio: 2.08 },
+            // Nothing queued over 150, so there is no ratio rather than a
+            // ratio of zero.
+            { label: 'over 150', watched: 219, queued: 0, ratio: null },
+          ],
+          coverage,
+          caveat: cap,
+        });
+      case '/api/films/atlas':
+        return json(route, {
+          countries: [
+            { country: 'United States', films: 1_842 },
+            { country: 'United Kingdom', films: 486 },
+            { country: 'France', films: 361 },
+          ],
+          distinct_countries: 48,
+          subtitled_share: 0.31,
+          coverage,
+          caveat: cap,
+        });
+      case '/api/films/filmographies':
+        return json(route, {
+          directors: [
+            { director: 'Hirokazu Kore-eda', films: 11, titles: ['Shoplifters', 'Still Walking'], average_rating: 4.2 },
+            { director: 'Chantal Akerman', films: 4, titles: ['Jeanne Dielman'], average_rating: null },
+          ],
+          count: 2,
+          coverage,
+          caveat: `${cap} Films held, never a percentage of a filmography: TMDB does not give a director's total in the film payload, so a denominator would be a guess.`,
+        });
+      case '/api/films/collections':
+        return json(route, {
+          series: [
+            { name: 'Before trilogy', films: 3, average_rating: 4.5 },
+            { name: 'Apu trilogy', films: 2, average_rating: null },
+          ],
+          count: 2,
+          coverage,
+          caveat: `${cap} A count of films held, not a completion score: TMDB's collection size is not in the film payload. Singles are excluded.`,
+        });
+      case '/api/films/liked-vs-rated':
+        return json(route, {
+          quadrants: [
+            { tag: 'HEART + HIGH SCORE', films: 1_284, share: 0.31, note: 'Agreement between the two instruments. The unremarkable corner.' },
+            { tag: 'HEART, NO HIGH SCORE', films: 196, share: 0.05, note: 'Loved it, would not rank it. Comfort watches and childhood films.' },
+            { tag: 'HIGH SCORE, NO HEART', films: 612, share: 0.15, note: 'Admired, not loved. The most revealing corner in the panel.' },
+            { tag: 'NEITHER', films: 2_095, share: 0.49, note: 'Watched and moved on.' },
+          ],
+          total: 4_187,
+          caveat:
+            'A high score is four stars or more. An unrated film has no score, so it lands in "neither" alongside films that were actually rated low — the two are not the same, and People › Watched but never rated separates them.',
+        });
+      case '/api/films/decade-divergence':
+        return json(route, {
+          decades: [
+            { decade: '1970s', delta: -0.58, films: 196 },
+            { decade: '1990s', delta: 0.09, films: 388 },
+            { decade: '2010s', delta: 0.31, films: 1_184 },
+          ],
+          measured: 1_768,
+          caveat:
+            'Measured over 1,768 rated films that carry Letterboxd\'s own crowd average. Decades with fewer than five such films are dropped rather than shown as a lean built from two opinions.',
+        });
+      case '/api/films/queue-age':
+        return json(route, {
+          films: [
+            { title: 'Sátántangó', year: 1994, poster_url: null, username: chosen[0], added_date: '2019-03-04' },
+            { title: 'Shoah', year: 1985, poster_url: null, username: chosen[0], added_date: '2019-08-02' },
+          ],
+          dated: 1_204,
+          total: 1_619,
+          profiles_with_added_dates: chosen.slice(0, 2),
+          caveat:
+            '2 of 3 selected profiles carry an added date, so 1,204 of 1,619 queued entries can be aged at all. The rest are excluded rather than guessed at.',
+        });
+      case '/api/films/language-ladder':
+        return json(route, {
+          years: [
+            { year: 2023, watches: 400, non_english: 136, share: 0.34 },
+            { year: 2024, watches: 420, non_english: 164, share: 0.39 },
+            { year: 2025, watches: 380, non_english: 163, share: 0.43 },
+          ],
+          caveat:
+            'Measured over 1,200 dated watches whose film carries an original language. Years with fewer than ten such watches are dropped rather than shown as a share built from a handful.',
+        });
+      case '/api/films/metadata-gaps':
+        return json(route, {
+          films: [
+            { title: 'Sinners', year: 2025, poster_url: null, profiles: 4, missing: ['poster', 'runtime', 'genres'] },
+            { title: 'La Chimera', year: 2023, poster_url: null, profiles: 3, missing: ['poster'] },
+          ],
+          count: 544,
+          coverage,
+          caveat:
+            '544 distinct films carry no enrichment at all. Ordered by how many profiles hold each one rather than alphabetically, because that is what decides how often a blank appears on screen.',
+        });
+      case '/api/films/match-rate':
+        return json(route, {
+          films: 4_187,
+          enriched: 3_643,
+          with_tmdb_id: 3_755,
+          ratio: 0.8701,
+          reasons: [
+            { reason: 'Matched to a TMDB id and enriched', films: 3_643 },
+            { reason: 'Matched to a TMDB id, enrichment not fetched yet', films: 112 },
+            { reason: 'No confident title and year match', films: 432 },
+          ],
+          caveat:
+            'Taste breakdown, runtime appetite, countries, keywords and availability all read the enrichment cache. Whatever this number is, it is their maximum — and every one of those panels states it rather than presenting a partial answer as a whole one.',
+        });
+
+      case '/api/tonight/blind-spot-favourites':
+        return json(route, {
+          films: [
+            { title: 'Yi Yi', year: 2000, poster_url: null, letterboxd_url: null, username: chosen[0], rating: 5, unseen_by: 2 },
+          ],
+          count: 1,
+          caveat:
+            '1 films rated 4.5 or higher by exactly one of the 3 selected profiles and logged by none of the others. An unrated film cannot qualify, however much somebody liked it.',
+        });
+      case '/api/tonight/list-progress':
+        return json(route, {
+          lists: [
+            { name: 'Letterboxd Top 250', total: 250, seen: 184, share: 0.736, contributors: 3 },
+            { name: 'Every Kore-eda', total: 16, seen: 11, share: 0.6875, contributors: 2 },
+          ],
+          count: 2,
+          caveat:
+            '2 lists are readable for this selection. A private list cannot be counted at all, so an absent list is not a list nobody has started.',
+        });
+      case '/api/tonight/list-only-films':
+        return json(route, {
+          films: [
+            { title: 'Jeanne Dielman', year: 1975, poster_url: null, letterboxd_url: null, lists: 4, queued: true },
+          ],
+          count: 1,
+          caveat:
+            'On 2 or more readable lists and logged by nobody in the selection. A film on one list is not yet a canonical blind spot, so it is left out.',
+        });
+      case '/api/tonight/list-cadence':
+        return json(route, {
+          profiles: chosen.map((username, index) => ({
+            username,
+            lists: index === 2 ? 0 : 14 - index * 5,
+            last_edit_days: index === 2 ? null : 3 + index * 120,
+            read: index === 2 ? 'Never made one' : index === 0 ? 'Actively curating' : 'Collector, not curator',
+          })),
+          caveat:
+            'Edit dates come from the list surface, which is read on its own schedule. A list we have never re-read looks stale here even if it changed yesterday.',
+        });
+      case '/api/tonight/availability':
+        return json(route, {
+          films: [
+            {
+              title: 'Drive My Car', year: 2021, poster_url: null, letterboxd_url: null,
+              usernames: chosen.slice(0, 2), wanted_by: 2, providers: ['MUBI'],
+              checked_at: '2026-08-03T12:00:00Z',
+            },
+          ],
+          region: url.searchParams.get('region') ?? 'IN',
+          regions: [
+            { region: 'IN', films: 800, checked_at: '2026-08-03T12:00:00Z', days_ago: 0, stale: false },
+            { region: 'GB', films: 90, checked_at: '2026-07-15T12:00:00Z', days_ago: 19, stale: true },
+          ],
+          caveat:
+            '1 queued films are carried by a subscription service in IN as of the last reading. There is no countdown here on purpose: the provider feed publishes what carries a film today and nothing about when that stops, so a "days left" figure would be invented rather than read.',
+        });
+
+      case '/api/data-health/ledger':
+        return json(route, {
+          surfaces: [
+            { surface: 'Diary', dataset: 'films', profiles_covered: 3, profiles_selected: 3, rows: 19_043, authoritative_profiles: 3, last_run: '2026-08-03T08:00:00Z', result: 'Complete for 3 of 3' },
+            { surface: 'Likes · comments', dataset: 'likes', profiles_covered: 0, profiles_selected: 3, rows: 0, authoritative_profiles: 0, last_run: null, result: 'Never read for any selected profile' },
+          ],
+          caveat:
+            'Read from the latest completed sync per profile. A surface with no row was never read for anybody in this selection — which is different from being read and coming back empty, and the two must not look alike.',
+        });
+      case '/api/data-health/feeds':
+        return json(route, {
+          feeds: [
+            { username: chosen[0], next_poll_at: '2026-08-03T20:00:00Z', last_success_at: '2026-08-03T08:00:00Z', consecutive_failures: 4, last_http_status: 429, requires_full_sync: false, why: '4 consecutive failures — backing off after HTTP 429', tone: 'bad' },
+            { username: chosen[1] ?? chosen[0], next_poll_at: '2026-08-04T02:00:00Z', last_success_at: '2026-08-03T08:00:00Z', consecutive_failures: 0, last_http_status: 200, requires_full_sync: false, why: 'Nothing wrong — normal schedule', tone: 'ok' },
+          ],
+          without_feed: [],
+          caveat: '2 of 3 selected profiles have an incremental feed. The rest are refreshed on demand only, so they have no backoff state rather than a healthy one.',
+        });
+      case '/api/data-health/importers':
+        return json(route, {
+          profiles: chosen.map((username, index) => ({
+            username,
+            importer_version: index === 2 ? 'v3' : 'v5',
+            is_current: index !== 2,
+            missing: index === 2 ? 'Read by an older importer — fields it never collected are marked, not faked' : 'Up to date',
+          })),
+          current_version: 'v5',
+          caveat: 'Current importer: v5. A profile read by an older one is not wrong, it is thinner — and the panels that depend on what it skipped say so rather than showing a zero.',
+        });
+      case '/api/data-health/counts':
+        return json(route, {
+          profiles: [
+            { username: chosen[0], theirs: 2_184, ours: 2_184, gap: 0 },
+            { username: chosen[1] ?? 'bravo', theirs: 1_412, ours: 1_268, gap: 144 },
+            // Never read is not zero: printing 0 would claim we had checked.
+            { username: chosen[2] ?? 'charlie', theirs: null, ours: 904, gap: null },
+          ],
+          total_gap: 144,
+          caveat:
+            '144 films across the selection that Letterboxd reports and we do not hold. Mostly private diary entries and pages that stopped answering mid-read. A profile whose header was never fetched has no stated total, which is not a gap of zero.',
+        });
+      case '/api/data-health/private':
+        return json(route, {
+          profiles: [
+            { username: chosen[1] ?? 'bravo', hidden: ['Watchlist is private — Letterboxd reports 512 entries we cannot read'] },
+          ],
+          caveat:
+            "Inferred by comparing Letterboxd's own stated totals against what we hold. A surface with no stated total cannot be checked this way at all, so an absence here is not a guarantee that everything is public.",
+        });
+      case '/api/data-health/removed':
+        return json(route, {
+          removed: [
+            { username: chosen[0], kind: 'film', rows: 14, noticed_at: '2026-08-02T00:00:00Z' },
+            { username: chosen[1] ?? 'bravo', kind: 'review', rows: 3, noticed_at: '2026-08-02T00:00:00Z' },
+          ],
+          count: 2,
+          caveat:
+            'A row that stops appearing is marked with the date we noticed, never deleted. Two authoritative reads are needed before anything can appear here at all — a first import has nothing to compare against.',
+        });
+      case '/api/data-health/request-latency':
+        return json(route, {
+          runs: 30,
+          median_seconds: 1_080,
+          worst_seconds: 9_660,
+          caveat:
+            'Median of the last 30 completed runs, so the estimate is measured rather than promised. A large diary dominates: the worst case is a big profile read at a rate that does not trip the feed.',
+        });
+      case '/api/data-health/freshness':
+        return json(route, {
+          profiles: chosen.map((username, index) => ({
+            username,
+            last_read_at: '2026-08-03T08:00:00Z',
+            hours_ago: 6 + index * 30,
+            watch_events: 2_184 - index * 300,
+          })),
+          caveat:
+            "Read time comes from the latest completed sync, falling back to the profile's own last-scraped stamp. A profile with neither has never been read at all.",
+        });
+      case '/api/data-health/lost':
+        return json(route, {
+          entries: [
+            { entry_type: 'diary', lost_kind: 'deleted', rows: 284, oldest: '2016-03-01', profiles: chosen.slice(0, 2) },
+            { entry_type: 'review', lost_kind: 'orphaned', rows: 61, oldest: '2017-08-01', profiles: chosen.slice(0, 1) },
+          ],
+          profiles_with_exports: chosen.slice(0, 2),
+          profiles_selected: chosen.length,
+          caveat:
+            'Held for 2 of 3 selected profiles. This is the only part of the product that can show somebody their own deleted past, and it exists solely because they handed over an export.',
+        });
+      case '/api/data-health/lost-lists':
+        return json(route, {
+          films: [
+            { title: 'Kaili Blues', year: 2015, poster_url: null, list_name: '2023 ranked', username: chosen[0], position: 3, removed_at: '2026-07-01T00:00:00Z' },
+          ],
+          count: 1,
+          caveat:
+            '1 films held from lists that have since disappeared. The list is gone from Letterboxd; the ordering it carried is not, because nothing here is deleted.',
+        });
+      default:
+        break;
+    }
+  }
   if (path === '/api/activity/marathons') {
     // Two real marathon days plus one day set aside as an import artifact, so
     // the caveat has something honest to report rather than a fixed sentence.

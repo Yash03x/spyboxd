@@ -3,21 +3,24 @@ import { expect, test } from '@playwright/test';
 import { installApiMocks } from './fixtures/api';
 
 /**
- * The group-pick summary already counts how many candidates sit on every
- * selected watchlist and how many can actually be streamed in the chosen
- * region. Both reached the browser and neither was shown, so the header said
- * "6 ranked candidates" and left the reader to assume all six were
- * watchable tonight. Availability is the figure that changes a decision.
+ * "6 ranked candidates" says nothing on its own: six films nobody has queued
+ * and six on everybody's list are different answers to the same question. The
+ * count is qualified by what actually makes a pick work.
  */
 test.beforeEach(async ({ page }) => {
   await installApiMocks(page);
 });
 
 test('the candidate count is qualified by watchlist overlap and availability', async ({ page }) => {
-  await page.goto('/watch-together');
+  await page.goto('/tonight?tab=picks');
 
-  const header = page.getByText('6 ranked candidates');
-  await expect(header).toBeVisible();
-  await expect(header).toContainText('2 on everyone’s watchlist');
-  await expect(header).toContainText('3 streaming here');
+  const panel = page.locator('.terminal-root section', { hasText: "TONIGHT'S SHORTLIST" }).first();
+  await expect(panel).toContainText('RANKED CANDIDATES');
+  await expect(panel).toContainText("ON EVERYONE'S WATCHLIST");
+  await expect(panel).toContainText('NOBODY HAS SEEN');
+  await expect(panel).toContainText('STREAMING IN');
+  // And the count is the length of the table, not a larger set it was cut from.
+  await expect(panel).toContainText('rather than a larger set it was cut from');
+  // And where the scan looked at more than it kept, it says how many.
+  await expect(panel).toContainText('did not clear the filters above');
 });

@@ -2145,4 +2145,360 @@ export const firstWatchApi = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Films, Tonight and Data — the library, the decision, and the provenance.
+//
+// Every Films response carries a `coverage` block: these all read the TMDB
+// enrichment cache, so the match rate is their ceiling and each panel states it
+// rather than presenting a partial answer as a whole one.
+// ---------------------------------------------------------------------------
+
+export interface EnrichmentCoverage {
+  films: number;
+  enriched: number;
+  /** 0..1. Null for an empty selection, which has no ratio rather than zero. */
+  ratio: number | null;
+}
+
+export interface KeywordsResponse {
+  keywords: Array<{ keyword: string; films: number; share: number }>;
+  coverage: EnrichmentCoverage;
+  caveat: string;
+}
+
+export interface RuntimeResponse {
+  bands: Array<{
+    label: string;
+    watched: number;
+    queued: number;
+    /** Null rather than infinity: a band nobody queued has no ratio. */
+    ratio: number | null;
+  }>;
+  coverage: EnrichmentCoverage;
+  caveat: string;
+}
+
+export interface AtlasResponse {
+  countries: Array<{ country: string; films: number }>;
+  distinct_countries: number;
+  subtitled_share: number | null;
+  coverage: EnrichmentCoverage;
+  caveat: string;
+}
+
+export interface CollectionsResponse {
+  series: Array<{ name: string; films: number; average_rating: number | null }>;
+  count: number;
+  coverage: EnrichmentCoverage;
+  caveat: string;
+}
+
+export interface FilmographiesResponse {
+  directors: Array<{
+    director: string;
+    films: number;
+    titles: string[];
+    average_rating: number | null;
+  }>;
+  count: number;
+  coverage: EnrichmentCoverage;
+  caveat: string;
+}
+
+export interface LikedVsRatedResponse {
+  quadrants: Array<{ tag: string; films: number; share: number; note: string }>;
+  total: number;
+  caveat: string;
+}
+
+export interface DecadeDivergenceResponse {
+  decades: Array<{ decade: string; delta: number; films: number }>;
+  measured: number;
+  caveat: string;
+}
+
+export interface QueueAgeResponse {
+  films: Array<{
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+    username: string;
+    added_date: string;
+  }>;
+  dated: number;
+  total: number;
+  profiles_with_added_dates: string[];
+  caveat: string;
+}
+
+export interface LanguageLadderResponse {
+  years: Array<{ year: number; watches: number; non_english: number; share: number }>;
+  caveat: string;
+}
+
+export interface MetadataGapsResponse {
+  films: Array<{
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+    profiles: number;
+    missing: string[];
+  }>;
+  count: number;
+  coverage: EnrichmentCoverage;
+  caveat: string;
+}
+
+export interface MatchRateResponse {
+  films: number;
+  enriched: number;
+  with_tmdb_id: number;
+  ratio: number | null;
+  reasons: Array<{ reason: string; films: number }>;
+  caveat: string;
+}
+
+export const filmsApi = {
+  getKeywords: async (profiles: string[]): Promise<KeywordsResponse> =>
+    (await api.get('/api/films/keywords', { params: selectedProfileParams(profiles) })).data,
+  getRuntime: async (profiles: string[]): Promise<RuntimeResponse> =>
+    (await api.get('/api/films/runtime', { params: selectedProfileParams(profiles) })).data,
+  getAtlas: async (profiles: string[]): Promise<AtlasResponse> =>
+    (await api.get('/api/films/atlas', { params: selectedProfileParams(profiles) })).data,
+  getCollections: async (profiles: string[]): Promise<CollectionsResponse> =>
+    (await api.get('/api/films/collections', { params: selectedProfileParams(profiles) })).data,
+  getFilmographies: async (profiles: string[]): Promise<FilmographiesResponse> =>
+    (await api.get('/api/films/filmographies', { params: selectedProfileParams(profiles) })).data,
+  getLikedVsRated: async (profiles: string[]): Promise<LikedVsRatedResponse> =>
+    (await api.get('/api/films/liked-vs-rated', { params: selectedProfileParams(profiles) })).data,
+  getDecadeDivergence: async (profiles: string[]): Promise<DecadeDivergenceResponse> =>
+    (await api.get('/api/films/decade-divergence', { params: selectedProfileParams(profiles) })).data,
+  getQueueAge: async (profiles: string[]): Promise<QueueAgeResponse> =>
+    (await api.get('/api/films/queue-age', { params: selectedProfileParams(profiles) })).data,
+  getLanguageLadder: async (profiles: string[]): Promise<LanguageLadderResponse> =>
+    (await api.get('/api/films/language-ladder', { params: selectedProfileParams(profiles) })).data,
+  getMetadataGaps: async (profiles: string[]): Promise<MetadataGapsResponse> =>
+    (await api.get('/api/films/metadata-gaps', { params: selectedProfileParams(profiles) })).data,
+  getMatchRate: async (profiles: string[]): Promise<MatchRateResponse> =>
+    (await api.get('/api/films/match-rate', { params: selectedProfileParams(profiles) })).data,
+};
+
+export interface BlindSpotFavouritesResponse {
+  films: Array<{
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+    letterboxd_url: string | null;
+    username: string;
+    rating: number;
+    unseen_by: number;
+  }>;
+  count: number;
+  caveat: string;
+}
+
+export interface ListProgressResponse {
+  lists: Array<{
+    name: string;
+    total: number;
+    seen: number;
+    share: number | null;
+    contributors: number;
+  }>;
+  count: number;
+  caveat: string;
+}
+
+export interface ListOnlyFilmsResponse {
+  films: Array<{
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+    letterboxd_url: string | null;
+    lists: number;
+    queued: boolean;
+  }>;
+  count: number;
+  caveat: string;
+}
+
+export interface ListCadenceResponse {
+  profiles: Array<{
+    username: string;
+    lists: number;
+    last_edit_days: number | null;
+    read: string;
+  }>;
+  caveat: string;
+}
+
+export interface AvailabilityResponse {
+  films: Array<{
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+    letterboxd_url: string | null;
+    usernames: string[];
+    wanted_by: number;
+    providers: string[];
+    checked_at: string | null;
+  }>;
+  region: string;
+  regions: Array<{
+    region: string;
+    films: number;
+    checked_at: string | null;
+    days_ago: number | null;
+    /** Availability is the fastest-rotting data in the product. */
+    stale: boolean;
+  }>;
+  caveat: string;
+}
+
+export const tonightApi = {
+  getBlindSpotFavourites: async (profiles: string[]): Promise<BlindSpotFavouritesResponse> =>
+    (await api.get('/api/tonight/blind-spot-favourites', { params: selectedProfileParams(profiles) })).data,
+  getListProgress: async (profiles: string[]): Promise<ListProgressResponse> =>
+    (await api.get('/api/tonight/list-progress', { params: selectedProfileParams(profiles) })).data,
+  getListOnlyFilms: async (profiles: string[]): Promise<ListOnlyFilmsResponse> =>
+    (await api.get('/api/tonight/list-only-films', { params: selectedProfileParams(profiles) })).data,
+  getListCadence: async (profiles: string[]): Promise<ListCadenceResponse> =>
+    (await api.get('/api/tonight/list-cadence', { params: selectedProfileParams(profiles) })).data,
+  getAvailability: async (profiles: string[], region = 'IN'): Promise<AvailabilityResponse> => {
+    const params = selectedProfileParams(profiles);
+    params.set('region', region);
+    return (await api.get('/api/tonight/availability', { params })).data;
+  },
+};
+
+export interface LedgerResponse {
+  surfaces: Array<{
+    surface: string;
+    dataset: string;
+    profiles_covered: number;
+    profiles_selected: number;
+    rows: number;
+    authoritative_profiles: number;
+    last_run: string | null;
+    result: string;
+  }>;
+  caveat: string;
+}
+
+export interface FeedsResponse {
+  feeds: Array<{
+    username: string;
+    next_poll_at: string | null;
+    last_success_at: string | null;
+    consecutive_failures: number;
+    last_http_status: number | null;
+    requires_full_sync: boolean;
+    why: string;
+    tone: 'ok' | 'warn' | 'bad';
+  }>;
+  without_feed: string[];
+  caveat: string;
+}
+
+export interface ImportersResponse {
+  profiles: Array<{
+    username: string;
+    importer_version: string | null;
+    is_current: boolean;
+    missing: string;
+  }>;
+  current_version: string | null;
+  caveat: string;
+}
+
+export interface CountsResponse {
+  profiles: Array<{
+    username: string;
+    /** Letterboxd's own stated total. Null means never read, not zero. */
+    theirs: number | null;
+    ours: number;
+    gap: number | null;
+  }>;
+  total_gap: number;
+  caveat: string;
+}
+
+export interface PrivateSurfacesResponse {
+  profiles: Array<{ username: string; hidden: string[] }>;
+  caveat: string;
+}
+
+export interface RemovedResponse {
+  removed: Array<{ username: string; kind: string; rows: number; noticed_at: string | null }>;
+  count: number;
+  caveat: string;
+}
+
+export interface RequestLatencyResponse {
+  runs: number;
+  median_seconds: number | null;
+  worst_seconds: number | null;
+  caveat: string;
+}
+
+export interface FreshnessResponse {
+  profiles: Array<{
+    username: string;
+    last_read_at: string | null;
+    hours_ago: number | null;
+    watch_events: number;
+  }>;
+  caveat: string;
+}
+
+export interface LostAndFoundResponse {
+  entries: Array<{
+    entry_type: string;
+    lost_kind: string;
+    rows: number;
+    oldest: string | null;
+    profiles: string[];
+  }>;
+  profiles_with_exports: string[];
+  profiles_selected: number;
+  caveat: string;
+}
+
+export interface LostListFilmsResponse {
+  films: Array<{
+    title: string;
+    year: number | null;
+    poster_url: string | null;
+    list_name: string;
+    username: string;
+    position: number;
+    removed_at: string | null;
+  }>;
+  count: number;
+  caveat: string;
+}
+
+export const dataHealthApi = {
+  getLedger: async (profiles: string[]): Promise<LedgerResponse> =>
+    (await api.get('/api/data-health/ledger', { params: selectedProfileParams(profiles) })).data,
+  getFeeds: async (profiles: string[]): Promise<FeedsResponse> =>
+    (await api.get('/api/data-health/feeds', { params: selectedProfileParams(profiles) })).data,
+  getImporters: async (profiles: string[]): Promise<ImportersResponse> =>
+    (await api.get('/api/data-health/importers', { params: selectedProfileParams(profiles) })).data,
+  getCounts: async (profiles: string[]): Promise<CountsResponse> =>
+    (await api.get('/api/data-health/counts', { params: selectedProfileParams(profiles) })).data,
+  getPrivate: async (profiles: string[]): Promise<PrivateSurfacesResponse> =>
+    (await api.get('/api/data-health/private', { params: selectedProfileParams(profiles) })).data,
+  getRemoved: async (profiles: string[]): Promise<RemovedResponse> =>
+    (await api.get('/api/data-health/removed', { params: selectedProfileParams(profiles) })).data,
+  getRequestLatency: async (profiles: string[]): Promise<RequestLatencyResponse> =>
+    (await api.get('/api/data-health/request-latency', { params: selectedProfileParams(profiles) })).data,
+  getFreshness: async (profiles: string[]): Promise<FreshnessResponse> =>
+    (await api.get('/api/data-health/freshness', { params: selectedProfileParams(profiles) })).data,
+  getLost: async (profiles: string[]): Promise<LostAndFoundResponse> =>
+    (await api.get('/api/data-health/lost', { params: selectedProfileParams(profiles) })).data,
+  getLostLists: async (profiles: string[]): Promise<LostListFilmsResponse> =>
+    (await api.get('/api/data-health/lost-lists', { params: selectedProfileParams(profiles) })).data,
+};
+
 export default api;

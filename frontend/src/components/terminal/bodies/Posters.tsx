@@ -20,9 +20,16 @@ export interface PosterDatum {
  * The 34×44 slot is drawn as a striped placeholder when a film has no poster.
  * Films with no poster are the subject of Films › Gaps, so hiding the row
  * would hide the very thing that tab is about.
+ *
+ * A URL that 404s falls back to the same placeholder rather than painting a
+ * broken image: a stale poster path is our problem to absorb, not something to
+ * show the reader as a torn icon.
  */
 function PosterSlot({ url, alt }: { url?: string | null; alt: string }) {
-  if (url) {
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => setFailed(false), [url]);
+
+  if (url && !failed) {
     return (
       <Image
         src={url}
@@ -31,6 +38,7 @@ function PosterSlot({ url, alt }: { url?: string | null; alt: string }) {
         height={44}
         className="h-[44px] w-[34px] object-cover"
         unoptimized
+        onError={() => setFailed(true)}
       />
     );
   }
