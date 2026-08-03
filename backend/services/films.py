@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import func
+from sqlalchemy import func, literal_column
 from sqlalchemy.orm import Session
 
 from database.models import (
@@ -23,6 +23,18 @@ from database.models import (
     WatchEvent,
     WatchlistItem,
 )
+
+
+# TMDB buries one or two directors in a crew list that routinely runs past two
+# hundred people. Selecting the crew and filtering it in Python shipped all of
+# them: /api/films/filmographies took twelve seconds on production against
+# well under one for every other panel in the section. Extracting just the
+# names by JSON path leaves the crew in the database.
+#
+# The constant is inlined rather than bound because PostgreSQL needs a
+# `jsonpath`-typed argument and a bound parameter arrives as text. It is a
+# literal in this file, never anything a caller supplies.
+_DIRECTOR_NAMES_JSONPATH = """'$[*] ? (@.job == "Director").name'::jsonpath"""
 
 
 def _library(db: Session, profile_ids: Sequence[int], *enrichment_columns):
@@ -57,6 +69,108 @@ def _library(db: Session, profile_ids: Sequence[int], *enrichment_columns):
         .filter(ProfileFilm.profile_id.in_(profile_ids), ProfileFilm.removed_at.is_(None))
         .all()
     )
+
+
+def _director_names_column(db: Session):
+    """Director names per film, extracted in the database where it can be.
+
+    PostgreSQL has `jsonb_path_query_array`, so production ships two strings
+    per film instead of a two-hundred-entry crew list. SQLite has no jsonpath,
+    so the tests fall back to the crew column and filter it here — the same
+    answer either way, and a fixture library is small enough not to care.
+
+    Returns the column and whether it is already reduced to names.
+    """
+
+    crew = MovieEnrichment.credits["crew"]
+    if db.get_bind().dialect.name == "postgresql":
+        return (
+            func.jsonb_path_query_array(crew, literal_column(_DIRECTOR_NAMES_JSONPATH)),
+            True,
+        )
+    return crew, False
+
+
+def _films_held(db: Session, profile_ids: Sequence[int], *enrichment_columns):
+    """One row per distinct film the selection holds, not one per holder.
+
+    Two queries rather than a join, because the interesting columns are large
+    JSON and a film held by six profiles was shipping its enrichment six times.
+    The rating is the selection's mean for the film: panels that group films
+    (by director, by collection) used to dedupe in Python and keep whichever
+    holder's rating the database happened to return first, which made the
+    average depend on row order.
+    """
+
+    if not profile_ids:
+        return []
+
+    holdings = (
+        db.query(
+            ProfileFilm.movie_id,
+            func.avg(ProfileFilm.rating).label("rating"),
+            func.count(ProfileFilm.movie_id).label("holders"),
+        )
+        .filter(ProfileFilm.profile_id.in_(profile_ids), ProfileFilm.removed_at.is_(None))
+        .group_by(ProfileFilm.movie_id)
+        .all()
+    )
+    if not holdings:
+        return []
+
+    by_movie = {row.movie_id: row for row in holdings}
+    films = (
+        db.query(
+            Movie.id.label("movie_id"),
+            Movie.title,
+            Movie.release_year,
+            Movie.poster_url,
+            Movie.tmdb_id,
+            MovieEnrichment.movie_id.label("enrichment_movie_id"),
+            *enrichment_columns,
+        )
+        .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
+        .filter(Movie.id.in_(list(by_movie)))
+        .all()
+    )
+
+    held = []
+    for film in films:
+        holding = by_movie.get(film.movie_id)
+        # An unrated film has no average, never an average of zero.
+        rating = None if holding is None or holding.rating is None else float(holding.rating)
+        held.append(_HeldFilm(film, rating, holding.holders if holding else 0))
+    return held
+
+
+class _HeldFilm:
+    """A film plus what the selection did with it, addressed like a row."""
+
+    __slots__ = ("_film", "rating", "holders")
+
+    def __init__(self, film, rating: Optional[float], holders: int) -> None:
+        self._film = film
+        self.rating = rating
+        self.holders = holders
+
+    def __getattr__(self, name: str):
+        return getattr(self._film, name)
+
+
+def _director_names(value: Any, already_names: bool) -> List[str]:
+    """Director names from either shape the column above can return."""
+
+    if not isinstance(value, list):
+        return []
+    if already_names:
+        return [name.strip() for name in value if isinstance(name, str) and name.strip()]
+    names = []
+    for member in value:
+        if isinstance(member, Mapping) and member.get("job") == "Director":
+            name = str(member.get("name") or "").strip()
+            if name:
+                names.append(name)
+    return names
 
 
 def _coverage(rows) -> Dict[str, Any]:
@@ -244,7 +358,7 @@ def build_collections(db: Session, profiles: Sequence[Profile], *, limit: int = 
     # TMDB nests this under `details`, which is where profile_stats has always
     # read it. Reading the top level found nothing, so the panel was empty for
     # every selection rather than wrong in a visible way.
-    rows = _library(
+    rows = _films_held(
         db,
         [profile.id for profile in profiles],
         MovieEnrichment.raw_payload["details"]["belongs_to_collection"].label(
@@ -254,11 +368,9 @@ def build_collections(db: Session, profiles: Sequence[Profile], *, limit: int = 
     coverage = _coverage(rows)
 
     grouped: Dict[str, Dict[str, Any]] = {}
-    seen: set[int] = set()
     for row in rows:
-        if row.enrichment_movie_id is None or row.movie_id in seen:
+        if row.enrichment_movie_id is None:
             continue
-        seen.add(row.movie_id)
         collection = row.belongs_to_collection
         if not isinstance(collection, Mapping):
             continue
@@ -283,7 +395,9 @@ def build_collections(db: Session, profiles: Sequence[Profile], *, limit: int = 
         # One film is not a franchise.
         if entry["films"] > 1
     ]
-    series.sort(key=lambda item: -item["films"])
+    # Name breaks the tie: without it the order among equal counts came from
+    # row order, so the panel reshuffled between two identical refreshes.
+    series.sort(key=lambda item: (-item["films"], item["name"].casefold()))
 
     return {
         "series": series[:limit],
@@ -299,28 +413,17 @@ def build_collections(db: Session, profiles: Sequence[Profile], *, limit: int = 
 def build_filmographies(db: Session, profiles: Sequence[Profile], *, limit: int = 12) -> Dict[str, Any]:
     """How much of one director's work the group holds."""
 
-    # Only the crew list, not the full credits document: the cast is by far the
-    # larger half and no panel here reads it.
-    rows = _library(
-        db,
-        [profile.id for profile in profiles],
-        MovieEnrichment.credits["crew"].label("crew"),
+    directors_column, already_names = _director_names_column(db)
+    rows = _films_held(
+        db, [profile.id for profile in profiles], directors_column.label("directors")
     )
     coverage = _coverage(rows)
 
     grouped: Dict[str, Dict[str, Any]] = {}
-    seen: set[int] = set()
     for row in rows:
-        if row.enrichment_movie_id is None or row.movie_id in seen:
+        if row.enrichment_movie_id is None:
             continue
-        seen.add(row.movie_id)
-        crew = row.crew if isinstance(row.crew, list) else []
-        for member in crew:
-            if not isinstance(member, Mapping) or member.get("job") != "Director":
-                continue
-            name = str(member.get("name") or "").strip()
-            if not name:
-                continue
+        for name in _director_names(row.directors, already_names):
             entry = grouped.setdefault(name, {"director": name, "films": 0, "ratings": [], "titles": []})
             entry["films"] += 1
             entry["titles"].append(row.title)
@@ -339,7 +442,8 @@ def build_filmographies(db: Session, profiles: Sequence[Profile], *, limit: int 
         for entry in grouped.values()
         if entry["films"] > 1
     ]
-    directors.sort(key=lambda item: -item["films"])
+    # Name breaks the tie, so two identical reads render in the same order.
+    directors.sort(key=lambda item: (-item["films"], item["director"].casefold()))
 
     return {
         "directors": directors[:limit],

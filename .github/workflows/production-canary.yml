@@ -433,6 +433,10 @@ jobs:
           guardian_started=1
 
           plan_ready=0
+          # Initialised before the loop: `set -u` is active and the loop body
+          # is the only other place this is assigned, so a guardian that fails
+          # on its first poll would otherwise trip an unbound variable.
+          guardian_status=running
           for _ in $(seq 1 60); do
             if deploy/production-ssh.sh run test -f "${remote_plan}"; then
               plan_ready=1
@@ -463,8 +467,18 @@ jobs:
                   node scripts/run-production-auth-canary.mjs --plan "${plan_file}"
               ) || browser_status=$?
             fi
+          elif [[ "${guardian_status}" == failed || "${guardian_status}" == cleanup_failed ]]; then
+            # The guardian did not go missing — it ran, failed its preflight and
+            # said why. Reporting "no plan appeared" threw that away and left
+            # the job undiagnosable. Its stderr stays closed on purpose, so the
+            # reason comes back through the status file it already writes.
+            guardian_reason="$(
+              deploy/production-ssh.sh run \
+                "${REMOTE_CANARY_PATH}" reason --lease-id "${lease_id}"
+            )" || guardian_reason=''
+            echo "The VPS guardian failed before publishing a plan (${guardian_status}): ${guardian_reason:-no reason recorded}" >&2
           else
-            echo 'The VPS guardian did not publish a canary plan.' >&2
+            echo 'The VPS guardian did not publish a canary plan before its deadline.' >&2
           fi
 
           if (( browser_status == 0 )); then

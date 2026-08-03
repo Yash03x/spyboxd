@@ -1491,9 +1491,22 @@ def run_guardian(
                     _write_private_json(state_path, state)
 
                 status = _guardian_result_status(primary_error, cleanup_error)
-                _write_private_json(
-                    lease_dir / STATUS_NAME, {"version": 1, "status": status}
-                )
+                status_payload: dict[str, Any] = {"version": 1, "status": status}
+                # Carry why it failed, not just that it did. The guardian's own
+                # stderr goes to /dev/null on purpose — a traceback can contain
+                # DATABASE_URL — so without this the workflow could only report
+                # "no plan appeared", which is not what happened and sent
+                # everybody looking in the wrong place for a fortnight.
+                reported = cleanup_error if cleanup_error is not None else primary_error
+                if reported is not None:
+                    status_payload["reason"] = (
+                        # Every AuthCanaryError message is a fixed string written
+                        # in this file. Anything else contributes its type only.
+                        str(reported)[:200]
+                        if isinstance(reported, AuthCanaryError)
+                        else type(reported).__name__
+                    )
+                _write_private_json(lease_dir / STATUS_NAME, status_payload)
             finally:
                 for signal_number, previous in previous_handlers.items():
                     signal.signal(signal_number, previous)
@@ -1556,6 +1569,23 @@ def signal_completion(
         raise AuthCanaryError(
             "authenticated canary completion could not be signalled"
         ) from exc
+
+
+def lease_failure_reason(*, lease_id: str, shared_dir: Path) -> str:
+    """The guardian's own account of why it failed, or an empty string.
+
+    Read separately from `lease_status` so the status contract is unchanged:
+    an older status file simply has no reason and yields "".
+    """
+
+    lease_dir = _lease_directory(shared_dir, lease_id)
+    status_path = lease_dir / STATUS_NAME
+    if not status_path.exists():
+        return ""
+    reason = _read_private_json(status_path).get("reason", "")
+    if not isinstance(reason, str):
+        return ""
+    return reason.replace("\n", " ").replace("\r", " ")[:200]
 
 
 def lease_status(*, lease_id: str, shared_dir: Path) -> str:
@@ -1625,6 +1655,10 @@ def main() -> int:
     status_command.add_argument("--lease-id", required=True)
     status_command.add_argument("--shared-dir", type=Path, default=DEFAULT_SHARED_DIR)
 
+    reason_command = commands.add_parser("reason")
+    reason_command.add_argument("--lease-id", required=True)
+    reason_command.add_argument("--shared-dir", type=Path, default=DEFAULT_SHARED_DIR)
+
     cleanup = commands.add_parser("cleanup")
     cleanup.add_argument("--lease-id", required=True)
     cleanup.add_argument(
@@ -1653,6 +1687,12 @@ def main() -> int:
             )
         elif args.command == "status":
             print(lease_status(lease_id=args.lease_id, shared_dir=args.shared_dir))
+        elif args.command == "reason":
+            print(
+                lease_failure_reason(
+                    lease_id=args.lease_id, shared_dir=args.shared_dir
+                )
+            )
         else:
             cleanup_lease(
                 lease_id=args.lease_id,
