@@ -1577,7 +1577,7 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         return json(route, {
           profiles: chosen.map((username, index) => ({
             username,
-            lists: index === 2 ? 0 : 14 - index * 5,
+            lists: index === 2 ? 0 : Math.max(14 - index * 5, 1),
             last_edit_days: index === 2 ? null : 3 + index * 120,
             read: index === 2 ? 'Never made one' : index === 0 ? 'Actively curating' : 'Collector, not curator',
           })),
@@ -1909,6 +1909,18 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
           follows_earlier_watcher: true,
           follow_backed: true,
         },
+      ],
+    });
+  }
+  if (path === '/api/public-lists') {
+    const selected = url.searchParams.getAll('profiles');
+    const chosen = selected.length ? selected : profiles.slice(0, 2).map((p) => p.username);
+    return json(route, {
+      selected_profiles: chosen,
+      summary: { available_lists: 2, total_movie_items: 266 },
+      lists: [
+        { id: 1, name: 'Letterboxd Top 250', owner: chosen[0], movie_count: 250, is_ranked: true },
+        { id: 2, name: 'Every Kore-eda', owner: chosen[1] ?? chosen[0], movie_count: 16, is_ranked: false },
       ],
     });
   }
