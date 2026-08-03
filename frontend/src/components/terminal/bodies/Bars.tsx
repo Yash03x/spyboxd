@@ -25,7 +25,11 @@ export interface BarsProps {
  * tracks aligned across panels, which is what makes a wall of them readable.
  */
 export default function Bars({ items, max }: BarsProps) {
-  const ceiling = max ?? Math.max(...items.map((item) => item.weight), 1);
+  // Floored against a non-positive ceiling only. Flooring at 1 crushed every
+  // panel whose weights are shares: a 4.1% keyword drew 4% of the track
+  // instead of filling it as the largest value present.
+  const largest = Math.max(...items.map((item) => item.weight), 0);
+  const ceiling = max ?? (largest > 0 ? largest : 1);
 
   return (
     <div>

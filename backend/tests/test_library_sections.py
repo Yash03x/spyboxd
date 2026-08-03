@@ -1,0 +1,427 @@
+"""Films, Tonight and Data: what these panels are allowed to claim.
+
+The recurring theme is the difference between a zero and an absence. A runtime
+band nobody queued has no ratio, not a ratio of zero. A surface that was never
+read is not a surface that came back empty. A profile whose header was never
+fetched does not have zero films. Each of those is a sentence in the product's
+copy, and each is pinned below.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+from itertools import count
+from typing import Optional
+
+import pytest
+from sqlalchemy import BigInteger, Integer, create_engine, event
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from database.models import (
+    LostEntry,
+    Movie,
+    MovieEnrichment,
+    MovieList,
+    MovieListItem,
+    MovieWatchProvider,
+    Profile,
+    ProfileFeedState,
+    ProfileFilm,
+    ProfileSync,
+    Review,
+    SyncDataset,
+    WatchEvent,
+    WatchlistItem,
+)
+from services.data_health import (
+    build_counts,
+    build_feeds,
+    build_ledger,
+    build_lost_list_films,
+    build_request_latency,
+)
+from services.films import (
+    build_collections,
+    build_liked_vs_rated,
+    build_match_rate,
+    build_queue_age,
+    build_runtime,
+)
+from services.tonight import (
+    build_availability,
+    build_blind_spot_favourites,
+    build_list_cadence,
+    build_list_only_films,
+)
+
+
+@compiles(BigInteger, "sqlite")
+def _compile_big_integer_as_sqlite_integer(_type, _compiler, **_kwargs):
+    return Integer().compile(dialect=_compiler.dialect)
+
+
+TABLES = (
+    Profile.__table__,
+    ProfileSync.__table__,
+    SyncDataset.__table__,
+    ProfileFeedState.__table__,
+    Movie.__table__,
+    MovieEnrichment.__table__,
+    MovieWatchProvider.__table__,
+    ProfileFilm.__table__,
+    WatchEvent.__table__,
+    WatchlistItem.__table__,
+    MovieList.__table__,
+    MovieListItem.__table__,
+    LostEntry.__table__,
+    Review.__table__,
+)
+
+
+@pytest.fixture()
+def database() -> Session:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    # `movie_watch_providers` pins its region to two characters with a
+    # `char_length` check. SQLite has no such function, so the CHECK would fail
+    # at insert rather than at create -- register it instead of dropping the
+    # constraint, so the test exercises the same guard production does.
+    @event.listens_for(engine, "connect")
+    def _register_char_length(connection, _record):  # noqa: ANN001
+        connection.create_function("char_length", 1, lambda value: len(value or ""))
+
+    for table in TABLES:
+        table.create(engine, checkfirst=True)
+    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        yield db
+    finally:
+        db.close()
+        engine.dispose()
+
+
+_IDS = count(1)
+
+
+def _profile(database: Session, username: str, **kwargs) -> Profile:
+    profile = Profile(username=username, scraping_status="completed", is_active=True, **kwargs)
+    database.add(profile)
+    database.commit()
+    return profile
+
+
+def _movie(
+    database: Session,
+    title: str,
+    *,
+    runtime: Optional[int] = None,
+    collection: Optional[str] = None,
+    enrich: bool = True,
+    crowd: Optional[float] = None,
+    year: int = 2000,
+) -> Movie:
+    movie_id = next(_IDS)
+    movie = Movie(
+        id=movie_id,
+        canonical_key=f"letterboxd:{title}-{movie_id}",
+        title=title,
+        normalized_title=title.casefold(),
+        release_year=year,
+        tmdb_id=movie_id if enrich else None,
+        letterboxd_average_rating=crowd,
+    )
+    database.add(movie)
+    if enrich:
+        payload = {"belongs_to_collection": {"name": collection}} if collection else {}
+        database.add(
+            MovieEnrichment(movie_id=movie_id, runtime_minutes=runtime, raw_payload=payload)
+        )
+    database.commit()
+    return movie
+
+
+def _film(
+    database: Session,
+    profile: Profile,
+    movie: Movie,
+    *,
+    rating: Optional[float] = None,
+    liked: bool = False,
+) -> None:
+    database.add(
+        ProfileFilm(
+            profile_id=profile.id,
+            movie_id=movie.id,
+            rating=rating,
+            is_liked=liked,
+            tags=[],
+            watch_count=1,
+        )
+    )
+    database.commit()
+
+
+def _queued(database: Session, profile: Profile, movie: Movie, added: Optional[date]) -> None:
+    database.add(
+        WatchlistItem(profile_id=profile.id, movie_id=movie.id, added_date=added)
+    )
+    database.commit()
+
+
+def _sync(database: Session, profile: Profile, *, datasets: dict[str, int]) -> ProfileSync:
+    sync = ProfileSync(
+        profile_id=profile.id,
+        source_kind="full_html_upload",
+        source_fingerprint=f"fingerprint-{next(_IDS)}",
+        importer_version="v5",
+        status="completed",
+        completed_at=datetime(2026, 8, 3, 8, tzinfo=timezone.utc),
+        started_at=datetime(2026, 8, 3, 7, tzinfo=timezone.utc),
+    )
+    database.add(sync)
+    database.commit()
+    for name, rows in datasets.items():
+        database.add(
+            SyncDataset(
+                profile_sync_id=sync.id,
+                dataset_name=name,
+                source_row_count=rows,
+                imported_row_count=rows,
+                is_authoritative=True,
+            )
+        )
+    database.commit()
+    return sync
+
+
+def test_a_runtime_band_nobody_queued_has_no_ratio(database: Session) -> None:
+    """Null rather than infinity. Dividing by an empty queue would print a
+    ratio that describes nothing, and printing zero would claim the opposite."""
+
+    viewer = _profile(database, "viewer")
+    _film(database, viewer, _movie(database, "Long", runtime=200))
+
+    band = next(
+        entry for entry in build_runtime(database, [viewer])["bands"] if entry["label"] == "over 150"
+    )
+
+    assert band["watched"] == 1
+    assert band["queued"] == 0
+    assert band["ratio"] is None
+
+
+def test_a_single_film_is_not_a_series(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    _film(database, viewer, _movie(database, "Alone", collection="Lonely Collection"))
+    for title in ("First", "Second"):
+        _film(database, viewer, _movie(database, title, collection="Real Collection"))
+
+    series = build_collections(database, [viewer])["series"]
+
+    assert [entry["name"] for entry in series] == ["Real Collection"]
+    assert series[0]["films"] == 2
+
+
+def test_an_unrated_series_has_no_average(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    for title in ("One", "Two"):
+        _film(database, viewer, _movie(database, title, collection="Unrated Collection"))
+
+    assert build_collections(database, [viewer])["series"][0]["average_rating"] is None
+
+
+def test_the_match_rate_states_the_ceiling_it_imposes(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    _film(database, viewer, _movie(database, "Enriched"))
+    _film(database, viewer, _movie(database, "Bare", enrich=False))
+
+    result = build_match_rate(database, [viewer])
+
+    assert result["films"] == 2
+    assert result["enriched"] == 1
+    assert result["ratio"] == 0.5
+    assert "it is their maximum" in result["caveat"]
+
+
+def test_an_unrated_film_lands_in_neither_and_the_caveat_says_so(database: Session) -> None:
+    """An unrated film has no score, so it cannot be told apart from a film
+    rated low by this panel alone. Saying so is the difference between a
+    quadrant and a claim."""
+
+    viewer = _profile(database, "viewer")
+    _film(database, viewer, _movie(database, "Unrated"))
+
+    result = build_liked_vs_rated(database, [viewer])
+    neither = next(quad for quad in result["quadrants"] if quad["tag"] == "NEITHER")
+
+    assert neither["films"] == 1
+    assert "an unrated film has no score" in result["caveat"].lower()
+
+
+def test_queue_age_excludes_entries_with_no_added_date(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    _queued(database, viewer, _movie(database, "Dated"), date(2019, 3, 4))
+    _queued(database, viewer, _movie(database, "Undated"), None)
+
+    result = build_queue_age(database, [viewer])
+
+    assert result["dated"] == 1
+    assert result["total"] == 2
+    assert [film["title"] for film in result["films"]] == ["Dated"]
+    assert "excluded rather than guessed at" in result["caveat"]
+
+
+def test_a_blind_spot_favourite_needs_exactly_one_holder(database: Session) -> None:
+    left = _profile(database, "left")
+    right = _profile(database, "right")
+    solo = _movie(database, "Solo")
+    shared = _movie(database, "Shared")
+
+    _film(database, left, solo, rating=5.0)
+    _film(database, left, shared, rating=5.0)
+    _film(database, right, shared, rating=5.0)
+
+    films = build_blind_spot_favourites(database, [left, right])["films"]
+
+    assert [film["title"] for film in films] == ["Solo"]
+
+
+def test_an_unrated_film_cannot_be_a_blind_spot_favourite(database: Session) -> None:
+    left = _profile(database, "left")
+    right = _profile(database, "right")
+    _film(database, left, _movie(database, "Loved But Unrated"))
+
+    assert build_blind_spot_favourites(database, [left, right])["count"] == 0
+
+
+def test_list_only_films_need_more_than_one_list(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    owner = _profile(database, "owner")
+    once = _movie(database, "On One List")
+    twice = _movie(database, "On Two Lists")
+
+    for index, name in enumerate(("A", "B")):
+        movie_list = MovieList(profile_id=owner.id, name=name)
+        database.add(movie_list)
+        database.commit()
+        database.add(MovieListItem(movie_list_id=movie_list.id, movie_id=twice.id, position=1))
+        if index == 0:
+            database.add(MovieListItem(movie_list_id=movie_list.id, movie_id=once.id, position=2))
+        database.commit()
+
+    films = build_list_only_films(database, [viewer])["films"]
+
+    assert [film["title"] for film in films] == ["On Two Lists"]
+
+
+def test_a_profile_with_no_lists_is_named_rather_than_ranked_last(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+
+    entry = build_list_cadence(database, [viewer])["profiles"][0]
+
+    assert entry["lists"] == 0
+    assert entry["read"] == "Never made one"
+
+
+def test_availability_reports_staleness_and_claims_no_countdown(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    movie = _movie(database, "Streaming")
+    _queued(database, viewer, movie, date(2025, 1, 1))
+    database.add(
+        MovieWatchProvider(
+            movie_id=movie.id,
+            region="IN",
+            provider_id=8,
+            provider_name="Netflix",
+            provider_type="flatrate",
+            fetched_at=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+    )
+    database.commit()
+
+    result = build_availability(database, [viewer], region="IN")
+
+    assert result["films"][0]["providers"] == ["Netflix"]
+    stale = next(entry for entry in result["regions"] if entry["region"] == "IN")
+    assert stale["stale"] is True
+    # The whole point of the panel: no expiry is claimed anywhere.
+    assert "days left" in result["caveat"]
+    assert "invented rather than read" in result["caveat"]
+
+
+def test_a_surface_never_read_is_not_a_surface_that_came_back_empty(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    _sync(database, viewer, datasets={"films": 1_200})
+
+    surfaces = {row["dataset"]: row for row in build_ledger(database, [viewer])["surfaces"]}
+
+    assert surfaces["films"]["rows"] == 1_200
+    assert surfaces["films"]["authoritative_profiles"] == 1
+    assert surfaces["likes"]["result"] == "Never read for any selected profile"
+
+
+def test_a_profile_with_no_stated_total_has_no_gap(database: Session) -> None:
+    """Never read is not zero. A gap of 0 would claim we had checked."""
+
+    read = _profile(database, "read", reported_total_films=10)
+    unread = _profile(database, "unread")
+    _film(database, read, _movie(database, "One"))
+
+    entries = {entry["username"]: entry for entry in build_counts(database, [read, unread])["profiles"]}
+
+    assert entries["read"]["gap"] == 9
+    assert entries["unread"]["theirs"] is None
+    assert entries["unread"]["gap"] is None
+
+
+def test_a_backing_off_feed_reports_why(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    database.add(
+        ProfileFeedState(
+            profile_id=viewer.id,
+            feed_url="https://letterboxd.com/viewer/rss/",
+            consecutive_failures=4,
+            last_http_status=429,
+        )
+    )
+    database.commit()
+
+    feed = build_feeds(database, [viewer])["feeds"][0]
+
+    assert feed["tone"] == "bad"
+    assert "429" in feed["why"]
+
+
+def test_latency_refuses_to_estimate_without_a_completed_run(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+
+    result = build_request_latency(database, [viewer])
+
+    assert result["median_seconds"] is None
+    assert "a promise rather than a figure" in result["caveat"]
+
+
+def test_a_deleted_list_keeps_the_films_and_the_order(database: Session) -> None:
+    owner = _profile(database, "owner")
+    movie = _movie(database, "Recovered")
+    movie_list = MovieList(
+        profile_id=owner.id,
+        name="2023 ranked",
+        removed_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    database.add(movie_list)
+    database.commit()
+    database.add(MovieListItem(movie_list_id=movie_list.id, movie_id=movie.id, position=3))
+    database.commit()
+
+    films = build_lost_list_films(database, [owner])["films"]
+
+    assert films[0]["title"] == "Recovered"
+    assert films[0]["position"] == 3
+    assert films[0]["list_name"] == "2023 ranked"

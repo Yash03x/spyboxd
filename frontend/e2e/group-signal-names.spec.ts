@@ -3,22 +3,21 @@ import { expect, test } from '@playwright/test';
 import { installApiMocks } from './fixtures/api';
 
 /**
- * The candidate panel counted the group signals — "Already watched 1", "Liked
- * by 1" — while the names behind those counts sat unread in the payload. For a
- * group pick the names are the point: whether the one person who has seen it
- * would sit through it again is not something a count can answer.
+ * "Seen by 1" is a count; "@charlie has seen it, it is new to @alpha and
+ * @bravo" is a decision. The second half — who it would still be new to — is
+ * the part a room actually acts on.
  */
 test.beforeEach(async ({ page }) => {
   await installApiMocks(page);
 });
 
-test('group signals name who watched and who liked, not only how many', async ({ page }) => {
-  await page.goto('/watch-together');
+test('group signals name who watched and who it is new to, not only how many', async ({ page }) => {
+  await page.goto('/tonight?tab=picks');
 
-  await page.getByText('Seen By One Fixture').locator('visible=true').first().click();
+  const shortlist = page.locator('.terminal-root section', { hasText: "TONIGHT'S SHORTLIST" }).first();
+  await shortlist.getByRole('link', { name: /Seen By One Fixture/ }).click();
 
-  const panel = page.getByRole('heading', { name: 'Group signals' }).locator('..');
-  await expect(panel).toContainText('@charlie');
-  // And who it would still be new to, which is the other half of the decision.
-  await expect(panel).toContainText('New to @alpha, @bravo');
+  const why = page.locator('.terminal-root section', { hasText: 'FITS' }).first();
+  await expect(why).toContainText('@charlie');
+  await expect(why).toContainText('New to @alpha, @bravo');
 });

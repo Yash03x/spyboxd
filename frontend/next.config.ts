@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
       { source: '/analysis', destination: '/people?tab=one', permanent: true },
       { source: '/compare', destination: '/people?tab=two', permanent: true },
       { source: '/network', destination: '/people?tab=circle', permanent: true },
+      { source: '/watch-together', destination: '/tonight', permanent: true },
     ];
   },
   images: {
