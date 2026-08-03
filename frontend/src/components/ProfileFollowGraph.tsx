@@ -109,7 +109,7 @@ export default function ProfileFollowGraph({ username }: { username: string }) {
       {/* The actual graph is drawn on the Network page. Linking there is what
           makes the promise good, rather than a list under a graph heading. */}
       <Link
-        href={`/network?focus=${encodeURIComponent(username)}`}
+        href={`/people?tab=circle&subject=${encodeURIComponent(username)}`}
         className="mt-3 flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-semibold text-white/55 transition-colors hover:bg-white/10 hover:text-white"
       >
         <Waypoints className="h-3 w-3" aria-hidden="true" />

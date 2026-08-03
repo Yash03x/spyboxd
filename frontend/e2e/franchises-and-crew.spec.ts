@@ -3,40 +3,39 @@ import { expect, test } from '@playwright/test';
 import { installApiMocks } from './fixtures/api';
 
 /**
- * TMDB names the franchise a film belongs to on 1,143 of the 4,554 enriched
- * films, and credits 732 distinct crew jobs. Spyboxd stored both and surfaced
- * neither the franchise nor any crew beyond composer, cinematographer and
- * editor — while Letterboxd's own stats page lists every one of them.
+ * TMDB has stored collections and the whole crew since enrichment began, and
+ * nothing read them. Both are counted over films *held*: the collection's real
+ * size is not in the film payload, so any completion score would be invented.
  */
 test.beforeEach(async ({ page }) => {
   await installApiMocks(page);
 });
 
 test('series are counted as films held, not as a completion score', async ({ page }) => {
-  await page.goto('/analysis');
+  await page.goto('/people?tab=one&subject=alpha');
 
-  const panel = page.getByRole('heading', { name: 'Series worked through' }).locator('..').locator('..');
+  const panel = page.locator('section', { hasText: 'SERIES WORKED THROUGH' }).first();
   await expect(panel).toContainText('Harry Potter Collection');
   await expect(panel).toContainText('11');
-  // TMDB does not give a collection's size in the film payload, so claiming
-  // "8 of 8" would be inventing the denominator.
   await expect(panel).not.toContainText('of 8');
   await expect(panel).toContainText('not a completion score');
 });
 
 test('an unrated series shows no average rather than zero', async ({ page }) => {
-  await page.goto('/analysis');
+  await page.goto('/people?tab=one&subject=alpha');
 
-  const row = page.locator('li').filter({ hasText: 'X-Men Collection' }).first();
+  const panel = page.locator('section', { hasText: 'SERIES WORKED THROUGH' }).first();
+  const row = panel.locator('div').filter({ hasText: 'X-Men Collection' }).last();
   await expect(row).toBeVisible();
   await expect(row).not.toContainText('0.0');
+  await expect(row).toContainText('—');
 });
 
 test('the crew beyond the big three is listed', async ({ page }) => {
-  await page.goto('/analysis');
+  await page.goto('/people?tab=one&subject=alpha');
 
-  const body = page.locator('body');
-  for (const name of ['Kevin Feige', 'Stan Lee', 'David Koepp', 'Sarah Halley Finn']) {
-    await expect(body).toContainText(name);
+  const panel = page.locator('section', { hasText: 'THE CREW BEYOND THE BIG THREE' }).first();
+  for (const role of ['Composer', 'Cinematographer', 'Editor', 'Writer']) {
+    await expect(panel).toContainText(role);
   }
 });

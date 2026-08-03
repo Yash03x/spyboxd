@@ -27,20 +27,21 @@ function OverlapsSection() {
   const parsedClose = closeParam === null ? Number.NaN : Number(closeParam);
   const gapDays = Number.isFinite(parsedClose) && parsedClose >= 0 ? parsedClose : DEFAULT_GAP_DAYS;
 
-  const setGapDays = (value: number) => {
-    selection.replaceParams(selection.selected, { close: String(value) });
-  };
-
   const controls = (
     <SelectionBar
       profiles={selection.available}
       selected={selection.selected}
-      onToggle={selection.toggle}
-      minSelection={2}
+      hrefFor={selection.toggleHref}
+      isLocked={selection.isLockedByMinimum}
     >
       {/* Closeness only changes what Together, Echoes and When compute. The
           How-sure tab reports coverage, which no window can alter. */}
-      {tab.id === 'sure' ? null : <ClosenessPicker value={gapDays} onChange={setGapDays} />}
+      {tab.id === 'sure' ? null : (
+        <ClosenessPicker
+          value={gapDays}
+          hrefFor={(value) => selection.paramHref('close', String(value))}
+        />
+      )}
     </SelectionBar>
   );
 

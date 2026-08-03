@@ -11,6 +11,9 @@ const nextConfig: NextConfig = {
     return [
       { source: '/dashboard', destination: '/overview', permanent: true },
       { source: '/spy-signals', destination: '/overlaps', permanent: true },
+      { source: '/analysis', destination: '/people?tab=one', permanent: true },
+      { source: '/compare', destination: '/people?tab=two', permanent: true },
+      { source: '/network', destination: '/people?tab=circle', permanent: true },
     ];
   },
   images: {

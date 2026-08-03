@@ -3,23 +3,20 @@ import { expect, test } from '@playwright/test';
 import { installApiMocks } from './fixtures/api';
 
 /**
- * A film's average rating cannot say whether the crowd agreed about it: 3.0
- * from everybody and 3.0 from a room split between 0.5 and 5.0 are opposite
- * experiences flattened to the same number. Letterboxd publishes the histogram
- * behind that average and Spyboxd already stores it, so this panel asks the
- * question the average cannot.
+ * A film almost nobody has seen and a film everybody argues about are different
+ * kinds of unusual, and an audience-size measure collapses them into one. The
+ * spread of the crowd's own histogram separates them.
  */
 test.beforeEach(async ({ page }) => {
   await installApiMocks(page);
 });
 
 test('the panel reports how often the crowd was divided, with its denominator', async ({ page }) => {
-  await page.goto('/analysis');
+  await page.goto('/people?tab=one&subject=alpha');
 
-  const heading = page.getByRole('heading', { name: 'Films the world argues about' });
-  await expect(heading).toBeVisible();
+  const panel = page.locator('section', { hasText: 'WHERE THE CROWD WAS DIVIDED' }).first();
+  await expect(panel).toBeVisible();
 
-  const panel = heading.locator('..').locator('..');
   await expect(panel).toContainText('86');
   await expect(panel).toContainText('47');
   // Stated, not implied: a share is meaningless without knowing how many films
@@ -28,13 +25,9 @@ test('the panel reports how often the crowd was divided, with its denominator', 
 });
 
 test('a lean toward contested films is named rather than left as a bare ratio', async ({ page }) => {
-  await page.goto('/analysis');
+  await page.goto('/people?tab=one&subject=alpha');
 
-  const panel = page
-    .getByRole('heading', { name: 'Films the world argues about' })
-    .locator('..')
-    .locator('..');
-
-  await expect(panel).toContainText('they seek out the arguments');
+  const panel = page.locator('section', { hasText: 'WHERE THE CROWD WAS DIVIDED' }).first();
+  await expect(panel).toContainText('THEY SEEK OUT THE ARGUMENTS');
   await expect(panel).toContainText('Divisive Fixture Film');
 });

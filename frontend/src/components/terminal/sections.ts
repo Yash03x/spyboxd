@@ -74,7 +74,6 @@ export const SECTIONS: SectionDef[] = [
       { id: 'circle', label: 'THE CIRCLE', panels: 7 },
       { id: 'reach', label: 'REACH', panels: 6 },
     ],
-    legacyPath: '/analysis',
   },
   {
     id: 'tonight',

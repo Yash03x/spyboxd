@@ -3,43 +3,40 @@ import { expect, test } from '@playwright/test';
 import { installApiMocks } from './fixtures/api';
 
 /**
- * While one profile is centred, the panel underneath used to show the group's
- * "most connected" leaderboard with that profile's rank highlighted — a fact
- * about the whole group, asked while looking at one person.
+ * The circle answers two questions at once: what one person's ring looks like,
+ * and how the whole group ranks. The redesign keeps both on the same tab rather
+ * than swapping one for the other, so centring somebody no longer costs you the
+ * group view.
  */
 test.beforeEach(async ({ page }) => {
   await installApiMocks(page);
 });
 
 test('the leaderboard answers the whole-group view', async ({ page }) => {
-  await page.goto('/network');
+  await page.goto('/people?tab=circle&subject=alpha');
 
-  await expect(page.getByRole('heading', { name: /Most connected/i })).toBeVisible();
+  await expect(page.getByText('▸ MOST CONNECTED', { exact: false })).toBeVisible();
 });
 
-test('centring a profile replaces it with that profile\'s own connections', async ({ page }) => {
-  await page.goto('/network');
+test('centring a profile shows that profile\'s own connections', async ({ page }) => {
+  await page.goto('/people?tab=circle&subject=alpha');
 
-  await page.getByRole('button', { name: /^Centre the network on @/ }).first().click();
+  const graph = page.locator('section', { hasText: 'FOLLOW GRAPH' }).first();
+  await graph.getByRole('link', { name: '@bravo', exact: true }).first().click();
 
-  const heading = page.getByRole('heading', { name: /connections/i });
-  await expect(heading).toBeVisible();
-  await expect(page.getByRole('heading', { name: /Most connected/i })).toHaveCount(0);
-
-  // The three directions the graph draws, named rather than counted by eye.
-  const panel = page.locator('section').filter({ has: heading });
-  // Each label shares its element with a count, so match on the label text.
-  await expect(panel.getByText(/^Mutual/)).toBeVisible();
-  await expect(panel.getByText(/^They follow/)).toBeVisible();
-  await expect(panel.getByText(/^Follow them/)).toBeVisible();
+  await expect(page.getByText('▸ FOLLOW GRAPH · @BRAVO', { exact: false })).toBeVisible();
+  // The group leaderboard stays: re-centring is a change of subject, not a
+  // change of what the tab is for.
+  await expect(page.getByText('▸ MOST CONNECTED', { exact: false })).toBeVisible();
 });
 
-test('returning to the full view brings the leaderboard back', async ({ page }) => {
-  await page.goto('/network');
-  await page.getByRole('button', { name: /^Centre the network on @/ }).first().click();
-  await expect(page.getByRole('heading', { name: /connections/i })).toBeVisible();
+test('the three edge kinds are named rather than counted by eye', async ({ page }) => {
+  await page.goto('/people?tab=circle&subject=alpha');
 
-  await page.getByRole('button', { name: /Back to full network/i }).click();
-
-  await expect(page.getByRole('heading', { name: /Most connected/i })).toBeVisible();
+  const graph = page.locator('section', { hasText: 'FOLLOW GRAPH' }).first();
+  await expect(graph.getByText('MUTUAL', { exact: true })).toBeVisible();
+  await expect(graph.getByText('ONE WAY', { exact: true })).toBeVisible();
+  // An account the group orbits that we hold no data for is a third state, and
+  // drawing it like a one-way follow would claim data we do not have.
+  await expect(graph.getByText('NOT TRACKED', { exact: true })).toBeVisible();
 });

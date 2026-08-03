@@ -3,20 +3,19 @@ import { expect, test } from '@playwright/test';
 import { installApiMocks } from './fixtures/api';
 
 /**
- * "Who watched first?" is built from `influence_paths`, which needs an earlier
- * and a later watcher and therefore cannot contain a same-day co-watch. That is
- * correct for the question, but it makes the list shorter than the co-watch
- * count above it with no explanation — 98 co-watches against 78 rows for one
- * real pair, the difference being same-day viewings. Unstated, a missing row
- * reads as missing data rather than as a question that does not apply.
+ * A same-day co-watch has no leader, and dropping those rows silently makes the
+ * remaining lead share look like it covers every shared film. They are counted
+ * and named instead.
  */
 test.beforeEach(async ({ page }) => {
   await installApiMocks(page);
 });
 
-test('same-day co-watches are accounted for, not silently absent from the ranking', async ({ page }) => {
-  await page.goto('/compare?tab=dossier');
+test('same-day co-watches are accounted for, not silently absent from the ranking', async ({
+  page,
+}) => {
+  await page.goto('/people?tab=two');
 
-  const panel = page.getByRole('heading', { name: 'Who watched first?' }).locator('..').locator('..');
+  const panel = page.locator('.terminal-root section').filter({ hasText: 'HEAD TO HEAD' }).first();
   await expect(panel).toContainText('the same day, where neither of them was first');
 });
