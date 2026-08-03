@@ -34,11 +34,11 @@ function counterpartFrom(url: string): string | null {
 export default function CircleTab({
   subject,
   profiles,
-  onSubjectChange,
+  subjectHref,
 }: {
   subject: string;
   profiles: string[];
-  onSubjectChange: (username: string) => void;
+  subjectHref: (username: string) => string;
 }) {
   const graphQuery = useQuery({
     queryKey: ['follow-graph', subject],
@@ -166,7 +166,7 @@ export default function CircleTab({
             body: 'Following and followers come from a surface that is read on its own schedule. Until it runs, this profile has no circle we can draw.',
             cta: { label: 'SEE THE REFRESH LEDGER', href: sectionHref('data', 'refreshes') },
           },
-        }) ?? <EgoGraph centre={subject} leaves={leaves} onSelect={onSubjectChange} />}
+        }) ?? <EgoGraph centre={subject} leaves={leaves} hrefFor={subjectHref} />}
       </Panel>
 
       <Panel

@@ -22,7 +22,7 @@ test('centring a profile shows that profile\'s own connections', async ({ page }
   await page.goto('/people?tab=circle&subject=alpha');
 
   const graph = page.locator('section', { hasText: 'FOLLOW GRAPH' }).first();
-  await graph.getByRole('button', { name: '@bravo', exact: true }).first().click();
+  await graph.getByRole('link', { name: '@bravo', exact: true }).first().click();
 
   await expect(page.getByText('▸ FOLLOW GRAPH · @BRAVO', { exact: false })).toBeVisible();
   // The group leaderboard stays: re-centring is a change of subject, not a

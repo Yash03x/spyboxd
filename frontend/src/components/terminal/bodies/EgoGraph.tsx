@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import React from 'react';
 
 export type EdgeKind = 'mutual' | 'follows' | 'followedBy' | 'untracked';
@@ -14,8 +15,12 @@ export interface EgoLeaf {
 export interface EgoGraphProps {
   centre: string;
   leaves: EgoLeaf[];
-  /** Re-centre the graph on a leaf. */
-  onSelect?: (username: string) => void;
+  /**
+   * Where re-centring on a leaf goes. A link rather than a click handler: the
+   * subject lives in the URL, so the node that changes it should be navigable
+   * the way any other link is.
+   */
+  hrefFor?: (username: string) => string;
 }
 
 const BOX_WIDTH = 620;
@@ -36,7 +41,7 @@ function initials(username: string): string {
  * Node rings carry a 4px panel-coloured halo so edges appear to terminate at
  * the circle rather than run underneath it.
  */
-export default function EgoGraph({ centre, leaves, onSelect }: EgoGraphProps) {
+export default function EgoGraph({ centre, leaves, hrefFor }: EgoGraphProps) {
   return (
     <>
       <div className="flex flex-wrap gap-x-[14px] gap-y-1 border-b border-term-rule2 px-[10px] py-[6px] text-t95 text-term-muted">
@@ -162,20 +167,20 @@ export default function EgoGraph({ centre, leaves, onSelect }: EgoGraphProps) {
 
             // Only tracked counterparts can be re-centred -- there is nothing
             // to show for an account we hold no data for.
-            return leaf.tracked && onSelect ? (
-              <button
+            return leaf.tracked && hrefFor ? (
+              <Link
                 key={`node-${leaf.username}`}
-                type="button"
+                href={hrefFor(leaf.username)}
+                scroll={false}
                 // Named explicitly: the visible label is initials plus handle,
                 // which makes the computed name "BR @bravo" and unreachable by
                 // the handle alone.
                 aria-label={`@${leaf.username}`}
-                onClick={() => onSelect(leaf.username)}
-                className={`${className} cursor-pointer border-none bg-transparent p-0`}
+                className={`${className} no-underline hover:no-underline`}
                 style={style}
               >
                 {node}
-              </button>
+              </Link>
             ) : (
               <span key={`node-${leaf.username}`} className={className} style={style}>
                 {node}

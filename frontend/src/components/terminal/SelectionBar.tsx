@@ -1,13 +1,31 @@
 'use client';
 
+import Link from 'next/link';
 import React from 'react';
 
+const CHIP_BASE = 'rounded-[3px] border px-2 py-[3px] text-t10 no-underline hover:no-underline';
+
+function chipStyle(active: boolean): React.CSSProperties {
+  return {
+    borderColor: active ? 'var(--accent)' : 'var(--rule)',
+    background: active ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent',
+    color: active ? 'var(--accent)' : 'var(--muted)',
+  };
+}
+
 export interface SelectionBarProps {
+  label?: string;
   profiles: string[];
   selected: string[];
-  onToggle: (username: string) => void;
-  minSelection?: number;
-  /** Extra controls rendered to the right, e.g. the closeness selector. */
+  /**
+   * Where clicking a chip goes. Chips are links rather than buttons because
+   * every one of them only changes the query string: a link is shareable,
+   * middle-clickable, and works before React has hydrated — a button that
+   * pushes the same URL does none of those.
+   */
+  hrefFor: (username: string) => string;
+  /** Chips that would drop below the minimum render inert rather than 404. */
+  isLocked?: (username: string) => boolean;
   children?: React.ReactNode;
 }
 
@@ -17,39 +35,45 @@ export interface SelectionBarProps {
  * from every panel without scrolling back up.
  */
 export default function SelectionBar({
+  label = 'PROFILES',
   profiles,
   selected,
-  onToggle,
-  minSelection = 2,
+  hrefFor,
+  isLocked,
   children,
 }: SelectionBarProps) {
   const chosen = new Set(selected.map((name) => name.toLowerCase()));
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-term-rule bg-term-bg2 px-[14px] py-[7px]">
-      <span className="text-t9 tracking-tab text-term-muted2">PROFILES</span>
+      <span className="text-t9 tracking-tab text-term-muted2">{label}</span>
       <div className="flex flex-wrap items-center gap-1">
         {profiles.map((username) => {
           const active = chosen.has(username.toLowerCase());
-          // Dropping below the minimum would leave the tab with nothing to
-          // compare, so the last selected chip refuses rather than emptying.
-          const locked = active && selected.length <= minSelection;
+          const locked = isLocked?.(username) ?? false;
+          if (locked) {
+            return (
+              <span
+                key={username}
+                className={`${CHIP_BASE} cursor-not-allowed`}
+                title="At least this many profiles are needed here"
+                style={chipStyle(active)}
+              >
+                @{username}
+              </span>
+            );
+          }
           return (
-            <button
+            <Link
               key={username}
-              type="button"
-              onClick={() => !locked && onToggle(username)}
-              disabled={locked}
-              title={locked ? `At least ${minSelection} profiles are needed here` : undefined}
-              className="rounded-[3px] border px-2 py-[3px] text-t10 disabled:cursor-not-allowed"
-              style={{
-                borderColor: active ? 'var(--accent)' : 'var(--rule)',
-                background: active ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent',
-                color: active ? 'var(--accent)' : 'var(--muted)',
-              }}
+              href={hrefFor(username)}
+              scroll={false}
+              aria-current={active ? 'true' : undefined}
+              className={CHIP_BASE}
+              style={chipStyle(active)}
             >
               @{username}
-            </button>
+            </Link>
           );
         })}
       </div>
@@ -60,7 +84,7 @@ export default function SelectionBar({
 
 export interface ClosenessPickerProps {
   value: number;
-  onChange: (gapDays: number) => void;
+  hrefFor: (gapDays: number) => string;
 }
 
 /**
@@ -74,29 +98,23 @@ export const CLOSENESS_TIERS: Array<{ label: string; gapDays: number }> = [
   { label: 'WITHIN A WEEK', gapDays: 7 },
 ];
 
-export function ClosenessPicker({ value, onChange }: ClosenessPickerProps) {
+export function ClosenessPicker({ value, hrefFor }: ClosenessPickerProps) {
   return (
     <div className="flex items-center gap-2">
       <span className="text-t9 tracking-tab text-term-muted2">HOW CLOSE</span>
       <div className="flex items-center gap-1">
-        {CLOSENESS_TIERS.map((tier) => {
-          const active = tier.gapDays === value;
-          return (
-            <button
-              key={tier.gapDays}
-              type="button"
-              onClick={() => onChange(tier.gapDays)}
-              className="rounded-[3px] border px-2 py-[3px] text-t10"
-              style={{
-                borderColor: active ? 'var(--accent)' : 'var(--rule)',
-                background: active ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent',
-                color: active ? 'var(--accent)' : 'var(--muted)',
-              }}
-            >
-              {tier.label}
-            </button>
-          );
-        })}
+        {CLOSENESS_TIERS.map((tier) => (
+          <Link
+            key={tier.gapDays}
+            href={hrefFor(tier.gapDays)}
+            scroll={false}
+            aria-current={tier.gapDays === value ? 'true' : undefined}
+            className={CHIP_BASE}
+            style={chipStyle(tier.gapDays === value)}
+          >
+            {tier.label}
+          </Link>
+        ))}
       </div>
     </div>
   );

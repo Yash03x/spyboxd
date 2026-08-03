@@ -95,14 +95,14 @@ test('leaving soon refuses to invent a countdown it cannot read', async ({ page 
 test('the closeness control says "same day", not "gap days"', async ({ page }) => {
   await page.goto('/overlaps');
 
-  await expect(page.getByRole('button', { name: 'SAME DAY' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'WITHIN A DAY' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'WITHIN THREE' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'SAME DAY' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'WITHIN A DAY' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'WITHIN THREE' })).toBeVisible();
 
   // No control may be labelled in the old schema language. The caveat below
   // the panel still names what the words replaced — that is the rename being
   // explained, not the rename leaking.
-  await expect(page.getByRole('button', { name: /gap days/i })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: /gap days/i })).toHaveCount(0);
   await expect(page.getByRole('link', { name: /Spy Signals/i })).toHaveCount(0);
 });
 

@@ -42,7 +42,7 @@ test('One person renders its panels and names the subject', async ({ page }) => 
 
 test('the subject is in the URL, so a person is linkable', async ({ page }) => {
   await page.goto('/people?tab=one');
-  await page.getByRole('button', { name: '@bravo', exact: true }).click();
+  await page.getByRole('link', { name: '@bravo', exact: true }).click();
 
   await expect(page).toHaveURL(/subject=bravo/);
   await page.reload();

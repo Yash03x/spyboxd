@@ -253,7 +253,7 @@ test('Two people changes a profile and recomputes the pair', async ({ page }) =>
   await expect(page.getByRole('heading', { level: 1, name: 'People', exact: true })).toBeVisible();
   await expectAccountControl(page);
 
-  await page.getByRole('button', { name: '@charlie', exact: true }).click();
+  await page.getByRole('link', { name: '@charlie', exact: true }).click();
 
   await expect(page).toHaveURL(/profiles=charlie/);
   await expect(page.getByText('▸ HEAD TO HEAD', { exact: false })).toBeVisible();
@@ -269,7 +269,7 @@ test('the Overlaps profile chips stay visible and rescan on click', async ({ pag
   // The selection is a permanently visible row rather than a dialog: it is the
   // input to every panel below it, so hiding it behind a click made the tab's
   // most important control the least reachable one.
-  const juliet = page.getByRole('button', { name: '@juliet', exact: true });
+  const juliet = page.getByRole('link', { name: '@juliet', exact: true });
   await expect(juliet).toBeVisible();
   await juliet.click();
 

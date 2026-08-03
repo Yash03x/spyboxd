@@ -17,9 +17,9 @@ test('re-centring the graph and going back leaves it rendered', async ({ page })
 
   const panel = page.locator('section', { hasText: 'FOLLOW GRAPH' }).first();
   await expect(panel).toBeVisible();
-  await expect(panel.getByRole('button', { name: /^@/ }).first()).toBeVisible();
+  await expect(panel.getByRole('link', { name: /^@/ }).first()).toBeVisible();
 
-  await panel.getByRole('button', { name: '@bravo', exact: true }).first().click();
+  await panel.getByRole('link', { name: '@bravo', exact: true }).first().click();
   await expect(page).toHaveURL(/subject=bravo/);
   await expect(page.getByText('▸ FOLLOW GRAPH · @BRAVO', { exact: false })).toBeVisible();
 
@@ -28,7 +28,7 @@ test('re-centring the graph and going back leaves it rendered', async ({ page })
   // The header alone is not enough -- the graph itself has to come back, with
   // clickable nodes rather than an empty frame.
   await expect(page.getByText('▸ FOLLOW GRAPH · @ALPHA', { exact: false })).toBeVisible();
-  await expect(panel.getByRole('button', { name: /^@/ }).first()).toBeVisible();
+  await expect(panel.getByRole('link', { name: /^@/ }).first()).toBeVisible();
 });
 
 test('page content is actually painted, not just present in the DOM', async ({ page }) => {
