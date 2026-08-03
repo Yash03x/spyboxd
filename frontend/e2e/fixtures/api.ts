@@ -1598,14 +1598,21 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         });
       case '/api/tonight/list-cadence':
         return json(route, {
-          profiles: chosen.map((username, index) => ({
-            username,
-            lists: index === 2 ? 0 : Math.max(14 - index * 5, 1),
-            last_edit_days: index === 2 ? null : 3 + index * 120,
-            read: index === 2 ? 'Never made one' : index === 0 ? 'Actively curating' : 'Collector, not curator',
-          })),
+          profiles: chosen.map((username, index) => {
+            const lists = index === 2 ? 0 : Math.max(14 - index * 5, 1);
+            return {
+              username,
+              lists,
+              // The first profile holds private lists from an export, which is
+              // the case that made this panel contradict the three above it.
+              public_lists: index === 0 ? lists - 2 : lists,
+              last_edit_days: index === 2 ? null : 3 + index * 120,
+              read: index === 2 ? 'Never made one' : index === 0 ? 'Actively curating' : 'Collector, not curator',
+            };
+          }),
+          private_lists: 2,
           caveat:
-            'Edit dates come from the list surface, which is read on its own schedule. A list we have never re-read looks stale here even if it changed yesterday.',
+            'Edit dates come from the list surface, which is read on its own schedule. A list we have never re-read looks stale here even if it changed yesterday. 2 of these are private and appear in no other panel on this tab: an account export carries them, a public page never would.',
         });
       case '/api/tonight/availability':
         return json(route, {
@@ -1617,6 +1624,7 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
             },
           ],
           region: url.searchParams.get('region') ?? 'IN',
+          region_read: true,
           regions: [
             { region: 'IN', films: 800, checked_at: '2026-08-03T12:00:00Z', days_ago: 0, stale: false },
             { region: 'GB', films: 90, checked_at: '2026-07-15T12:00:00Z', days_ago: 19, stale: true },
@@ -1632,7 +1640,7 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
             { surface: 'Likes · comments', dataset: 'likes', profiles_covered: 0, profiles_selected: 3, rows: 0, authoritative_profiles: 0, last_run: null, result: 'Never read for any selected profile' },
           ],
           caveat:
-            'Read from the latest completed sync per profile. A surface with no row was never read for anybody in this selection — which is different from being read and coming back empty, and the two must not look alike.',
+            'Each surface reports the most recent completed run that carried it, which is not always the profile’s latest run — a refresh that skips a surface does not unread it. A surface with no row was never read for anybody in this selection, which is different from being read and coming back empty, and the two must not look alike.',
         });
       case '/api/data-health/feeds':
         return json(route, {
@@ -1699,9 +1707,12 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
             last_read_at: '2026-08-03T08:00:00Z',
             hours_ago: 6 + index * 30,
             watch_events: 2_184 - index * 300,
+            // One profile whose header has never been read: the panel used to
+            // print a confident 0 for it, beside its own watch count.
+            films_held: index === 1 ? null : 1_200 - index * 37,
           })),
           caveat:
-            "Read time comes from the latest completed sync, falling back to the profile's own last-scraped stamp. A profile with neither has never been read at all.",
+            "Read time comes from the latest completed sync, falling back to the profile's own last-scraped stamp. A profile with neither has never been read at all. 1 of these carry no film total: that figure comes from the profile header, and a header nobody has read holds no number rather than a zero.",
         });
       case '/api/data-health/lost':
         return json(route, {
@@ -2053,7 +2064,9 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   // renders "no follow connections" and leaves every node, the ego view and the
   // deep-dive hand-off untestable, which is how a blank-on-back regression
   // reached production unnoticed.
-  if (path === '/api/follow-graph/suggestions') return json(route, { suggestions: [] });
+  if (path === '/api/follow-graph/suggestions') {
+    return json(route, { suggestions: [], monitored_profiles: profiles.length });
+  }
   if (path === '/api/follow-graph/mutuals') {
     return json(route, followMutuals);
   }

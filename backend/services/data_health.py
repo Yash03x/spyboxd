@@ -82,19 +82,34 @@ def build_ledger(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     """
 
     profile_ids = [profile.id for profile in profiles]
-    latest = _latest_syncs(db, profile_ids)
 
+    # Per profile *and surface*, not per profile. Scoped to the single latest
+    # sync, a surface an older run had read and a newer one did not touch was
+    # reported as "never read for any selected profile" — which the working
+    # follow graph in People flatly contradicted. Each surface now reports the
+    # most recent run that actually carried it.
     rows: List[Dict[str, Any]] = []
-    if latest:
+    if profile_ids:
         datasets = (
             db.query(SyncDataset, ProfileSync)
             .join(ProfileSync, ProfileSync.id == SyncDataset.profile_sync_id)
-            .filter(SyncDataset.profile_sync_id.in_([sync.id for sync in latest.values()]))
+            .filter(
+                ProfileSync.profile_id.in_(profile_ids),
+                ProfileSync.status == "completed",
+            )
             .all()
         )
-        by_surface: Dict[str, List[Any]] = defaultdict(list)
+        newest: Dict[tuple, Any] = {}
         for dataset, sync in datasets:
-            by_surface[dataset.dataset_name].append((dataset, sync))
+            key = (dataset.dataset_name, sync.profile_id)
+            when = _aware(sync.completed_at or sync.started_at)
+            current = newest.get(key)
+            if current is None or (when is not None and (current[2] is None or when > current[2])):
+                newest[key] = (dataset, sync, when)
+
+        by_surface: Dict[str, List[Any]] = defaultdict(list)
+        for (name, _profile_id), (dataset, sync, _when) in newest.items():
+            by_surface[name].append((dataset, sync))
 
         for name, label in SURFACE_ORDER:
             entries = by_surface.get(name, [])
@@ -116,7 +131,11 @@ def build_ledger(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
             imported = sum(dataset.imported_row_count for dataset, _ in entries)
             authoritative = sum(1 for dataset, _ in entries if dataset.is_authoritative)
             last_run = max(
-                (sync.completed_at or sync.started_at for _, sync in entries),
+                (
+                    when
+                    for when in (_aware(sync.completed_at or sync.started_at) for _, sync in entries)
+                    if when is not None
+                ),
                 default=None,
             )
             rows.append(
@@ -139,9 +158,10 @@ def build_ledger(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     return {
         "surfaces": rows,
         "caveat": (
-            "Read from the latest completed sync per profile. A surface with no row was never "
-            "read for anybody in this selection — which is different from being read and coming "
-            "back empty, and the two must not look alike."
+            "Each surface reports the most recent completed run that carried it, which is not "
+            "always the profile's latest run — a refresh that skips a surface does not unread it. "
+            "A surface with no row was never read for anybody in this selection, which is "
+            "different from being read and coming back empty, and the two must not look alike."
         ),
     }
 
@@ -582,14 +602,27 @@ def build_watch_event_freshness(db: Session, profiles: Sequence[Profile]) -> Dic
                 "last_read_at": when.isoformat() if when else None,
                 "hours_ago": round((now - when).total_seconds() / 3600, 1) if when else None,
                 "watch_events": events,
+                # Letterboxd's own header figure, and null when the header has
+                # never been read. The panel used to source this from the
+                # tracked-profile list instead, which does not cover every
+                # profile on screen, so a profile missing from that list
+                # rendered a confident "0" beside its 299 watches.
+                "films_held": profile.reported_total_films,
             }
         )
 
     entries.sort(key=lambda item: (item["hours_ago"] is None, item["hours_ago"] or 0))
+    unread = sum(1 for entry in entries if entry["films_held"] is None)
     return {
         "profiles": entries,
         "caveat": (
             "Read time comes from the latest completed sync, falling back to the profile's own "
             "last-scraped stamp. A profile with neither has never been read at all."
+            + (
+                f" {unread} of these carry no film total: that figure comes from the profile "
+                "header, and a header nobody has read holds no number rather than a zero."
+                if unread
+                else ""
+            )
         ),
     }

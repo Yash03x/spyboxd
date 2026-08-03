@@ -62,13 +62,6 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
   const { isAdmin, userReady } = useAdminScope();
   const enabled = profiles.length > 0;
 
-  const trackedQuery = useQuery({
-    queryKey: ['profiles-tracked'],
-    queryFn: () => profileApi.getTrackedProfiles(),
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
-
   const freshnessQuery = useQuery({
     queryKey: ['data-freshness', profiles],
     queryFn: () => dataHealthApi.getFreshness(profiles),
@@ -107,8 +100,6 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
     refetchOnWindowFocus: false,
   });
 
-  const tracked = trackedQuery.data ?? [];
-
   return (
     <>
       <Panel
@@ -118,8 +109,8 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
         caveat={freshnessQuery.data?.caveat}
       >
         {panelState({
-          isLoading: freshnessQuery.isLoading || trackedQuery.isLoading,
-          error: freshnessQuery.error ?? trackedQuery.error,
+          isLoading: freshnessQuery.isLoading,
+          error: freshnessQuery.error,
           isEmpty: (freshnessQuery.data?.profiles.length ?? 0) === 0,
           severity: 'fatal',
           onRetry: () => freshnessQuery.refetch(),
@@ -134,9 +125,6 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
             columns="minmax(0,1fr) 90px 90px minmax(0,1fr)"
             head={['PROFILE', ['WATCHES', 'right'], ['LAST READ', 'right'], 'FILMS HELD']}
             rows={(freshnessQuery.data?.profiles ?? []).map((entry) => {
-              const profile = tracked.find(
-                (candidate) => candidate.username.toLowerCase() === entry.username.toLowerCase(),
-              );
               return {
                 cells: [
                   cell(`@${entry.username}`),
@@ -156,11 +144,18 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                             ? 'var(--accent)'
                             : 'var(--ok)',
                   }),
-                  cell((profile?.total_films ?? 0).toLocaleString(), {
-                    align: 'right',
-                    size: '10px',
-                    tone: 'var(--muted)',
-                  }),
+                  // A header nobody has read holds no number. This used to
+                  // read the tracked-profile list, which does not cover every
+                  // profile on screen, and rendered a confident 0 for the ones
+                  // it missed — beside their own non-zero watch count.
+                  cell(
+                    entry.films_held === null ? 'never read' : entry.films_held.toLocaleString(),
+                    {
+                      align: 'right',
+                      size: '10px',
+                      tone: entry.films_held === null ? 'var(--dim)' : 'var(--muted)',
+                    },
+                  ),
                 ],
               };
             })}
@@ -221,7 +216,10 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
             items={(suggestionsQuery.data?.suggestions ?? []).map((suggestion) => ({
               name: `@${suggestion.username}`,
               weight: suggestion.followed_by_count,
-              value: `${suggestion.followed_by_count} of ${profiles.length}`,
+              // Counted across every monitored profile, which is what the
+              // server measured. Dividing by the tab's current selection
+              // produced "10 of 6".
+              value: `${suggestion.followed_by_count} of ${suggestionsQuery.data?.monitored_profiles ?? '—'}`,
               sub: suggestion.already_imported ? 'synced' : 'new',
             }))}
           />

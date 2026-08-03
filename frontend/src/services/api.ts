@@ -1193,6 +1193,8 @@ export interface FollowSuggestion {
 
 export interface FollowSuggestionsResponse {
   suggestions: FollowSuggestion[];
+  /** `followed_by_count` is out of this, not out of any tab's current selection. */
+  monitored_profiles: number;
 }
 
 export const followGraphApi = {
@@ -2326,9 +2328,12 @@ export interface ListCadenceResponse {
   profiles: Array<{
     username: string;
     lists: number;
+    /** Every other list panel on this tab can only see these. */
+    public_lists: number;
     last_edit_days: number | null;
     read: string;
   }>;
+  private_lists: number;
   caveat: string;
 }
 
@@ -2344,6 +2349,8 @@ export interface AvailabilityResponse {
     checked_at: string | null;
   }>;
   region: string;
+  /** False when this region has never been fetched, which is not the same as carrying nothing. */
+  region_read: boolean;
   regions: Array<{
     region: string;
     films: number;
@@ -2447,6 +2454,8 @@ export interface FreshnessResponse {
     last_read_at: string | null;
     hours_ago: number | null;
     watch_events: number;
+    /** Letterboxd's own header figure. Null when the header has never been read. */
+    films_held: number | null;
   }>;
   caveat: string;
 }

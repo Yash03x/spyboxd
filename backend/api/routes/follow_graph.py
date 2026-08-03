@@ -263,7 +263,7 @@ def get_follow_graph_suggestions(
     )
     selected_normalized = [row.normalized for row in aggregate_rows]
     if not selected_normalized:
-        return {"suggestions": []}
+        return {"suggestions": [], "monitored_profiles": len(scoped_ids)}
 
     followed_by: Dict[str, List[str]] = {
         normalized: [] for normalized in selected_normalized
@@ -350,4 +350,7 @@ def get_follow_graph_suggestions(
                 "profile_id": linked_profile_id,
             }
         )
-    return {"suggestions": suggestions}
+    # The counts above are taken across every monitored profile, not across a
+    # tab's current selection. Without saying so, a caller that supplied its
+    # own denominator rendered "10 of 6".
+    return {"suggestions": suggestions, "monitored_profiles": len(scoped_ids)}

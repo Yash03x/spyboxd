@@ -11,7 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from database.models import (
@@ -121,10 +121,21 @@ def build_list_progress(
     ):
         watched_by[movie_id].add(profile_id)
 
+    # Scoped to the selection's own public lists, the same set "Work through a
+    # list" shows. Unscoped, this counted every list in the store -- including
+    # other people's, and including the private ones an account export brings
+    # in -- while its own caption claimed the lists were "readable for this
+    # selection". Three panels on this tab then reported three different
+    # totals for the same word.
     rows = (
         db.query(MovieList, MovieListItem.movie_id)
         .join(MovieListItem, MovieListItem.movie_list_id == MovieList.id)
-        .filter(MovieList.removed_at.is_(None), MovieListItem.removed_at.is_(None))
+        .filter(
+            MovieList.profile_id.in_(profile_ids),
+            MovieList.is_public.is_(True),
+            MovieList.removed_at.is_(None),
+            MovieListItem.removed_at.is_(None),
+        )
         .all()
     )
 
@@ -163,8 +174,9 @@ def build_list_progress(
         "lists": lists[:limit],
         "count": len(lists),
         "caveat": (
-            f"{len(lists)} lists are readable for this selection. A private list cannot be "
-            "counted at all, so an absent list is not a list nobody has started."
+            f"{len(lists)} public lists belong to this selection. A private list is not counted "
+            "at all — including one an account export brought in — so an absent list is not a "
+            "list nobody has started."
         ),
     }
 
@@ -198,7 +210,14 @@ def build_list_only_films(
         db.query(MovieListItem.movie_id, Movie, func.count(MovieListItem.id))
         .join(Movie, Movie.id == MovieListItem.movie_id)
         .join(MovieList, MovieList.id == MovieListItem.movie_list_id)
-        .filter(MovieListItem.removed_at.is_(None), MovieList.removed_at.is_(None))
+        .filter(
+            # Same scope as the panels above it: the selection's own public
+            # lists. A blind spot drawn from a stranger's list is not one.
+            MovieList.profile_id.in_(profile_ids),
+            MovieList.is_public.is_(True),
+            MovieListItem.removed_at.is_(None),
+            MovieList.removed_at.is_(None),
+        )
         .group_by(MovieListItem.movie_id, Movie.id)
         .all()
     )
@@ -221,8 +240,8 @@ def build_list_only_films(
         "films": films[:limit],
         "count": len(films),
         "caveat": (
-            f"On {min_lists} or more readable lists and logged by nobody in the selection. "
-            "A film on one list is not yet a canonical blind spot, so it is left out."
+            f"On {min_lists} or more of the selection's own public lists and logged by nobody in "
+            "it. A film on one list is not yet a canonical blind spot, so it is left out."
         ),
     }
 
@@ -239,10 +258,15 @@ def build_list_cadence(db: Session, profiles: Sequence[Profile]) -> Dict[str, An
     if not profile_ids:
         return {"profiles": [], "caveat": "No profiles selected."}
 
+    # Split by visibility rather than counted flat. Curating is curating
+    # whether or not the list is published, so a private list still belongs in
+    # this panel -- but every other list panel on the tab can only see the
+    # public ones, and a bare total here read as a contradiction of them.
     rows = (
         db.query(
             MovieList.profile_id,
             func.count(MovieList.id),
+            func.sum(case((MovieList.is_public.is_(True), 1), else_=0)),
             func.max(MovieList.updated_at),
         )
         .filter(MovieList.profile_id.in_(profile_ids), MovieList.removed_at.is_(None))
@@ -251,11 +275,16 @@ def build_list_cadence(db: Session, profiles: Sequence[Profile]) -> Dict[str, An
     )
 
     now = datetime.now(timezone.utc)
-    by_profile = {profile_id: (count, _aware(last)) for profile_id, count, last in rows}
+    by_profile = {
+        profile_id: (count, int(public or 0), _aware(last))
+        for profile_id, count, public, last in rows
+    }
 
     entries = []
+    private_total = 0
     for profile in profiles:
-        count, last = by_profile.get(profile.id, (0, None))
+        count, public, last = by_profile.get(profile.id, (0, 0, None))
+        private_total += count - public
         days = (now - last).days if last else None
         if count == 0:
             read = "Never made one"
@@ -271,6 +300,7 @@ def build_list_cadence(db: Session, profiles: Sequence[Profile]) -> Dict[str, An
             {
                 "username": names.get(profile.id, profile.username),
                 "lists": count,
+                "public_lists": public,
                 "last_edit_days": days,
                 "read": read,
             }
@@ -280,9 +310,16 @@ def build_list_cadence(db: Session, profiles: Sequence[Profile]) -> Dict[str, An
 
     return {
         "profiles": entries,
+        "private_lists": private_total,
         "caveat": (
             "Edit dates come from the list surface, which is read on its own schedule. A list we "
             "have never re-read looks stale here even if it changed yesterday."
+            + (
+                f" {private_total} of these are private and appear in no other panel on this tab: "
+                "an account export carries them, a public page never would."
+                if private_total
+                else ""
+            )
         ),
     }
 
@@ -374,13 +411,31 @@ def build_availability(db: Session, profiles: Sequence[Profile], *, region: str 
         )
     regions.sort(key=lambda item: (item["days_ago"] is None, item["days_ago"] or 0))
 
+    # A region nobody has ever fetched holds no rows, which is not the same
+    # fact as a region that was read and carries none of the queue. Reporting
+    # the first as the second is the one thing this section is not allowed to
+    # do, and the freshness panel beside it already says so in words.
+    region_read = any(entry["region"] == region for entry in regions)
+    if region_read:
+        scope = (
+            f"{len(films)} queued films are carried by a subscription service in {region} as of "
+            "the last reading."
+        )
+    else:
+        others = ", ".join(entry["region"] for entry in regions[:5])
+        scope = (
+            f"{region} has never been read, so this is empty for want of a fetch rather than for "
+            "want of availability."
+            + (f" The regions we do hold are {others}." if others else "")
+        )
+
     return {
         "films": films,
         "region": region,
+        "region_read": region_read,
         "regions": regions,
         "caveat": (
-            f"{len(films)} queued films are carried by a subscription service in {region} as of the "
-            "last reading. There is no countdown here on purpose: the provider feed publishes what "
+            f"{scope} There is no countdown here on purpose: the provider feed publishes what "
             "carries a film today and nothing about when that stops, so a \"days left\" figure "
             "would be invented rather than read."
         ),
