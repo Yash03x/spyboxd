@@ -169,10 +169,14 @@ export default function MissingTab({ profiles }: { profiles: string[] }) {
                     tone: 'var(--ink)',
                   }),
                   cell(state.label, { align: 'right', size: '10px', tone: state.tone }),
-                  cell(
-                    blockers.length ? blockers.join(' ') : 'Nothing — this one is answered in full',
-                    { font: 's', size: '10px', tone: 'var(--dim)', wrap: true },
-                  ),
+                  // Repeating "answered in full" beside a state that already
+                  // says so is nine lines of noise down the column.
+                  cell(blockers.length ? blockers.join(' ') : '—', {
+                    font: 's',
+                    size: '10px',
+                    tone: 'var(--dim)',
+                    wrap: true,
+                  }),
                 ],
               };
             })}
