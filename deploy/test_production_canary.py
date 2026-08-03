@@ -133,6 +133,13 @@ def _good_responses():
             },
             b"",
         )
+    for path, destination in public_canary.LEGACY_UI_REDIRECTS:
+        # Relative, the way Next actually serves it. Comparing the raw header
+        # against an absolute origin is what made this check reject a working
+        # production deployment.
+        responses[f"{web}{path}"] = public_canary.Response(
+            308, {**SECURITY_HEADERS, "Location": f"{destination}?tab=one"}, b""
+        )
     for path in public_canary.PRIVATE_API_PATHS:
         responses[f"{api}{path}"] = _json_response(
             {"detail": "Missing authorization token"},
@@ -155,6 +162,60 @@ class ProductionCanaryTests(unittest.TestCase):
         self.assertEqual(result["revision"], REVISION)
         self.assertEqual(result["private_ui_routes"], len(public_canary.PRIVATE_UI_PATHS))
         self.assertEqual(result["private_api_routes"], len(public_canary.PRIVATE_API_PATHS))
+        self.assertEqual(
+            result["legacy_ui_redirects"], len(public_canary.LEGACY_UI_REDIRECTS)
+        )
+
+    def test_a_legacy_path_is_checked_against_its_new_home_not_sign_in(self):
+        """Guarding these as private routes failed a healthy deployment.
+
+        /analysis sends everybody to /people now, not anonymous traffic to
+        /sign-in, so asserting the latter broke the canary on a deploy that
+        was working exactly as designed.
+        """
+
+        responses = _good_responses()
+        responses["https://spyboxd.com/analysis"] = public_canary.Response(
+            307,
+            {**SECURITY_HEADERS, "Location": "https://spyboxd.com/sign-in"},
+            b"",
+        )
+        with self.assertRaises(public_canary.CanaryError) as caught:
+            public_canary.run_canary(
+                web_base="https://spyboxd.com",
+                api_base="https://api.spyboxd.com",
+                validator_path=DEPLOY_DIR / "check-runtime-health.py",
+                client=FakeClient(responses),
+            )
+        self.assertIn("permanent redirect", str(caught.exception))
+
+    def test_a_legacy_path_redirected_off_origin_is_rejected(self):
+        responses = _good_responses()
+        responses["https://spyboxd.com/watch-together"] = public_canary.Response(
+            308, {**SECURITY_HEADERS, "Location": "https://evil.example/tonight"}, b""
+        )
+        with self.assertRaises(public_canary.CanaryError) as caught:
+            public_canary.run_canary(
+                web_base="https://spyboxd.com",
+                api_base="https://api.spyboxd.com",
+                validator_path=DEPLOY_DIR / "check-runtime-health.py",
+                client=FakeClient(responses),
+            )
+        self.assertIn("/tonight", str(caught.exception))
+
+    def test_a_legacy_path_pointing_somewhere_new_is_rejected(self):
+        responses = _good_responses()
+        responses["https://spyboxd.com/watch-together"] = public_canary.Response(
+            308, {**SECURITY_HEADERS, "Location": "https://spyboxd.com/overview"}, b""
+        )
+        with self.assertRaises(public_canary.CanaryError) as caught:
+            public_canary.run_canary(
+                web_base="https://spyboxd.com",
+                api_base="https://api.spyboxd.com",
+                validator_path=DEPLOY_DIR / "check-runtime-health.py",
+                client=FakeClient(responses),
+            )
+        self.assertIn("/tonight", str(caught.exception))
 
     def test_private_route_open_redirect_is_rejected(self):
         responses = _good_responses()

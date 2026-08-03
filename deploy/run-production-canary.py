@@ -29,11 +29,26 @@ REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 PRIVATE_UI_PATHS = (
     "/overview",
     "/overlaps",
+    "/people",
+    "/tonight",
+    "/films",
+    "/data",
     "/profiles",
-    "/analysis",
-    "/compare",
-    "/watch-together",
     "/u/privacy-check",
+)
+
+# The pre-redesign paths, which are permanent redirects rather than guarded
+# routes. They were left in PRIVATE_UI_PATHS after the sections were renamed,
+# so the canary asserted /analysis sends anonymous traffic to /sign-in when it
+# now sends everybody to /people — and failed on a working deployment. They are
+# still worth checking, against what they actually do.
+LEGACY_UI_REDIRECTS = (
+    ("/dashboard", "/overview"),
+    ("/spy-signals", "/overlaps"),
+    ("/analysis", "/people"),
+    ("/compare", "/people"),
+    ("/network", "/people"),
+    ("/watch-together", "/tonight"),
 )
 PRIVATE_API_PATHS = (
     "/api/me",
@@ -203,6 +218,35 @@ def _load_health_validator(path: Path) -> ModuleType:
     return module
 
 
+def _validate_legacy_redirect(
+    web_base: str, path: str, destination: str, response: Response
+) -> None:
+    """A pre-redesign path must land on its new home, not on sign-in.
+
+    Guarding it as a private route instead is what made a healthy deployment
+    look broken; asserting the destination is what actually protects the
+    inbound links people already hold.
+    """
+
+    label = f"legacy redirect {path}"
+    if response.status != 308:
+        raise CanaryError(f"{label} did not answer with a permanent redirect")
+    # Next serves these with a relative Location, so it is resolved against the
+    # request rather than compared raw -- and resolving keeps the cross-origin
+    # check meaningful for an absolute one.
+    location = _header(response, "Location")
+    parsed = urllib.parse.urlsplit(
+        urllib.parse.urljoin(f"{web_base}{path}", location)
+    )
+    expected_origin = urllib.parse.urlsplit(web_base)
+    if (
+        parsed.scheme != expected_origin.scheme
+        or parsed.netloc != expected_origin.netloc
+        or parsed.path.rstrip("/") != destination
+    ):
+        raise CanaryError(f"{label} no longer points at {destination}")
+
+
 def _validate_private_redirect(web_base: str, path: str, response: Response) -> None:
     label = "private application route"
     if response.status not in {301, 302, 303, 307, 308}:
@@ -296,6 +340,10 @@ def run_canary(
         _validate_private_redirect(
             web_base, path, request_client.get(f"{web_base}{path}")
         )
+    for path, destination in LEGACY_UI_REDIRECTS:
+        _validate_legacy_redirect(
+            web_base, path, destination, request_client.get(f"{web_base}{path}")
+        )
     for path in PRIVATE_API_PATHS:
         _validate_anonymous_api(request_client.get(f"{api_base}{path}"))
 
@@ -303,6 +351,7 @@ def run_canary(
         "revision": revision,
         "private_api_routes": len(PRIVATE_API_PATHS),
         "private_ui_routes": len(PRIVATE_UI_PATHS),
+        "legacy_ui_redirects": len(LEGACY_UI_REDIRECTS),
     }
 
 
