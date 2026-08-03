@@ -42,7 +42,11 @@ SURFACE_ORDER = [
     ("ratings", "Ratings"),
     ("watchlist", "Watchlist"),
     ("lists", "Lists"),
-    ("follows", "Follows"),
+    # The importer writes "following" and "followers"; it has never written a
+    # dataset called "follows". That row could therefore only ever report
+    # "never read", which the follow graph in People flatly contradicted.
+    ("following", "Following"),
+    ("followers", "Followers"),
     ("reviews", "Reviews"),
     ("likes", "Likes · comments"),
     ("comments", "Comments"),

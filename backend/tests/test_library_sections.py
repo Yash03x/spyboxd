@@ -35,6 +35,7 @@ from database.models import (
     WatchlistItem,
 )
 from services.data_health import (
+    SURFACE_ORDER,
     build_counts,
     build_feeds,
     build_ledger,
@@ -517,7 +518,7 @@ def test_a_refresh_that_skips_a_surface_does_not_unread_it(database: Session) ->
     """
 
     viewer = _profile(database, "viewer")
-    _sync(database, viewer, datasets={"follows": 35})
+    _sync(database, viewer, datasets={"following": 35})
     later = _sync(database, viewer, datasets={"films": 500})
     later.completed_at = datetime(2026, 8, 3, 12, tzinfo=timezone.utc)
     database.commit()
@@ -525,10 +526,30 @@ def test_a_refresh_that_skips_a_surface_does_not_unread_it(database: Session) ->
     surfaces = {row["dataset"]: row for row in build_ledger(database, [viewer])["surfaces"]}
 
     assert surfaces["films"]["rows"] == 500
-    assert surfaces["follows"]["rows"] == 35
-    assert surfaces["follows"]["result"] != "Never read for any selected profile"
+    assert surfaces["following"]["rows"] == 35
+    assert surfaces["following"]["result"] != "Never read for any selected profile"
     # A surface genuinely never read still says so.
     assert surfaces["comments"]["result"] == "Never read for any selected profile"
+
+
+def test_every_ledger_surface_is_a_name_the_importer_actually_writes(
+    database: Session,
+) -> None:
+    """The ledger asked for a dataset called "follows".
+
+    The importer has only ever written "following" and "followers", so that row
+    could report nothing but "never read" for the life of the product — beside
+    a follow graph drawing 35 edges. A surface nobody can ever fill is worse
+    than a missing row: it reads as a finding.
+    """
+
+    from services.ingestion import _upsert_sync_datasets  # noqa: PLC0415
+
+    written = _upsert_sync_datasets.__code__.co_consts
+    names = {value for const in written if isinstance(const, tuple) for value in const}
+
+    for dataset, _label in SURFACE_ORDER:
+        assert dataset in names, f"the ledger reads {dataset!r}, which no importer writes"
 
 
 def test_a_header_never_read_holds_no_film_total_rather_than_zero(database: Session) -> None:
