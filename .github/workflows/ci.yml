@@ -1494,7 +1494,7 @@ jobs:
             curl --silent --show-error --output /dev/null \
               --write-out '%{http_code} %{redirect_url}\n' --max-time 10 \
               --header 'Cache-Control: no-cache' \
-              https://spyboxd.com/dashboard 2>/dev/null || true
+              https://spyboxd.com/overview 2>/dev/null || true
           )
           [[ "${private_status}" =~ ^30[1278]$ ]]
           [[ "${private_redirect}" == https://spyboxd.com/sign-in* ]]

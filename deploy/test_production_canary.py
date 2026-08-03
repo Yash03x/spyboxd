@@ -153,16 +153,16 @@ class ProductionCanaryTests(unittest.TestCase):
             client=FakeClient(_good_responses()),
         )
         self.assertEqual(result["revision"], REVISION)
-        self.assertEqual(result["private_ui_routes"], 7)
-        self.assertEqual(result["private_api_routes"], 20)
+        self.assertEqual(result["private_ui_routes"], len(public_canary.PRIVATE_UI_PATHS))
+        self.assertEqual(result["private_api_routes"], len(public_canary.PRIVATE_API_PATHS))
 
     def test_private_route_open_redirect_is_rejected(self):
         responses = _good_responses()
-        responses["https://spyboxd.com/dashboard"] = public_canary.Response(
+        responses["https://spyboxd.com/overview"] = public_canary.Response(
             307,
             {
                 **SECURITY_HEADERS,
-                "Location": "https://evil.example/sign-in?redirect_url=https://spyboxd.com/dashboard",
+                "Location": "https://evil.example/sign-in?redirect_url=https://spyboxd.com/overview",
             },
             b"",
         )
