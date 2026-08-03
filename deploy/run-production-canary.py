@@ -22,12 +22,16 @@ from typing import Any, Mapping
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
+# The redesigned sections. The pre-redesign paths (/dashboard, /spy-signals,
+# /analysis, /compare, /network) are permanent redirects now, so they answer
+# 308 to their new home rather than bouncing an anonymous caller to sign-in --
+# checking them would prove the redirect, not the protection.
 PRIVATE_UI_PATHS = (
-    "/dashboard",
+    "/overview",
+    "/overlaps",
     "/profiles",
-    "/compare",
     "/analysis",
-    "/spy-signals",
+    "/compare",
     "/watch-together",
     "/u/privacy-check",
 )
@@ -39,6 +43,9 @@ PRIVATE_API_PATHS = (
     "/public/profile/privacy-check",
     "/api/dashboard/analytics",
     "/api/spy-signals",
+    "/api/activity/marathons",
+    "/api/activity/weekday",
+    "/api/insights/shared-firsts",
     "/profiles/privacy-check/analysis",
     "/api/data-coverage",
     "/api/pair-dossier",
