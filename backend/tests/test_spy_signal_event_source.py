@@ -354,6 +354,65 @@ class EventSourceMergeTests(unittest.TestCase):
         self.assertEqual(aligned_pair["same_day_count"], 1)
         self.assertNotIn("event_source", result)
 
+    def test_every_pair_survives_the_leaderboard_limit(self):
+        """`limit` is for top-N lists; `aligned_pairs` feeds a matrix.
+
+        The Overview co-watch grid draws one cell per pair in the selection.
+        When aligned_pairs was cut to the leaderboard's six, the other 184
+        cells of a twenty-profile grid rendered the dash that means "no shared
+        film" — for pairs sharing hundreds. Pair leaderboard and matrix then
+        contradicted each other about the same pair.
+        """
+
+        def pair(left: str, right: str, shared: int) -> dict:
+            return {
+                "profiles": [left, right],
+                "shared_titles": shared,
+                "rating_overlap_count": 2,
+                "rating_correlation": 0.5,
+                "average_rating_gap": 0.5,
+                "same_day_count": 0,
+                "one_day_gap_count": 0,
+                "tight_window_count": 0,
+                "alignment_score": 50.0,
+                "sample_titles": [],
+            }
+
+        baseline = {
+            "summary": {
+                "profiles_analyzed": 3,
+                "profiles_with_diary_dates": 3,
+                "shared_titles": 0,
+                "same_day_events": 0,
+                "one_day_gap_events": 0,
+                "same_day_pair_hits": 0,
+                "one_day_gap_pair_hits": 0,
+                "strongest_alignment_pair": None,
+            },
+            "same_day_events": [],
+            "one_day_gap_events": [],
+            "most_shared_titles": [{"title": f"t{i}"} for i in range(5)],
+            "consensus_hits": [],
+            "divisive_titles": [],
+            "aligned_pairs": [pair("a", "b", 400), pair("a", "c", 300), pair("b", "c", 200)],
+            "follow_paths": [],
+        }
+        timing = _calculate_event_source_timing([], gap_days=None)
+
+        result = _merge_event_source_timing(baseline, timing, limit=1, gap_days=None)
+
+        # The leaderboard lists honour the limit; the pair list does not.
+        self.assertEqual(len(result["most_shared_titles"]), 1)
+        self.assertEqual(
+            sorted(tuple(entry["profiles"]) for entry in result["aligned_pairs"]),
+            [("a", "b"), ("a", "c"), ("b", "c")],
+        )
+
+        capped = _merge_event_source_timing(
+            deepcopy(baseline), timing, limit=1, gap_days=None, pair_limit=2
+        )
+        self.assertEqual(len(capped["aligned_pairs"]), 2)
+
     def test_repository_rejects_unknown_event_source_before_querying(self):
         repository = AnalyticsRepository(db=None)
 
