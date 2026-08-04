@@ -1250,24 +1250,36 @@ export default function OnePersonTab({ subject }: { subject: string }) {
         )}
       </Panel>
 
-      {/* Only rendered when the import actually reported a limitation. An empty
-          "what is missing" heading reads as a fact we failed to fetch, which is
-          the opposite of what this panel is for. */}
-      {(analysis?.data_coverage?.limitations?.length ?? 0) > 0 ? (
-        <Panel
-          title="WHAT THIS IMPORT COULD NOT REACH"
-          src="profile_syncs.coverage"
-          blurb={analysis?.data_coverage?.summary}
-          caveat="Stated by the import itself rather than inferred from an empty panel. A surface listed here is one nothing on this tab can be computed from."
-        >
+      {/* Always rendered. This used to disappear entirely when the import
+          reported no limitation, which made a clean import indistinguishable
+          from the panel not existing — and left the tab holding one more panel
+          for some subjects than its own badge advertised. "This import reported
+          nothing out of reach" is a statement worth making, not an empty
+          heading. */}
+      <Panel
+        title="WHAT THIS IMPORT COULD NOT REACH"
+        src="profile_syncs.coverage"
+        blurb={analysis?.data_coverage?.summary}
+        caveat="Stated by the import itself rather than inferred from an empty panel. A surface listed here is one nothing on this tab can be computed from."
+      >
+        {(analysis?.data_coverage?.limitations?.length ?? 0) > 0 ? (
           <Notes
             items={(analysis?.data_coverage?.limitations ?? []).map((limitation) => ({
               label: 'Coverage note',
               text: limitation,
             }))}
           />
-        </Panel>
-      ) : null}
+        ) : (
+          <Notes
+            items={[
+              {
+                label: 'Nothing declared out of reach',
+                text: 'The import reported no limitation for this profile. Surfaces that need an owner export are still export-only — the footer below names them — but nothing public was skipped.',
+              },
+            ]}
+          />
+        )}
+      </Panel>
 
       <Panel title="WHAT WE ADD, AND WHAT WE CANNOT SEE" src="the honest footer" wide>
         <Notes

@@ -208,7 +208,7 @@ test('one written review is a spotlight, not a dropped face-off', async ({ page 
   await expect(panel.getByText('No written review', { exact: true })).toBeVisible();
 });
 
-test('coverage notes appear only when the import actually reported one', async ({ page }) => {
+test('the coverage panel states a clean import instead of vanishing', async ({ page }) => {
   let limitations: string[] = [];
   await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/[^/]+\/analysis$/, (route) => (
     route.fulfill({
@@ -227,10 +227,18 @@ test('coverage notes appear only when the import actually reported one', async (
 
   await page.goto('/people?tab=one&subject=alpha');
 
-  // An empty "what is missing" heading reads as a fact we failed to fetch,
-  // which is the opposite of what the panel is for.
+  // This panel used to disappear entirely for a clean import, which made
+  // "nothing was skipped" indistinguishable from the panel not existing — and
+  // left the tab holding one more panel for some subjects than its own badge
+  // advertised. It renders for everyone now, and a clean import says so.
   const heading = page.getByText('▸ WHAT THIS IMPORT COULD NOT REACH', { exact: false });
-  await expect(heading).toHaveCount(0);
+  await expect(heading).toBeVisible();
+  await expect(
+    page
+      .locator('.terminal-root section')
+      .filter({ hasText: 'WHAT THIS IMPORT COULD NOT REACH' })
+      .first(),
+  ).toContainText('Nothing declared out of reach');
 
   limitations = [
     'RSS-only data can omit older diary entries.',
