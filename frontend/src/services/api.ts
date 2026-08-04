@@ -6,6 +6,12 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // A hung endpoint used to spin a panel's skeleton until nginx cut the
+  // connection at 60-120s — the one failure the per-panel error path could
+  // never reach, because nothing client-side ever gave up. 30s clears the
+  // slowest healthy endpoint we have measured by a wide margin; anything past
+  // it is an outage, and an outage should render as one.
+  timeout: 30_000,
 });
 
 type TokenProvider = () => Promise<string | null>;
