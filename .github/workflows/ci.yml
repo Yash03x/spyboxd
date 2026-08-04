@@ -481,7 +481,31 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
-          npm prune --omit=dev --no-audit --no-fund --package-lock=false
+
+          # A second `npm ci`, not `npm prune`: prune with --package-lock=false
+          # re-resolves every semver range against the registry, so the bundle
+          # silently shipped whatever Next had published that day rather than
+          # the version the lockfile pins and CI tested. Next 16.3.0 landed 14
+          # minutes after the last good bundle and broke every deploy for a
+          # day; nothing in this repository had changed. `npm ci --omit=dev`
+          # rebuilds node_modules exactly from the lock, production-only.
+          npm ci --omit=dev --no-audit --no-fund
+
+          # The runtime tree must be the tree the lockfile describes. This
+          # assertion exists so the next silent drift fails the build here,
+          # with a diff in hand, rather than failing health verification on
+          # the production host with nothing in the log.
+          node -e '
+            const path = require("node:path");
+            const locked = require(path.resolve("package-lock.json"))
+              .packages["node_modules/next"].version;
+            const installed = require(path.resolve("node_modules/next/package.json")).version;
+            if (locked !== installed) {
+              console.error(`next drifted from the lockfile: locked ${locked}, installed ${installed}`);
+              process.exit(1);
+            }
+            console.log(`next ${installed} matches the lockfile`);
+          '
           rm -rf -- .next/cache
 
           # Next.js owns this tracked type shim and may rewrite it while building.
