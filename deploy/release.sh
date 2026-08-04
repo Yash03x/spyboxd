@@ -1125,6 +1125,42 @@ describe_health_failure() {
     # (already running, appending little), which fits a code-independent,
     # deterministic failure exactly.
     log "DIAGNOSTIC disk: $(df -h /opt /var /tmp 2>&1 | tr '\n' '; ' || true)" >&2
+
+    # The 500's actual stack goes to the service's stderr, which lands in a
+    # journal the deploy user is not allowed to read. So run the release's own
+    # frontend in the foreground for one probe and read the stderr directly.
+    # Env values are never echoed by Next; the grep drops any line that names
+    # one anyway.
+    local oneshot_log="/tmp/spyboxd-frontend-oneshot.$$"
+    if [[ -d "${FINAL_RELEASE}/frontend" ]]; then
+        (
+            cd "${FINAL_RELEASE}/frontend" || exit 1
+            set -a
+            # shellcheck disable=SC1091
+            [[ -f /etc/spyboxd/frontend.env ]] && . /etc/spyboxd/frontend.env
+            set +a
+            export NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+            local_node="./.runtime/node"
+            [[ -x "${local_node}" && ! -L "${local_node}" ]] || local_node="node"
+            timeout --signal=TERM --kill-after=5s 25s \
+                "${local_node}" node_modules/next/dist/bin/next start \
+                --hostname 127.0.0.1 --port 3999 >"${oneshot_log}" 2>&1 &
+            server_pid=$!
+            for _ in $(seq 1 10); do
+                sleep 1
+                if curl --silent --output /dev/null --max-time 4 http://127.0.0.1:3999/sign-in; then
+                    break
+                fi
+            done
+            curl --silent --output /dev/null --max-time 6 http://127.0.0.1:3999/sign-in || true
+            sleep 1
+            kill "${server_pid}" 2>/dev/null || true
+        ) || true
+        log "DIAGNOSTIC one-shot frontend stderr follows" >&2
+        grep -aiv -e 'key' -e 'secret' -e 'token' "${oneshot_log}" 2>/dev/null \
+            | tail -n 40 | sed 's/^/[oneshot] /' >&2 || true
+        rm -f "${oneshot_log}"
+    fi
 }
 
 describe_health_failure
