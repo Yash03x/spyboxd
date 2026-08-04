@@ -24,3 +24,6 @@ yarn-error.log*
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# Clerk instance config dumps pulled while debugging the auth canary — never commit
+clerkenv.json
