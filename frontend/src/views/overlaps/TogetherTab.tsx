@@ -9,6 +9,7 @@ import Posters from '../../components/terminal/bodies/Posters';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
+import { MIN_RATED_OVERLAP, withRatedEvidence } from '../../components/terminal/pairEvidence';
 import { spySignalsApi, type GroupSignalEvent, type GroupSignalPair } from '../../services/api';
 
 /** Was "gap days". The tier a co-watch falls into, said the way a person would. */
@@ -73,18 +74,48 @@ export default function TogetherTab({
   );
   const pairs: GroupSignalPair[] = signals?.aligned_pairs ?? [];
 
-  const tightest = [...pairs]
-    .filter((pair) => pair.average_rating_gap !== null)
-    .sort((a, b) => (a.average_rating_gap ?? 9) - (b.average_rating_gap ?? 9));
+  // Only pairs whose gap rests on the evidence floor. This list once came
+  // back pre-trimmed to the six alignment-scored pairs, which are already
+  // evidence-weighted; now that every pair arrives, a raw sort would crown a
+  // 0.00 coincidence built on a single shared rating.
+  const tightest = withRatedEvidence(pairs).sort(
+    (a, b) => (a.average_rating_gap ?? 9) - (b.average_rating_gap ?? 9),
+  );
 
-  const tierCounts = React.useMemo(() => {
-    const counts = new Map<string, number>();
-    events.forEach((event) => {
-      const { label } = closenessLabel(eventGap(event));
-      counts.set(label, (counts.get(label) ?? 0) + 1);
-    });
-    return counts;
-  }, [events]);
+  // Tier counts from the summary, which is computed before the server cuts
+  // each event list to 100 rows. Counted from the merged display lists, the
+  // "in this window" total could come out SMALLER than its own same-day
+  // subset once any tier overflowed the cut — one panel contradicting itself.
+  //
+  // The summary's gap_events already spans the whole window (day gaps 0
+  // through the selection), so it IS the window total; the wider tier bar is
+  // the remainder after the two named tiers, never a re-add of them.
+  const windowTotal = summary
+    ? (summary.gap_events ?? summary.same_day_events + (gapDays >= 1 ? summary.one_day_gap_events : 0))
+    : 0;
+  const gapRemainder = summary
+    ? Math.max(
+        0,
+        windowTotal - summary.same_day_events - (gapDays >= 1 ? summary.one_day_gap_events : 0),
+      )
+    : 0;
+  const tiers = summary
+    ? ([
+        { label: 'Same day', count: summary.same_day_events, tone: 'var(--ok)' },
+        ...(gapDays >= 1
+          ? [{ label: 'Within a day', count: summary.one_day_gap_events, tone: 'var(--accent)' }]
+          : []),
+        ...(gapDays > 1
+          ? [
+              {
+                label: gapDays <= 3 ? 'Two to three days' : `Two to ${gapDays} days`,
+                count: gapRemainder,
+                tone: 'var(--ink3)',
+              },
+            ]
+          : []),
+      ] as Array<{ label: string; count: number; tone: string }>)
+    : [];
 
   const emptyState = {
     title: 'Two profiles are needed',
@@ -143,7 +174,7 @@ export default function TogetherTab({
             ? [
                 { big: summary.same_day_events.toLocaleString(), unit: 'SAME DAY', tone: 'var(--ok)' },
                 { big: summary.one_day_gap_events.toLocaleString(), unit: 'WITHIN A DAY' },
-                { big: events.length.toLocaleString(), unit: 'IN THIS WINDOW' },
+                { big: windowTotal.toLocaleString(), unit: 'IN THIS WINDOW' },
               ]
             : undefined
         }
@@ -152,7 +183,7 @@ export default function TogetherTab({
         {panelState({
           isLoading: signalsQuery.isLoading,
           error: signalsQuery.error,
-          isEmpty: tierCounts.size === 0,
+          isEmpty: windowTotal === 0,
           onRetry: () => signalsQuery.refetch(),
           errorTitle: 'Closeness tiers could not be counted',
           errorBody: 'The overlap feed did not answer.',
@@ -160,12 +191,12 @@ export default function TogetherTab({
           skeleton: <BarsSkeleton rows={3} />,
         }) ?? (
           <Bars
-            items={Array.from(tierCounts.entries()).map(([label, count]) => ({
-              name: label,
-              weight: count,
-              value: count.toLocaleString(),
-              sub: `${Math.round((count / events.length) * 100)}%`,
-              tone: label === 'Same day' ? 'var(--ok)' : 'var(--accent)',
+            items={tiers.map((tier) => ({
+              name: tier.label,
+              weight: tier.count,
+              value: tier.count.toLocaleString(),
+              sub: windowTotal ? `${Math.round((tier.count / windowTotal) * 100)}%` : '',
+              tone: tier.tone,
             }))}
           />
         )}
@@ -189,8 +220,11 @@ export default function TogetherTab({
           },
         }) ?? (
           <Rows
-            columns="minmax(0,1fr) 78px 62px"
-            head={['PAIR', ['SHARED', 'right'], ['★ GAP', 'right']]}
+            columns="minmax(0,1fr) 92px 62px"
+            // The gap is measured over the films both RATED, not everything
+            // both watched — printing shared films beside it credited a
+            // three-rating coincidence to an 89-film history.
+            head={['PAIR', ['★ SHARED', 'right'], ['★ GAP', 'right']]}
             rows={[...tightest.slice(0, 3), ...tightest.slice(-2).reverse()]
               .filter((pair, index, list) => list.findIndex((other) => other === pair) === index)
               .map((pair) => {
@@ -198,11 +232,14 @@ export default function TogetherTab({
                 return {
                   cells: [
                     cell(pair.profiles.map((name) => `@${name}`).join(' + '), { size: '10.5px' }),
-                    cell(`${pair.shared_titles.toLocaleString()} films`, {
-                      align: 'right',
-                      size: '10px',
-                      tone: 'var(--muted)',
-                    }),
+                    cell(
+                      `${pair.rating_overlap_count.toLocaleString()} of ${pair.shared_titles.toLocaleString()}`,
+                      {
+                        align: 'right',
+                        size: '10px',
+                        tone: 'var(--muted)',
+                      },
+                    ),
                     cell(gap.toFixed(2), {
                       align: 'right',
                       tone: gap <= 0.5 ? 'var(--ok)' : gap >= 0.9 ? 'var(--bad)' : 'var(--ink2)',
@@ -237,8 +274,14 @@ export default function TogetherTab({
                 name: pair.profiles.join(' + '),
                 weight: pair.shared_titles,
                 value: pair.shared_titles.toLocaleString(),
+                // Same floor as everywhere a gap is printed: below it the
+                // figure is a coincidence, and it renders as the dash the
+                // reader already knows means "too thin to measure".
                 sub:
-                  pair.average_rating_gap !== null ? pair.average_rating_gap.toFixed(2) : '—',
+                  pair.average_rating_gap !== null &&
+                  pair.rating_overlap_count >= MIN_RATED_OVERLAP
+                    ? pair.average_rating_gap.toFixed(2)
+                    : '—',
               }))}
           />
         )}

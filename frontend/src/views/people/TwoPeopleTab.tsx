@@ -13,6 +13,7 @@ import Spark from '../../components/terminal/bodies/Spark';
 import SpoilerReviewText from '../../components/SpoilerReviewText';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
+import { count } from '../../components/terminal/plural';
 import {
   insightsApi,
   peopleApi,
@@ -30,9 +31,9 @@ function periodSummary(point: TasteTimelinePoint, username: string): string {
   if (!own || own.watch_events === 0) return '—';
   const average = own.average_rating === null ? '—' : `${own.average_rating.toFixed(2)} avg`;
   if (own.rated_events && own.rated_events !== own.watch_events) {
-    return `${average} of ${own.rated_events} rated · ${own.watch_events} watches`;
+    return `${average} of ${own.rated_events} rated · ${count(own.watch_events, 'watch', 'watches')}`;
   }
-  return `${average} · ${own.watch_events} watches`;
+  return `${average} · ${count(own.watch_events, 'watch', 'watches')}`;
 }
 
 function ratingFor(comparison: PairMovieComparison, username: string): number | null {
@@ -274,19 +275,26 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
         }) ?? (
           <>
           <Spark
-            items={(timelineQuery.data?.yearly ?? []).map((point) => {
-              const a = point.per_profile.find((entry) => entry.username === left)?.average_rating;
-              const b = point.per_profile.find((entry) => entry.username === right)?.average_rating;
-              const distance = a !== null && a !== undefined && b !== null && b !== undefined
-                ? Math.abs(a - b)
-                : 0;
-              return {
-                label: String(point.year).slice(2),
-                value: Math.round(distance * 100),
-                display: distance ? distance.toFixed(2) : '—',
-                hint: `${point.label}: ${a?.toFixed(2) ?? '—'} against ${b?.toFixed(2) ?? '—'}`,
-              };
-            })}
+            // Only years BOTH profiles rated in. Plotted with distance 0, a
+            // year one side never rated in was the chart's best-possible
+            // agreement; and `distance ? ... : '—'` rendered a genuine 0.00 —
+            // identical yearly averages — with the same dash as "not
+            // measurable", while its own hover hint said "4.00 against 4.00".
+            items={(timelineQuery.data?.yearly ?? [])
+              .map((point) => {
+                const a = point.per_profile.find((entry) => entry.username === left)?.average_rating;
+                const b = point.per_profile.find((entry) => entry.username === right)?.average_rating;
+                const measurable =
+                  a !== null && a !== undefined && b !== null && b !== undefined;
+                return {
+                  measurable,
+                  label: String(point.year).slice(2),
+                  value: measurable ? Math.round(Math.abs(a - b) * 100) : 0,
+                  display: measurable ? Math.abs(a - b).toFixed(2) : '—',
+                  hint: `${point.label}: ${a?.toFixed(2) ?? '—'} against ${b?.toFixed(2) ?? '—'}`,
+                };
+              })
+              .filter((point) => point.measurable)}
           />
           <Rows
             columns="56px minmax(0,1fr) minmax(0,1fr)"
@@ -382,12 +390,12 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
                 return {
                   cells: [
                     cell(String(year), { size: '10.5px', tone: 'var(--ink3)' }),
-                    cell(a ? `${a.average_release_year.toFixed(0)} · ${a.films} films` : '—', {
+                    cell(a ? `${a.average_release_year.toFixed(0)} · ${count(a.films, 'film')}` : '—', {
                       align: 'right',
                       size: '10.5px',
                       tone: 'var(--ink2)',
                     }),
-                    cell(b ? `${b.average_release_year.toFixed(0)} · ${b.films} films` : '—', {
+                    cell(b ? `${b.average_release_year.toFixed(0)} · ${count(b.films, 'film')}` : '—', {
                       align: 'right',
                       size: '10.5px',
                       tone: 'var(--ink2)',
@@ -590,7 +598,7 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
       <Panel
         title="NEITHER HAS SEEN IT"
         src="circle ratings × both watch absence"
-        blurb="Films the rest of the circle rates highly that neither of these two has logged. A pair-level blind spot, which is a better shortlist than either watchlist."
+        blurb="Films the rest of the tracked group rates highly that neither of these two has logged. A pair-level blind spot, which is a better shortlist than either watchlist."
         caveat={blindSpotsQuery.data?.caveat}
       >
         {panelState({
@@ -613,7 +621,7 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
               title: film.year ? `${film.title} (${film.year})` : film.title,
               posterUrl: film.poster_url,
               href: film.letterboxd_url ?? undefined,
-              sub: `${film.rater_count} in their circle · avg ${film.average_rating.toFixed(1)}`,
+              sub: `${film.rater_count} in the tracked group · avg ${film.average_rating.toFixed(1)}`,
               right: film.average_rating.toFixed(1),
               tone: film.average_rating >= 4.4 ? 'var(--ok)' : 'var(--accent)',
               rightCaption: 'neither seen',

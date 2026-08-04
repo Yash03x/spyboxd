@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import { localDate } from '../../components/terminal/dates';
 import Bars from '../../components/terminal/bodies/Bars';
 import Posters from '../../components/terminal/bodies/Posters';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
@@ -82,33 +83,25 @@ export default function ReachTab({ subject, profiles }: { subject: string; profi
   const likedLists = archiveQuery.data?.liked_lists ?? [];
   const card = cardQuery.data;
 
-  // Films they liked a review of and have no watch record for. Intent recorded
-  // in a place nothing else looks.
-  const watchedTitles = React.useMemo(
-    () =>
-      new Set(
-        (analysisQuery.data?.recent_watching_trend ?? []).map((watch) =>
-          watch.movie_title.toLowerCase(),
-        ),
-      ),
-    [analysisQuery.data],
-  );
-
+  // Films they liked a review of and have no watch record for. "No watch
+  // record" is the server's verdict against the subject's ENTIRE library —
+  // this used to be checked against the ten most recent watches, the only
+  // title list the client had, so anything watched earlier than last week
+  // rendered as "liked, unseen".
   const likedUnseen = React.useMemo(() => {
     const bySlug = new Map<string, { slug: string; count: number; authors: Set<string> }>();
     likedReviews.forEach((like) => {
-      const slug = filmSlugFrom(like.target_url);
+      if (like.watched !== false) return;
+      const slug = like.film_slug ?? filmSlugFrom(like.target_url);
       if (!slug) return;
       const entry = bySlug.get(slug) ?? { slug, count: 0, authors: new Set<string>() };
       entry.count += 1;
-      const author = authorFrom(like.target_url);
+      const author = like.author ?? authorFrom(like.target_url);
       if (author) entry.authors.add(author);
       bySlug.set(slug, entry);
     });
-    return Array.from(bySlug.values())
-      .filter((entry) => !watchedTitles.has(entry.slug.replace(/-/g, ' ')))
-      .sort((a, b) => b.count - a.count);
-  }, [likedReviews, watchedTitles]);
+    return Array.from(bySlug.values()).sort((a, b) => b.count - a.count);
+  }, [likedReviews]);
 
   const resolvedLikes = likedReviews.filter((like) => filmSlugFrom(like.target_url)).length;
 
@@ -179,7 +172,7 @@ export default function ReachTab({ subject, profiles }: { subject: string; profi
                 }),
                 cell(
                   review.published_date
-                    ? new Date(review.published_date).toLocaleDateString('en-GB', {
+                    ? localDate(review.published_date).toLocaleDateString('en-GB', {
                         month: 'short',
                         year: 'numeric',
                       })
@@ -228,7 +221,7 @@ export default function ReachTab({ subject, profiles }: { subject: string; profi
                 ),
                 cell(
                   like.liked_date
-                    ? new Date(like.liked_date).toLocaleDateString('en-GB', {
+                    ? localDate(like.liked_date).toLocaleDateString('en-GB', {
                         month: 'short',
                         year: 'numeric',
                       })

@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import { localDate } from '../../components/terminal/dates';
 import Notes from '../../components/terminal/bodies/Notes';
 import Posters from '../../components/terminal/bodies/Posters';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
@@ -71,7 +72,7 @@ export default function LostFoundTab({ profiles }: { profiles: string[] }) {
                 cell(entry.rows.toLocaleString(), { align: 'right', tone: 'var(--accent)' }),
                 cell(
                   entry.oldest
-                    ? new Date(entry.oldest).toLocaleDateString('en-GB', {
+                    ? localDate(entry.oldest).toLocaleDateString('en-GB', {
                         month: 'short',
                         year: 'numeric',
                       })

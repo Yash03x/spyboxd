@@ -527,7 +527,14 @@ def _serialize_profiles(db: Session, profiles) -> dict:
     if active:
         first_logged = dict(
             db.query(WatchEvent.profile_id, func.min(WatchEvent.watched_date))
-            .filter(WatchEvent.profile_id.in_([profile.id for profile in active]))
+            .filter(
+                WatchEvent.profile_id.in_([profile.id for profile in active]),
+                # Active events only. The Member card's "First logged" already
+                # excludes superseded rows, and the roster's SINCE read the
+                # same fact without the filter — so a re-imported profile
+                # could carry two different first-logged years on two panels.
+                WatchEvent.superseded_at.is_(None),
+            )
             .group_by(WatchEvent.profile_id)
             .all()
         )

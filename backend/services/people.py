@@ -153,7 +153,7 @@ def build_silent_fives(db: Session, profile: Profile, *, limit: int = 12) -> Dic
             for film, movie in rows[:limit]
         ],
         "caveat": (
-            f"{len(rows):,} of their {top_rated:,} five-star ratings carry no review."
+            f"{len(rows):,} of their {top_rated:,} five-star rating{'s carry' if top_rated != 1 else ' carries'} no review."
             + (
                 f" Against a {round(review_rate * 100)}% review rate overall, silence at the top of "
                 "the scale is the pattern rather than the exception."

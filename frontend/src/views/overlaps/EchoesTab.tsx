@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import { formatDay } from '../../components/terminal/dates';
 import Bars from '../../components/terminal/bodies/Bars';
 import Posters from '../../components/terminal/bodies/Posters';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
@@ -208,11 +209,7 @@ export default function EchoesTab({ profiles, gapDays }: { profiles: string[]; g
               title: entry.year ? `${entry.title} (${entry.year})` : entry.title,
               posterUrl: entry.poster_url,
               sub: entry.usernames.map((name) => `@${name}`).join(' + '),
-              right: new Date(entry.date).toLocaleDateString('en-GB', {
-                day: '2-digit',
-                month: 'short',
-                year: 'numeric',
-              }),
+              right: formatDay(entry.date),
               tone: 'var(--ok)',
               rightCaption: 'both first',
             }))}

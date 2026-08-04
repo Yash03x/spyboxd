@@ -16,7 +16,7 @@ test('a divisive queue film shows both ends of the crowd, not just the upside', 
 
   const panel = page
     .locator('.terminal-root section')
-    .filter({ hasText: 'THEIR QUEUE, RANKED BY THEIR CIRCLE' })
+    .filter({ hasText: 'THEIR QUEUE, RANKED BY THE TRACKED GROUP' })
     .first();
   const row = panel.locator('div').filter({ hasText: 'Divisive Queue Entry' }).last();
 
@@ -29,7 +29,7 @@ test('a broadly liked film is not given a downside note it has not earned', asyn
 
   const panel = page
     .locator('.terminal-root section')
-    .filter({ hasText: 'THEIR QUEUE, RANKED BY THEIR CIRCLE' })
+    .filter({ hasText: 'THEIR QUEUE, RANKED BY THE TRACKED GROUP' })
     .first();
   const row = panel.locator('div').filter({ hasText: 'Queued Fixture Film' }).last();
 

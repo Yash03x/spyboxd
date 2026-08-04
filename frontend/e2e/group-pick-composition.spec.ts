@@ -20,7 +20,8 @@ test('the candidate count is qualified by watchlist overlap and availability', a
   await expect(panel).toContainText('NOBODY HAS SEEN');
   await expect(panel).toContainText('STREAMING IN');
   // And the count is the length of the table, not a larger set it was cut from.
-  await expect(panel).toContainText('rather than a larger set it was cut from');
-  // And where the scan looked at more than it kept, it says how many.
-  await expect(panel).toContainText('did not clear the filters above');
+  // The fixture's summary counts six candidates against two rendered, so
+  // the truncation-aware branch must fire — the old copy claimed "never cut"
+  // against a total that could not disagree with the table.
+  await expect(panel).toContainText('6 candidates cleared the filters; the 2 below are the best fits');
 });

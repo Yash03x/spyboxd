@@ -123,7 +123,13 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
         }) ?? (
           <Rows
             columns="minmax(0,1fr) 90px 90px minmax(0,1fr)"
-            head={['PROFILE', ['WATCHES', 'right'], ['LAST READ', 'right'], 'FILMS HELD']}
+            // "THEY REPORT", because the figure is Letterboxd's own header
+            // count, not our imported rows — for a freshly synced profile the
+            // two differ, and a column named FILMS HELD showing the number we
+            // do NOT hold inverted the fact. Our count is the roster's FILMS
+            // column on Overview, and the gap between the two is the whole
+            // subject of Data › What's missing.
+            head={['PROFILE', ['WATCHES', 'right'], ['LAST READ', 'right'], 'THEY REPORT']}
             rows={(freshnessQuery.data?.profiles ?? []).map((entry) => {
               return {
                 cells: [

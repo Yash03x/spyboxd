@@ -11,6 +11,7 @@ import { CoWatchMatrix } from '../../components/terminal/bodies/Matrix';
 import { BarsSkeleton, PanelSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
 import { importState, sinceLabel } from '../../components/terminal/profileState';
+import { MIN_RATED_OVERLAP, withRatedEvidence } from '../../components/terminal/pairEvidence';
 import { useAdminScope } from '../../hooks/useAdminScope';
 import { useScopedProfiles } from '../../hooks/useScopedProfiles';
 import {
@@ -99,8 +100,13 @@ function matrixFromPairs(usernames: string[], pairs: GroupSignalPair[]) {
     if (i === undefined || j === undefined) return;
     overlaps[i][j] = pair.shared_titles;
     overlaps[j][i] = pair.shared_titles;
-    gaps[i][j] = pair.average_rating_gap;
-    gaps[j][i] = pair.average_rating_gap;
+    // A gap over fewer shared ratings than the evidence floor renders as the
+    // same dash as "no comparable ratings" — a 0.00 built on one rating is a
+    // coincidence wearing a measurement's clothes, and the caveat already
+    // tells the reader what the dash means.
+    const measurable = pair.rating_overlap_count >= MIN_RATED_OVERLAP;
+    gaps[i][j] = measurable ? pair.average_rating_gap : null;
+    gaps[j][i] = measurable ? pair.average_rating_gap : null;
   });
 
   return { overlaps, gaps };
@@ -175,10 +181,21 @@ export default function OverviewTab() {
     sub: ratingTotal ? `${Math.round((distribution[key] / ratingTotal) * 100)}%` : '',
   }));
 
-  const matrix = matrixFromPairs(usernames, pairs);
-  const closest = [...pairs]
-    .filter((pair) => pair.average_rating_gap !== null)
-    .sort((a, b) => (a.average_rating_gap ?? 9) - (b.average_rating_gap ?? 9))[0];
+  // Completed profiles only: the aggregates beside this grid are computed
+  // over completed imports, and a row for a profile whose scrape has not
+  // finished can only ever render the dash that means "no shared film" — an
+  // unread profile is not one that shares nothing.
+  const matrixUsernames = profiles
+    .filter((profile) => profile.scraping_status === 'completed')
+    .map((profile) => profile.username);
+  const matrix = matrixFromPairs(matrixUsernames, pairs);
+  // Ranked among pairs with enough shared ratings to mean something. Sorted
+  // raw, this crown was won by a 0.00 gap resting on three shared ratings —
+  // the runner-up had one — while the caveat attributed the agreement to the
+  // pair's 89 shared films.
+  const closest = withRatedEvidence(pairs).sort(
+    (a, b) => (a.average_rating_gap ?? 9) - (b.average_rating_gap ?? 9),
+  )[0];
 
   return (
     <>
@@ -243,8 +260,8 @@ export default function OverviewTab() {
         blurb="Above the diagonal: films both have seen. Below it: how far apart their stars land on those same films. One grid answers both questions people actually ask."
         caveat={
           closest
-            ? `${closest.profiles.join(' and ')} are the closest pair here: ${closest.shared_titles.toLocaleString()} shared films, agreeing within ${(closest.average_rating_gap ?? 0).toFixed(2)} of a star. Every pair in the selection is drawn — a dash above the diagonal is a pair with no shared film, and below it a pair with too few shared ratings to measure.`
-            : 'A pair needs shared rated films before either half of this grid can be filled.'
+            ? `${closest.profiles.join(' and ')} are the closest pair here: agreeing within ${(closest.average_rating_gap ?? 0).toFixed(2)} of a star across ${closest.rating_overlap_count.toLocaleString()} shared ratings, on ${closest.shared_titles.toLocaleString()} shared films. Every pair in the selection is drawn — a dash above the diagonal is a pair with no shared film, and below it a pair with fewer than ${MIN_RATED_OVERLAP} shared ratings, which is too few to call a distance.`
+            : `No pair shares ${MIN_RATED_OVERLAP} rated films yet, so nobody is called closest on this grid.`
         }
       >
         {panelState({
@@ -260,7 +277,7 @@ export default function OverviewTab() {
             cta: { label: 'CHOOSE WHO TO MONITOR', href: sectionHref('data', 'profiles') },
           },
         }) ?? (
-          <CoWatchMatrix labels={usernames} overlaps={matrix.overlaps} gaps={matrix.gaps} />
+          <CoWatchMatrix labels={matrixUsernames} overlaps={matrix.overlaps} gaps={matrix.gaps} />
         )}
       </Panel>
 

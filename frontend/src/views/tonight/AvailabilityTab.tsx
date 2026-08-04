@@ -95,7 +95,7 @@ export default function AvailabilityTab({
               cells: [
                 cell(entry.region),
                 cell(entry.films.toLocaleString(), { align: 'right', tone: 'var(--ink)' }),
-                cell(entry.days_ago === null ? '—' : `${entry.days_ago}d ago`, {
+                cell(entry.days_ago === null ? '—' : entry.days_ago === 0 ? 'today' : `${entry.days_ago}d ago`, {
                   align: 'right',
                   size: '10px',
                   tone: 'var(--muted)',

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import { localDate, formatDay } from '../../components/terminal/dates';
 import Bars from '../../components/terminal/bodies/Bars';
 import Diverge from '../../components/terminal/bodies/Diverge';
 import Notes from '../../components/terminal/bodies/Notes';
@@ -13,6 +14,7 @@ import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import Spark from '../../components/terminal/bodies/Spark';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
+import { count } from '../../components/terminal/plural';
 import type {
   ActivityData,
   RecentRating,
@@ -156,7 +158,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
       inner: entry.unique_movies ?? undefined,
       display: entry.movies_watched === 0 ? '—' : String(entry.movies_watched),
       partial: entry.is_partial,
-      hint: `${entry.month}${entry.is_partial ? ', month to date' : ''}: ${entry.movies_watched} watches`,
+      hint: `${entry.month}${entry.is_partial ? ', month to date' : ''}: ${count(entry.movies_watched, 'watch', 'watches')}`,
     };
   });
 
@@ -348,7 +350,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
               sub: stars(film.rating),
               right: String(film.watch_count),
               tone: 'var(--accent)',
-              rightCaption: 'watches',
+              rightCaption: film.watch_count === 1 ? 'watch' : 'watches',
             }))}
           />
         )}
@@ -383,7 +385,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
         }
         caveat={
           stats
-            ? `Measured over ${stats.release_lag.measured_films.toLocaleString()} films with a known release date.${
+            ? `Measured over ${count(stats.release_lag.measured_films, 'film')} with a known release date.${
                 stats.release_lag.logged_before_release
                   ? ` ${stats.release_lag.logged_before_release} entries were dated before release and left out of the median — festival screenings and bad dates — rather than hidden.`
                   : ''
@@ -448,11 +450,11 @@ export default function OnePersonTab({ subject }: { subject: string }) {
         }
         caveat={
           stats
-            ? `${stats.cadence.active_days.toLocaleString()} days with an entry across ${
-                stats.cadence.span_days ? `${stats.cadence.span_days.toLocaleString()} days` : 'the imported span'
+            ? `${count(stats.cadence.active_days, 'day')} with an entry across ${
+                stats.cadence.span_days ? count(stats.cadence.span_days, 'day') : 'the imported span'
               }.${
                 stats.cadence.longest_dry_spell_days
-                  ? ` Longest silence: ${stats.cadence.longest_dry_spell_days} days${
+                  ? ` Longest silence: ${count(stats.cadence.longest_dry_spell_days, 'day')}${
                       stats.cadence.dry_spell_started ? ` from ${stats.cadence.dry_spell_started}` : ''
                     } — a run of quiet weeks is not the same as a slow one, so it is named rather than averaged away.`
                   : ''
@@ -509,7 +511,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
                 cell(entry.what, { font: 's', size: '10.5px', wrap: true }),
                 cell(
                   entry.when
-                    ? new Date(entry.when).toLocaleDateString('en-GB', {
+                    ? localDate(entry.when).toLocaleDateString('en-GB', {
                         day: '2-digit',
                         month: 'short',
                       })
@@ -572,7 +574,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
               title: film.year ? `${film.title} (${film.year})` : film.title,
               posterUrl: film.poster_url,
               href: film.letterboxd_url ?? undefined,
-              sub: `${film.rating_count?.toLocaleString() ?? 'audience unknown'} ratings on Letterboxd`,
+              sub: film.rating_count == null ? 'audience unknown' : `${count(film.rating_count, 'rating')} on Letterboxd`,
               right: film.profile_rating.toFixed(1),
               tone: 'var(--accent)',
               rightCaption: 'their star',
@@ -644,9 +646,9 @@ export default function OnePersonTab({ subject }: { subject: string }) {
       </Panel>
 
       <Panel
-        title="THEIR QUEUE, RANKED BY THEIR CIRCLE"
+        title="THEIR QUEUE, RANKED BY THE TRACKED GROUP"
         src="watchlist_items × ratings"
-        blurb="What is waiting, ordered by how the people they follow rated it rather than by when it was added."
+        blurb="What is waiting, ordered by how the rest of the monitored group rated it rather than by when it was added. The group is everyone tracked here — not the people this member follows, which no rating table records."
         caveat={
           watchlistQuery.data
             ? `${watchlistQuery.data.coverage.rated_by_group.toLocaleString()} of ${watchlistQuery.data.coverage.watchlist_films.toLocaleString()} unwatched queue entries have been rated by somebody else tracked. The rest are waiting on evidence, not on this panel.`
@@ -671,7 +673,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
               posterUrl: film.poster_url,
               href: film.letterboxd_url ?? undefined,
               sub: [
-                `${film.group_raters} in their circle rated it`,
+                `${film.group_raters} in the tracked group rated it`,
                 film.crowd_ceiling == null
                   ? null
                   : `${Math.round(film.crowd_ceiling * 100)}% rated it 4.5+`,
@@ -686,7 +688,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
                 .join(' · '),
               right: film.group_average === null ? '—' : film.group_average.toFixed(1),
               tone: (film.group_average ?? 0) >= 4 ? 'var(--ok)' : 'var(--accent)',
-              rightCaption: film.group_raters < 3 ? 'thin evidence' : 'circle avg',
+              rightCaption: film.group_raters < 3 ? 'thin evidence' : 'group avg',
             }))}
           />
         )}
@@ -762,7 +764,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
         blurb="Their average by year. A drifting baseline changes what every gap figure in Overlaps actually means."
         caveat={
           timelineQuery.data
-            ? `${timelineQuery.data.summary.rated_dated_events.toLocaleString()} dated rated events across ${timelineQuery.data.summary.years} years. ${timelineQuery.data.summary.undated_known_watches.toLocaleString()} known watches carry no date and sit in no year at all.`
+            ? `${timelineQuery.data.summary.rated_dated_events.toLocaleString()} dated rated events across ${count(timelineQuery.data.summary.years, 'year')}. ${timelineQuery.data.summary.undated_known_watches.toLocaleString()} known watches carry no date and sit in no year at all.`
             : undefined
         }
       >
@@ -818,7 +820,9 @@ export default function OnePersonTab({ subject }: { subject: string }) {
             : undefined
         }
         caveat={
-          stats
+          // "0 of 0 reviews carry prose" is a measurement over an empty set;
+          // the body's empty state already says there is nothing to measure.
+          stats && stats.reviews.total_reviews > 0
             ? `${stats.reviews.with_text.toLocaleString()} of ${stats.reviews.total_reviews.toLocaleString()} reviews carry prose. A rating logged bare has no length, not a length of zero.`
             : undefined
         }
@@ -874,7 +878,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
               posterUrl: film.poster_url,
               href: film.letterboxd_url ?? undefined,
               sub: film.latest_watched_date
-                ? `logged ${new Date(film.latest_watched_date).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}${film.has_review ? ' · reviewed, not rated' : ' · no rating, no review'}`
+                ? `logged ${formatDay(film.latest_watched_date, { month: 'short', year: 'numeric' })}${film.has_review ? ' · reviewed, not rated' : ' · no rating, no review'}`
                 : 'no date on this entry',
               right: '—',
               tone: 'var(--muted)',
@@ -1004,11 +1008,11 @@ export default function OnePersonTab({ subject }: { subject: string }) {
               return {
                 cells: [
                   cell(`@${entry.username}`),
-                  cell(entry.silent_days === null ? '—' : `${entry.silent_days} days`, {
+                  cell(entry.silent_days === null ? '—' : `${entry.silent_days} ${entry.silent_days === 1 ? 'day' : 'days'}`, {
                     align: 'right',
                     tone,
                   }),
-                  cell(entry.usual_gap_days === null ? '—' : `${entry.usual_gap_days} days`, {
+                  cell(entry.usual_gap_days === null ? '—' : `${entry.usual_gap_days} ${entry.usual_gap_days === 1 ? 'day' : 'days'}`, {
                     align: 'right',
                     size: '10px',
                     tone: 'var(--muted)',
@@ -1083,7 +1087,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
                 title: film.year ? `${film.title} (${film.year})` : film.title,
                 posterUrl: film.poster_url,
                 href: film.letterboxd_url ?? undefined,
-                sub: `${film.rating_count?.toLocaleString() ?? '—'} ratings on Letterboxd`,
+                sub: film.rating_count == null ? '— ratings on Letterboxd' : `${count(film.rating_count, 'rating')} on Letterboxd`,
                 right: film.profile_rating.toFixed(1),
                 tone: 'var(--accent)',
                 rightCaption: 'their star',
@@ -1139,13 +1143,13 @@ export default function OnePersonTab({ subject }: { subject: string }) {
               cells: [
                 cell(run.director, { font: 's', size: '11.5px', tone: 'var(--ink)' }),
                 cell(String(run.films), { align: 'right', tone: 'var(--accent)' }),
-                cell(`over ${run.days} days`, {
+                cell(`over ${run.days} ${run.days === 1 ? 'day' : 'days'}`, {
                   align: 'right',
                   size: '10px',
                   tone: 'var(--ink3)',
                 }),
                 cell(
-                  new Date(run.started).toLocaleDateString('en-GB', {
+                  localDate(run.started).toLocaleDateString('en-GB', {
                     month: 'short',
                     year: 'numeric',
                   }),

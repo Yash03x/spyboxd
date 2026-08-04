@@ -43,6 +43,7 @@ from services.data_health import (
     build_request_latency,
     build_watch_event_freshness,
 )
+from services.first_watches import build_shared_firsts
 from services.films import (
     build_atlas,
     build_collections,
@@ -174,6 +175,21 @@ def _film(
             is_liked=liked,
             tags=[],
             watch_count=1,
+        )
+    )
+    database.commit()
+
+
+def _film_first(
+    database: Session, profile: Profile, movie: Movie, first: Optional[date]
+) -> None:
+    database.add(
+        ProfileFilm(
+            profile_id=profile.id,
+            movie_id=movie.id,
+            tags=[],
+            watch_count=1,
+            first_watched_date=first,
         )
     )
     database.commit()
@@ -641,3 +657,47 @@ def test_a_deleted_list_keeps_the_films_and_the_order(database: Session) -> None
     assert films[0]["title"] == "Recovered"
     assert films[0]["position"] == 3
     assert films[0]["list_name"] == "2023 ranked"
+
+
+def test_queue_conversion_counts_the_selection_not_the_first_profile(
+    database: Session,
+) -> None:
+    """The Taste map stats used to come from profiles[0]'s watchlist insights.
+
+    Selection-wide: distinct queued films, and how many of those at least one
+    selected profile has rated — the vouching the panel is about.
+    """
+
+    left = _profile(database, "left")
+    right = _profile(database, "right")
+    queued_only = _movie(database, "Queued Only")
+    vouched = _movie(database, "Vouched For")
+
+    _queued(database, left, queued_only, date(2026, 1, 1))
+    _queued(database, left, vouched, date(2026, 1, 2))
+    # The SECOND profile rated it — invisible to a profiles[0]-only count.
+    _film(database, right, vouched, rating=4.5)
+
+    payload = build_queue_age(database, [left, right])
+
+    assert payload["distinct_queued"] == 2
+    assert payload["rated_by_selection"] == 1
+
+
+def test_shared_firsts_caveat_counts_distinct_films(database: Session) -> None:
+    """A film shared-first by two pairs on two days is one qualifying film."""
+
+    a = _profile(database, "a")
+    b = _profile(database, "b")
+    c = _profile(database, "c")
+    d = _profile(database, "d")
+    movie = _movie(database, "Twice First")
+    _film_first(database, a, movie, date(2026, 1, 1))
+    _film_first(database, b, movie, date(2026, 1, 1))
+    _film_first(database, c, movie, date(2026, 2, 2))
+    _film_first(database, d, movie, date(2026, 2, 2))
+
+    payload = build_shared_firsts(database, [a, b, c, d])
+
+    assert len(payload["shared_firsts"]) == 2
+    assert "1 qualifying film in total" in payload["caveat"]

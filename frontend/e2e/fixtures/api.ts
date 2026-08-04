@@ -203,7 +203,22 @@ const groupSignals = {
   most_shared_titles: [sharedMovie],
   consensus_hits: [sharedMovie],
   divisive_titles: [sharedMovie],
-  aligned_pairs: [pair],
+  aligned_pairs: [
+    pair,
+    {
+      // A perfect 0.00 built on a single shared rating. Sorted raw this
+      // coincidence outranks the measured 0.30 above, which is exactly the
+      // bug the evidence floor exists to prevent — specs assert this pair
+      // never wins "closest" and its gap prints as a dash.
+      ...pair,
+      profiles: ['alpha', 'delta'],
+      shared_titles: 61,
+      rating_overlap_count: 1,
+      rating_correlation: null,
+      average_rating_gap: 0,
+      alignment_score: 41,
+    },
+  ],
   follow_paths: [],
 };
 
@@ -1528,6 +1543,8 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
           ],
           dated: 1_204,
           total: 1_619,
+          distinct_queued: 1_402,
+          rated_by_selection: 655,
           profiles_with_added_dates: chosen.slice(0, 2),
           caveat:
             '2 of 3 selected profiles carry an added date, so 1,204 of 1,619 queued entries can be aged at all. The rest are excluded rather than guessed at.',
@@ -2111,11 +2128,28 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
     if (archiveMatch) {
       return json(route, {
         username: decodeURIComponent(archiveMatch[1]),
-        liked_reviews: [],
+        liked_reviews: [
+          {
+            // watched is the SERVER's verdict against the whole library —
+            // false here so the liked-but-unseen panel stays exercised.
+            target_url: 'https://letterboxd.com/carol/film/liked-fixture-film/',
+            liked_date: '2026-06-10',
+            author: 'carol',
+            film_slug: 'liked-fixture-film',
+            watched: false,
+          },
+          {
+            target_url: 'https://letterboxd.com/carol/film/watched-fixture-film/',
+            liked_date: '2026-06-11',
+            author: 'carol',
+            film_slug: 'watched-fixture-film',
+            watched: true,
+          },
+        ],
         liked_lists: [],
         comments: [],
         lost_entries: [],
-        totals: { liked_reviews: 0, liked_lists: 0, comments: 0, lost_entries: 0 },
+        totals: { liked_reviews: 2, liked_lists: 0, comments: 0, lost_entries: 0 },
       });
     }
   }

@@ -99,10 +99,14 @@ export default function PicksTab({
             : undefined
         }
         caveat={
-          `Fit was “group fit score”. It is a rank, not a rating — the number only means something against the other rows in this table. Every ranked candidate is rendered below, and the count above is the length of this table rather than a larger set it was cut from.` +
+          // summary.candidates is now counted before the server's cut, so the
+          // two branches are finally distinguishable — the old copy claimed
+          // "never cut from a larger set" against a total computed after the
+          // cut, which could not disagree with the table it annotated.
+          `Fit was “group fit score”. It is a rank, not a rating — the number only means something against the other rows in this table.` +
           (summary && summary.candidates > candidates.length
-            ? ` The scan considered ${summary.candidates.toLocaleString()} in total; the rest did not clear the filters above.`
-            : '')
+            ? ` ${summary.candidates.toLocaleString()} candidates cleared the filters; the ${candidates.length.toLocaleString()} below are the best fits, and the count above is the length of this table.`
+            : ` Every ranked candidate is rendered below — the count above is the length of this table, not a larger set it was cut from.`)
         }
       >
         {panelState({

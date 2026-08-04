@@ -303,3 +303,22 @@ def test_a_soft_removed_film_is_history_not_a_current_watch(database: Session) -
     database.commit()
 
     assert build_shared_firsts(database, [left, right])["count"] == 0
+
+
+def test_longest_marathon_days_are_longest_not_most_recent(database: Session) -> None:
+    """Sorted by recency and then cut, the panel titled "longest marathon
+    days" could be missing the longest days entirely."""
+
+    viewer = _profile(database, "viewer")
+    # An older, much bigger day, and a newer, smaller one.
+    for index in range(6):
+        _watch(database, viewer, _movie(database, f"Old {index}"), date(2024, 1, 5))
+    for index in range(3):
+        _watch(database, viewer, _movie(database, f"New {index}"), date(2026, 7, 1))
+
+    result = build_marathons(database, [viewer], limit=1)
+
+    assert result["marathons"][0]["films"] == 6
+    assert result["marathons"][0]["date"] == "2024-01-05"
+    # The count still reflects everything that qualified, not the slice.
+    assert result["count"] == 2

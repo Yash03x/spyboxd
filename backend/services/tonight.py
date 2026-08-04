@@ -418,7 +418,7 @@ def build_availability(db: Session, profiles: Sequence[Profile], *, region: str 
     region_read = any(entry["region"] == region for entry in regions)
     if region_read:
         scope = (
-            f"{len(films)} queued films are carried by a subscription service in {region} as of "
+            f"{len(films)} queued film{'s are' if len(films) != 1 else ' is'} carried by a subscription service in {region} as of "
             "the last reading."
         )
     else:

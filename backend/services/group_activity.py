@@ -112,7 +112,12 @@ def build_marathons(
             }
         )
 
-    marathons.sort(key=lambda item: (item["date"], -item["films"]), reverse=True)
+    # Longest first, ties newest first — and only then the cut. Sorted by
+    # recency and truncated, the panel titled "longest marathon days" could be
+    # missing the longest days entirely: it showed the biggest of the twelve
+    # most recent, which is a different claim from the one in its title.
+    marathons.sort(key=lambda item: item["date"], reverse=True)
+    marathons.sort(key=lambda item: item["films"], reverse=True)
 
     return {
         "marathons": marathons[:limit],

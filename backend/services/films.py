@@ -545,7 +545,10 @@ def build_decade_divergence(db: Session, profiles: Sequence[Profile]) -> Dict[st
         "decades": decades,
         "measured": sum(entry["films"] for entry in decades),
         "caveat": (
-            f"Measured over {len(rows):,} rated films that carry Letterboxd's own crowd average. "
+            # Rating rows, not distinct films: a film three people rated counts three
+            # times, because each contributes its own delta to the lean.
+            f"Measured over {len(rows):,} rating{'' if len(rows) == 1 else 's'} across the selection on films that "
+            "carry Letterboxd's own crowd average. "
             "Decades with fewer than five such films are dropped rather than shown as a lean built "
             "from two opinions."
         ),
@@ -561,7 +564,14 @@ def build_queue_age(db: Session, profiles: Sequence[Profile], *, limit: int = 12
 
     profile_ids = [profile.id for profile in profiles]
     if not profile_ids:
-        return {"films": [], "dated": 0, "total": 0, "caveat": "No profiles selected."}
+        return {
+            "films": [],
+            "dated": 0,
+            "total": 0,
+            "distinct_queued": 0,
+            "rated_by_selection": 0,
+            "caveat": "No profiles selected.",
+        }
 
     rows = (
         db.query(WatchlistItem, Movie, Profile.username)
@@ -570,6 +580,23 @@ def build_queue_age(db: Session, profiles: Sequence[Profile], *, limit: int = 12
         .filter(WatchlistItem.profile_id.in_(profile_ids), WatchlistItem.removed_at.is_(None))
         .all()
     )
+
+    # Selection-wide conversion figures. The Taste map panel used to take these
+    # from the FIRST selected profile's watchlist insights and present them as
+    # the group's — every sibling panel on that tab computes over the whole
+    # selection.
+    distinct_queued_ids = {item.movie_id for item, _movie, _username in rows}
+    rated_by_selection = (
+        db.query(func.count(func.distinct(ProfileFilm.movie_id)))
+        .filter(
+            ProfileFilm.movie_id.in_(distinct_queued_ids),
+            ProfileFilm.profile_id.in_(profile_ids),
+            ProfileFilm.rating.isnot(None),
+            ProfileFilm.removed_at.is_(None),
+        )
+        .scalar()
+        or 0
+    ) if distinct_queued_ids else 0
 
     dated = [(item, movie, username) for item, movie, username in rows if item.added_date]
     dated.sort(key=lambda entry: entry[0].added_date)
@@ -591,6 +618,8 @@ def build_queue_age(db: Session, profiles: Sequence[Profile], *, limit: int = 12
         "films": films,
         "dated": len(dated),
         "total": len(rows),
+        "distinct_queued": len(distinct_queued_ids),
+        "rated_by_selection": rated_by_selection,
         "profiles_with_added_dates": with_dates,
         "caveat": (
             f"{len(with_dates)} of {len(profiles)} selected profiles carry an added date, so "
@@ -686,7 +715,7 @@ def build_metadata_gaps(db: Session, profiles: Sequence[Profile], *, limit: int 
         "count": len(films),
         "coverage": coverage,
         "caveat": (
-            f"{len(films):,} distinct films carry no enrichment at all. Ordered by how many "
+            f"{len(films):,} distinct film{'s carry' if len(films) != 1 else ' carries'} no enrichment at all. Ordered by how many "
             "profiles hold each one rather than alphabetically, because that is what decides how "
             "often a blank appears on screen."
         ),
