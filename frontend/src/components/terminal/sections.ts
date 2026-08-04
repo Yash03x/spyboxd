@@ -16,9 +16,14 @@ export interface TabDef {
    *
    * Counted from what the page actually renders, not from what the handoff
    * planned. Three of these were transcribed from the design document and then
-   * drifted as panels were added: One person said 20 against 24 on screen, Two
-   * people 10 against 11, Profiles 7 against 5. A badge in a product whose
-   * whole argument is that its numbers are true cannot be a rough estimate.
+   * drifted as panels were added; a fourth (One person) drifted again when a
+   * panel rendered conditionally — it appeared for subjects whose import
+   * reported a limitation and vanished for the rest, so the same badge was
+   * right for one subject and wrong for another. That panel always renders
+   * now, with "nothing declared out of reach" as its honest empty state. A
+   * badge in a product whose whole argument is that its numbers are true
+   * cannot be a rough estimate, and e2e/panel-counts.spec.ts holds every one
+   * of these to the rendered count.
    *
    * Data › Profiles is the one tab whose panel count is not fixed: an admin
    * sees an extra request-queue panel. The number here is what every reader
@@ -81,7 +86,7 @@ export const SECTIONS: SectionDef[] = [
     blurb:
       'Merges Analysis, Compare and Network. Three doors into the same subject become one destination with four tabs.',
     tabs: [
-      { id: 'one', label: 'ONE PERSON', panels: 24 },
+      { id: 'one', label: 'ONE PERSON', panels: 25 },
       { id: 'two', label: 'TWO PEOPLE', panels: 11 },
       { id: 'circle', label: 'THE CIRCLE', panels: 7 },
       { id: 'reach', label: 'REACH', panels: 6 },
