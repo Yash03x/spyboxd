@@ -243,7 +243,7 @@ export default function OverviewTab() {
         blurb="Above the diagonal: films both have seen. Below it: how far apart their stars land on those same films. One grid answers both questions people actually ask."
         caveat={
           closest
-            ? `${closest.profiles.join(' and ')} are the closest pair here: ${closest.shared_titles.toLocaleString()} shared films, agreeing within ${(closest.average_rating_gap ?? 0).toFixed(2)} of a star.`
+            ? `${closest.profiles.join(' and ')} are the closest pair here: ${closest.shared_titles.toLocaleString()} shared films, agreeing within ${(closest.average_rating_gap ?? 0).toFixed(2)} of a star. Every pair in the selection is drawn — a dash above the diagonal is a pair with no shared film, and below it a pair with too few shared ratings to measure.`
             : 'A pair needs shared rated films before either half of this grid can be filled.'
         }
       >

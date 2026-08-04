@@ -39,7 +39,7 @@ CORRELATION_PRIOR_FILMS = 8
 
 RATING_MIN = 0.0
 RATING_MAX = 5.0
-DASHBOARD_SNAPSHOT_FORMAT_VERSION = 3
+DASHBOARD_SNAPSHOT_FORMAT_VERSION = 4
 DASHBOARD_ACTIVITY_MONTHS = 12
 
 
@@ -489,6 +489,7 @@ def _merge_event_source_timing(
     timing: Dict[str, Any],
     *,
     limit: int,
+    pair_limit: Optional[int] = None,
     gap_days: Optional[int],
 ) -> Dict[str, Any]:
     """Replace only timing fields while preserving legacy rating/title analysis."""
@@ -640,7 +641,7 @@ def _merge_event_source_timing(
     baseline["most_shared_titles"] = baseline.get("most_shared_titles", [])[:limit]
     baseline["consensus_hits"] = baseline.get("consensus_hits", [])[:limit]
     baseline["divisive_titles"] = baseline.get("divisive_titles", [])[:limit]
-    baseline["aligned_pairs"] = aligned_pairs[:limit]
+    baseline["aligned_pairs"] = aligned_pairs[:pair_limit] if pair_limit is not None else aligned_pairs
     baseline["follow_paths"] = follow_path_list[:limit]
     if gap_days is not None:
         baseline["gap_events"] = gap_events[:limit]
@@ -1476,8 +1477,18 @@ class AnalyticsRepository:
         limit: int = 8,
         gap_days: Optional[int] = None,
         event_source: str = "ratings",
+        pair_limit: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Build shared-profile correlation signals for dashboard and group analysis views."""
+        """Build shared-profile correlation signals for dashboard and group analysis views.
+
+        ``limit`` truncates the event and title leaderboards, which are top-N
+        lists by design. ``aligned_pairs`` is governed by ``pair_limit``
+        instead, and ``None`` means every pair: the Overview co-watch matrix
+        draws a cell for each pair in the selection, and when this list was cut
+        to the leaderboard's six, the other 184 cells rendered the dash that
+        means "no shared film" — for pairs sharing hundreds. A truncated list
+        and an empty cell must not be allowed to look alike.
+        """
         if gap_days is not None and not 0 <= gap_days <= 7:
             raise ValueError("gap_days must be between 0 and 7")
         if event_source not in {"ratings", "events"}:
@@ -1512,6 +1523,7 @@ class AnalyticsRepository:
                 baseline,
                 timing,
                 limit=limit,
+                pair_limit=pair_limit,
                 gap_days=gap_days,
             )
 
@@ -1917,7 +1929,7 @@ class AnalyticsRepository:
             "most_shared_titles": shared_titles[:limit],
             "consensus_hits": consensus_candidates[:limit],
             "divisive_titles": divisive_candidates[:limit],
-            "aligned_pairs": aligned_pairs[:limit],
+            "aligned_pairs": aligned_pairs[:pair_limit] if pair_limit is not None else aligned_pairs,
             "follow_paths": follow_path_list[:limit],
         }
         if gap_days is not None:
