@@ -1156,9 +1156,17 @@ describe_health_failure() {
             sleep 1
             kill "${server_pid}" 2>/dev/null || true
         ) || true
-        log "DIAGNOSTIC one-shot frontend stderr follows" >&2
-        grep -aiv -e 'key' -e 'secret' -e 'token' "${oneshot_log}" 2>/dev/null \
-            | tail -n 40 | sed 's/^/[oneshot] /' >&2 || true
+        log "DIAGNOSTIC one-shot frontend output follows" >&2
+        # Redact secret VALUES but keep the lines: the first filter dropped any
+        # line containing "key", which is precisely the word a Clerk
+        # configuration error uses, so the diagnosis censored itself. Values
+        # have recognisable shapes; messages naming them are the evidence.
+        sed -E \
+            -e 's/(sk|pk)_(live|test)_[A-Za-z0-9+/=_-]+/\1_\2_REDACTED/g' \
+            -e 's/(Bearer )[A-Za-z0-9._~+/=-]+/\1REDACTED/g' \
+            "${oneshot_log}" 2>/dev/null \
+            | { head -n 30; echo '[...]'; tail -n 50; } \
+            | sed 's/^/[oneshot] /' >&2 || true
         rm -f "${oneshot_log}"
     fi
 }
