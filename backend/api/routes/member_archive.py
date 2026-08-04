@@ -1,6 +1,7 @@
 """Export-only member surfaces: liked content, comments, and lost history."""
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 from typing import List, Optional
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from auth import ClerkUser, get_current_user
 from database.connection import get_db
-from database.models import LostEntry, MemberComment, MemberContentLike
+from database.models import LostEntry, MemberComment, MemberContentLike, Movie, ProfileFilm
 from services.profile_access import require_profile_access
 
 
@@ -134,6 +135,25 @@ def get_member_archive(
         .all()
     )
 
+    # Every slug in the subject's own library, so "liked but never seen" can be
+    # decided against all of it. The frontend used to check the like against
+    # the ten most recent watches — the only title list it had — and called
+    # everything older "no watch record".
+    watched_slugs = set()
+    for (letterboxd_url,) in (
+        db.query(Movie.letterboxd_url)
+        .join(ProfileFilm, ProfileFilm.movie_id == Movie.id)
+        .filter(
+            ProfileFilm.profile_id == profile.id,
+            ProfileFilm.removed_at.is_(None),
+            Movie.letterboxd_url.isnot(None),
+        )
+        .all()
+    ):
+        match = re.search(r"/film/([^/]+)", letterboxd_url or "")
+        if match:
+            watched_slugs.add(match.group(1).casefold())
+
     return {
         "username": profile.username,
         "liked_reviews": [
@@ -142,6 +162,13 @@ def get_member_archive(
                 "liked_date": _iso(like.liked_date),
                 "author": like.target_username,
                 "film_slug": like.target_film_slug,
+                # Against the whole library. None when the like's film is
+                # unresolved, which is "cannot say", not "unseen".
+                "watched": (
+                    like.target_film_slug.casefold() in watched_slugs
+                    if like.target_film_slug
+                    else None
+                ),
             }
             for like in likes
             if like.content_type == "review"

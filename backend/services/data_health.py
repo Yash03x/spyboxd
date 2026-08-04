@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from services.import_contracts import IMPORTER_VERSION
+
 from database.models import (
     LostEntry,
     MemberComment,
@@ -237,8 +239,10 @@ def build_importers(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     """
 
     latest = _latest_syncs(db, [profile.id for profile in profiles])
-    versions = {sync.importer_version for sync in latest.values()}
-    current = max(versions) if versions else None
+    # The importer that ships with this deployment, not the newest version seen
+    # in the selection: derived from the selection's own syncs, a set of
+    # profiles ALL last read by an old importer reported itself "Up to date".
+    current = IMPORTER_VERSION
 
     entries = []
     for profile in profiles:
@@ -313,7 +317,7 @@ def build_counts(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
         "profiles": entries,
         "total_gap": total_gap,
         "caveat": (
-            f"{total_gap:,} films across the selection that Letterboxd reports and we do not hold. "
+            f"{total_gap:,} film{'' if total_gap == 1 else 's'} across the selection that Letterboxd reports and we do not hold. "
             "Mostly private diary entries and pages that stopped answering mid-read. A profile "
             "whose header was never fetched has no stated total, which is not a gap of zero."
             if measured

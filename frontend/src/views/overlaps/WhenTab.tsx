@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import { localDate, dateKey, formatDay } from '../../components/terminal/dates';
 import Bars from '../../components/terminal/bodies/Bars';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import Spark from '../../components/terminal/bodies/Spark';
@@ -25,7 +26,11 @@ const WEEKS_SHOWN = 8;
 function toWeeks(buckets: Array<{ date: string; signal_count: number }>, anchor?: string) {
   const counts = new Map(buckets.map((bucket) => [bucket.date, bucket.signal_count]));
   const latestBucket = buckets.length ? buckets[buckets.length - 1].date : undefined;
-  const end = new Date(anchor ?? latestBucket ?? new Date().toISOString().slice(0, 10));
+  // Entirely in local date space. The old version parsed the anchor as UTC
+  // midnight, did weekday arithmetic on local fields, then keyed back through
+  // toISOString (UTC again) — west of Greenwich that filed every day's count
+  // under the previous weekday column and pushed the newest day off the grid.
+  const end = localDate(anchor ?? latestBucket ?? dateKey(new Date()));
   if (Number.isNaN(end.getTime())) end.setTime(Date.now());
   // Walk forward to the Sunday of that week so the last row is complete.
   const daysPastMonday = (end.getDay() + 6) % 7;
@@ -39,7 +44,7 @@ function toWeeks(buckets: Array<{ date: string; signal_count: number }>, anchor?
     for (let day = 0; day < 7; day += 1) {
       const cursor = new Date(end);
       cursor.setDate(end.getDate() - week * 7 - (6 - day));
-      const key = cursor.toISOString().slice(0, 10);
+      const key = dateKey(cursor);
       row.push(counts.get(key) ?? 0);
       rowTitles.push(`${key} · ${counts.get(key) ?? 0} overlaps`);
     }
@@ -95,7 +100,7 @@ export default function WhenTab({ profiles, gapDays }: { profiles: string[]; gap
         blurb="Eight weeks, one square per day, darker where more overlaps landed."
         caveat={
           calendarQuery.data
-            ? `Eight weeks ending ${new Date(calendarQuery.data.to).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} — this pair's most recent overlap, not today. Undated diary entries cannot be placed on a grid at all, so a quiet week can mean a quiet week or a profile with no dates.`
+            ? `Eight weeks ending ${formatDay(calendarQuery.data.to)} — this pair's most recent overlap, not today. Undated diary entries cannot be placed on a grid at all, so a quiet week can mean a quiet week or a profile with no dates.`
             : 'Undated diary entries cannot be placed on a grid at all, so a quiet week here can mean a quiet week or a profile with no dates.'
         }
       >
@@ -205,7 +210,7 @@ export default function WhenTab({ profiles, gapDays }: { profiles: string[]; gap
               .map((day) => ({
                 cells: [
                   cell(
-                    new Date(day.date).toLocaleDateString('en-GB', {
+                    localDate(day.date).toLocaleDateString('en-GB', {
                       day: '2-digit',
                       month: 'short',
                     }),

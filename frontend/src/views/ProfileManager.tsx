@@ -1122,7 +1122,7 @@ const ProfileManager: React.FC = () => {
                         <div className="text-xs text-white/60">Films</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-xl font-bold text-cinema-400">{profile.avg_rating?.toFixed(1) || '0.0'}</div>
+                        <div className="text-xl font-bold text-cinema-400">{profile.rated_films ? (profile.avg_rating ?? 0).toFixed(1) : '—'}</div>
                         <div className="text-xs text-white/60">Avg Rating</div>
                       </div>
                       <div className="text-center">

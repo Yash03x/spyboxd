@@ -1244,6 +1244,14 @@ export const followGraphApi = {
 export interface MemberContentLikeEntry {
   target_url: string;
   liked_date: string | null;
+  author?: string | null;
+  film_slug?: string | null;
+  /**
+   * Checked against the subject's ENTIRE library, server-side. Null when the
+   * like's film is unresolved — "cannot say", never "unseen". The client used
+   * to decide this from the ten most recent watches, the only titles it had.
+   */
+  watched?: boolean | null;
 }
 
 export interface MemberCommentEntry {
@@ -2235,6 +2243,10 @@ export interface QueueAgeResponse {
   }>;
   dated: number;
   total: number;
+  /** Distinct films queued by anyone in the selection. */
+  distinct_queued: number;
+  /** Of those, rated by at least one selected profile. */
+  rated_by_selection: number;
   profiles_with_added_dates: string[];
   caveat: string;
 }

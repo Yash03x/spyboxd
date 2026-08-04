@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import { localDate, formatDay } from '../../components/terminal/dates';
 import Diverge from '../../components/terminal/bodies/Diverge';
 import Posters from '../../components/terminal/bodies/Posters';
 import Quads from '../../components/terminal/bodies/Quads';
@@ -11,9 +12,21 @@ import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import Spark from '../../components/terminal/bodies/Spark';
 import { panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
-import { filmsApi, watchlistInsightsApi } from '../../services/api';
+import { filmsApi } from '../../services/api';
 
 const QUAD_TONES = ['var(--ok)', 'var(--accent)', 'var(--blue)', 'var(--muted)'];
+
+/** A wait in the unit that fits it: days, then months, then years+months. */
+function daysSince(iso: string): number {
+  return Math.max(0, Math.round((Date.now() - localDate(iso).getTime()) / 86400000));
+}
+
+function waitingLabel(days: number): string {
+  if (days < 30) return `${days}d`;
+  const months = Math.round(days / 30.44);
+  if (months < 12) return `${months}mo`;
+  return `${Math.floor(months / 12)}y ${months % 12}m`;
+}
 
 function yearsSince(iso: string): string {
   const then = new Date(iso).getTime();
@@ -45,13 +58,6 @@ export default function TasteMapTab({ profiles }: { profiles: string[] }) {
     queryKey: ['films-language-ladder', profiles],
     queryFn: () => filmsApi.getLanguageLadder(profiles),
     ...options,
-  });
-  const conversionQuery = useQuery({
-    queryKey: ['watchlist-insights', profiles[0]],
-    queryFn: () => watchlistInsightsApi.getInsights(profiles[0]),
-    enabled: profiles.length > 0,
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
   });
 
   return (
@@ -118,17 +124,20 @@ export default function TasteMapTab({ profiles }: { profiles: string[] }) {
         title="QUEUE CONVERSION"
         src="watchlist_items × profile_films"
         blurb="How much of what gets added actually gets watched."
+        // Selection-wide, like every sibling on this tab. These two figures
+        // used to come from the FIRST selected profile's watchlist insights
+        // and were presented, unlabelled, as the group's.
         stats={
-          conversionQuery.data
+          queueAgeQuery.data
             ? [
                 {
-                  big: conversionQuery.data.coverage.watchlist_films.toLocaleString(),
+                  big: queueAgeQuery.data.distinct_queued.toLocaleString(),
                   unit: 'STILL QUEUED',
                   tone: 'var(--accent)',
                 },
                 {
-                  big: conversionQuery.data.coverage.rated_by_group.toLocaleString(),
-                  unit: 'RATED BY SOMEBODY TRACKED',
+                  big: queueAgeQuery.data.rated_by_selection.toLocaleString(),
+                  unit: 'RATED BY SOMEBODY SELECTED',
                 },
               ]
             : undefined
@@ -136,19 +145,19 @@ export default function TasteMapTab({ profiles }: { profiles: string[] }) {
         caveat="The queue holds unwatched films only, so a converted entry leaves it entirely. This is what is still waiting, not a conversion rate over all time — nothing records when something left."
       >
         {panelState({
-          isLoading: conversionQuery.isLoading,
-          error: conversionQuery.error,
+          isLoading: queueAgeQuery.isLoading,
+          error: queueAgeQuery.error,
           // Two different emptinesses. The guard used to check only the queue
           // size, so a queue with entries but no added dates rendered a table
           // header over nothing at all.
           isEmpty:
-            (conversionQuery.data?.coverage.watchlist_films ?? 0) === 0 ||
-            (conversionQuery.data?.longest_waiting.length ?? 0) === 0,
-          onRetry: () => conversionQuery.refetch(),
+            (queueAgeQuery.data?.distinct_queued ?? 0) === 0 ||
+            (queueAgeQuery.data?.films.length ?? 0) === 0,
+          onRetry: () => queueAgeQuery.refetch(),
           errorTitle: 'Queue conversion could not be read',
           errorBody: 'Every other panel on this tab is unaffected.',
           empty:
-            (conversionQuery.data?.coverage.watchlist_films ?? 0) === 0
+            (queueAgeQuery.data?.distinct_queued ?? 0) === 0
               ? {
                   title: 'Nothing waiting in the queue',
                   body: 'Either the watchlist is private, or everything on it has been watched.',
@@ -161,7 +170,7 @@ export default function TasteMapTab({ profiles }: { profiles: string[] }) {
           <Rows
             columns="minmax(0,1fr) 76px 76px"
             head={['LONGEST WAITING', ['ADDED', 'right'], ['WAITING', 'right']]}
-            rows={(conversionQuery.data?.longest_waiting ?? []).slice(0, 6).map((film) => ({
+            rows={(queueAgeQuery.data?.films ?? []).slice(0, 6).map((film) => ({
               cells: [
                 cell(film.year ? `${film.title} (${film.year})` : film.title, {
                   font: 's',
@@ -170,17 +179,18 @@ export default function TasteMapTab({ profiles }: { profiles: string[] }) {
                 }),
                 cell(
                   film.added_date
-                    ? new Date(film.added_date).toLocaleDateString('en-GB', {
+                    ? localDate(film.added_date).toLocaleDateString('en-GB', {
                         month: 'short',
                         year: 'numeric',
                       })
                     : 'no date',
                   { align: 'right', size: '10px', tone: 'var(--muted)' },
                 ),
-                // An unknown wait, not a zero-day one.
-                cell(film.days_waiting === null ? '—' : `${Math.round(film.days_waiting / 365)}y`, {
+                // An unknown wait, not a zero-day one — and never rounded to
+                // whole years, which showed "0y" for anything under six months.
+                cell(waitingLabel(daysSince(film.added_date)), {
                   align: 'right',
-                  tone: film.days_waiting === null ? 'var(--dim)' : 'var(--accent)',
+                  tone: 'var(--accent)',
                 }),
               ],
             }))}
@@ -212,7 +222,7 @@ export default function TasteMapTab({ profiles }: { profiles: string[] }) {
             items={(queueAgeQuery.data?.films ?? []).slice(0, 6).map((film) => ({
               title: film.year ? `${film.title} (${film.year})` : film.title,
               posterUrl: film.poster_url,
-              sub: `@${film.username} · added ${new Date(film.added_date).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}`,
+              sub: `@${film.username} · added ${formatDay(film.added_date, { month: 'short', year: 'numeric' })}`,
               right: yearsSince(film.added_date),
               tone: 'var(--accent)',
               rightCaption: 'still waiting',

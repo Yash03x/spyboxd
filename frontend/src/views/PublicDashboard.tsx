@@ -159,7 +159,10 @@ export default function PublicDashboard() {
           { big: stats.total_reviews.toLocaleString(), unit: 'REVIEWS' },
           { big: stats.global_avg_rating.toFixed(2), unit: 'AVERAGE' },
         ]}
-        caveat={`${analytics.data_health.completed_profiles} of ${stats.total_profiles} profiles are ready for analysis. Latest completed sync: ${lastSync}.`}
+        // Completed over ACTIVE, not over total_profiles — the snapshot's
+        // total is itself completed-only, so the old caveat compared a number
+        // against itself and could only ever read "N of N ready".
+        caveat={`${analytics.data_health.completed_profiles} of ${analytics.data_health.active_profiles} monitored profiles are ready for analysis. Latest completed sync: ${lastSync}.`}
       />
 
       <Panel

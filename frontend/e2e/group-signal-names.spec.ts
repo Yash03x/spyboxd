@@ -17,7 +17,7 @@ test('group signals name who watched and who it is new to, not only how many', a
   const shortlist = page.locator('.terminal-root section', { hasText: "TONIGHT'S SHORTLIST" }).first();
   await shortlist.getByRole('link', { name: /Seen By One Fixture/ }).click();
 
-  const why = page.locator('.terminal-root section', { hasText: 'FITS' }).first();
+  const why = page.locator('.terminal-root section', { hasText: /▸ WHY .+ FITS/ }).first();
   await expect(why).toContainText('@charlie');
   await expect(why).toContainText('New to @alpha, @bravo');
 });

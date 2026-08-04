@@ -101,11 +101,20 @@ def build_first_watch_order(db: Session, profiles: Sequence[Profile]) -> Dict[st
         "profiles": entries,
         "undated_pairs": undated_pairs,
         "caveat": (
-            f"{undated_pairs:,} shared-film pairings have no first-watch date on one or both sides "
-            "and are excluded rather than assumed late. That is why the shares below do not sum to "
-            "anything meaningful."
-            if undated_pairs
-            else "Every shared film in the selection carries a first-watch date on both sides."
+            (
+                f"{undated_pairs:,} shared-film pairings have no first-watch date on one or both "
+                "sides and are excluded rather than assumed late. That is why the shares below do "
+                "not sum to anything meaningful."
+                if undated_pairs
+                else "Every shared film in the selection carries a first-watch date on both sides."
+            )
+            # Two panels answer "who gets there first" from two populations,
+            # and unsaid, they read as the same measure disagreeing: this one
+            # spans every dated shared film, however far apart the watches;
+            # Head-to-head's lead reads only films watched days apart.
+            + " Measured over every dated shared film, years apart included — Head-to-head's"
+            " \"gets there first\" reads only films watched within days of each other, so the"
+            " two can differ without either being wrong."
         ),
     }
 
@@ -157,6 +166,11 @@ def build_shared_firsts(
 
     results.sort(key=lambda item: item["date"], reverse=True)
 
+    # Distinct films, not (film, day) rows: a film two pairs first-watched on
+    # two different days is one qualifying film shown twice, and the caveat
+    # counted it twice.
+    distinct_films = len({(entry["title"], entry["year"]) for entry in results})
+
     dated_profiles = sorted(
         {
             names[profile_id]
@@ -173,6 +187,6 @@ def build_shared_firsts(
         "caveat": (
             f"Needs a first-watch date on both sides, so this only fires for the "
             f"{len(dated_profiles)} of {len(names)} selected profiles that have one. "
-            f"{len(results)} qualifying film{'s' if len(results) != 1 else ''} in total."
+            f"{distinct_films} qualifying film{'s' if distinct_films != 1 else ''} in total."
         ),
     }

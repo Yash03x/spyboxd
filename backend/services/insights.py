@@ -3670,6 +3670,10 @@ class InsightsService:
                 item["movie"]["title"],
             )
         )
+        # Counted before the cut: the shortlist's caveat promises the reader
+        # the count is honest about truncation, and a total taken after the
+        # slice can only ever equal the table it annotates.
+        ranked_total = len(recommendations)
         recommendations = recommendations[:limit]
 
         returned_movie_ids = {
@@ -3881,7 +3885,7 @@ class InsightsService:
             "available_lists": available_lists,
             "coverage": coverage,
             "summary": {
-                "candidates": len(recommendations),
+                "candidates": ranked_total,
                 "on_every_watchlist": sum(
                     len(item["on_watchlist_by"]) == len(profiles) for item in recommendations
                 ),

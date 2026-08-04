@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import { formatDay } from '../../components/terminal/dates';
 import Bars from '../../components/terminal/bodies/Bars';
 import EgoGraph, { type EgoLeaf } from '../../components/terminal/bodies/EgoGraph';
 import Notes from '../../components/terminal/bodies/Notes';
@@ -43,6 +44,23 @@ export default function CircleTab({
   const graphQuery = useQuery({
     queryKey: ['follow-graph', subject],
     queryFn: () => followGraphApi.getFollowGraph(subject, { direction: 'both', limit: 200 }),
+    enabled: Boolean(subject),
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  // A separate request WITH removed edges. The unfollow panel used to filter
+  // `removed_at !== null` out of the graph query above — which asks for active
+  // edges only, so its source was structurally empty and the panel swore "no
+  // edge has disappeared yet" over any number of recorded unfollows.
+  const removedQuery = useQuery({
+    queryKey: ['follow-graph-removed', subject],
+    queryFn: () =>
+      followGraphApi.getFollowGraph(subject, {
+        direction: 'both',
+        includeRemoved: true,
+        limit: 200,
+      }),
     enabled: Boolean(subject),
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
@@ -109,7 +127,10 @@ export default function CircleTab({
     return all.sort((a, b) => rank(a) - rank(b) || a.username.localeCompare(b.username)).slice(0, 10);
   }, [graphQuery.data]);
 
-  const totalEdges = (graphQuery.data?.edges ?? []).filter((edge) => edge.removed_at === null).length;
+  // The endpoint's own total, not the length of the 200-edge page — the title
+  // was counting the page and silently understating any graph larger than it.
+  const totalEdges = graphQuery.data?.total ?? 0;
+  const pageTruncated = (graphQuery.data?.edges.length ?? 0) < totalEdges;
   const undrawn = Math.max(0, new Set(
     (graphQuery.data?.edges ?? [])
       .filter((edge) => edge.removed_at === null)
@@ -117,7 +138,7 @@ export default function CircleTab({
   ).size - leaves.length);
 
   const rollups = mutualsQuery.data?.rollups ?? {};
-  const dropped = (graphQuery.data?.edges ?? []).filter((edge) => edge.removed_at !== null);
+  const dropped = (removedQuery.data?.edges ?? []).filter((edge) => edge.removed_at !== null);
 
   const comments = React.useMemo(() => archiveQuery.data?.comments ?? [], [archiveQuery.data]);
   const trackedLower = React.useMemo(
@@ -151,7 +172,7 @@ export default function CircleTab({
         src="profile_follow_edges"
         wide
         blurb="The circle around one person. Solid green is mutual, solid amber is one-way, dashed is somebody the group orbits that we have never synced."
-        caveat={`Click a tracked node to re-centre. ${undrawn ? `${undrawn} further counterparts are not drawn — the ring holds about ten before the labels collide.` : 'Every counterpart is drawn.'} Letterboxd's follow lists carry no timestamps at all, so the order is recency and nothing more.`}
+        caveat={`Click a tracked node to re-centre. ${undrawn ? `${undrawn} further counterpart${undrawn === 1 ? ' is' : 's are'} not drawn — the ring holds about ten before the labels collide.` : 'Every counterpart is drawn.'}${pageTruncated ? ' Only the first 200 edges were read, so the undrawn count is a floor.' : ''} Letterboxd's follow lists carry no timestamps at all, so the order is recency and nothing more.`}
       >
         {panelState({
           isLoading: graphQuery.isLoading,
@@ -247,11 +268,11 @@ export default function CircleTab({
         caveat="Two reads minimum, or nothing is shown. A first import is a baseline and records no disappearance at all."
       >
         {panelState({
-          isLoading: graphQuery.isLoading,
-          error: graphQuery.error,
+          isLoading: removedQuery.isLoading,
+          error: removedQuery.error,
           isEmpty: dropped.length === 0,
           severity: 'quiet',
-          onRetry: () => graphQuery.refetch(),
+          onRetry: () => removedQuery.refetch(),
           errorTitle: 'Follow changes could not be loaded',
           errorBody: 'Every other panel on this tab is unaffected.',
           empty: {
@@ -310,7 +331,12 @@ export default function CircleTab({
             rows={(suggestionsQuery.data?.suggestions ?? []).slice(0, 8).map((suggestion) => ({
               cells: [
                 cell(`@${suggestion.username}`, { tone: 'var(--ink)' }),
-                cell(`${suggestion.followed_by_count} of ${profiles.length}`, {
+                // The server counts across every monitored profile and says so in
+                // monitored_profiles; dividing by the tab's own list rendered
+                // "10 of 6" — the sibling of the fixed Data › Profiles bug.
+                cell(
+                  `${suggestion.followed_by_count} of ${suggestionsQuery.data?.monitored_profiles ?? '—'}`,
+                  {
                   align: 'right',
                   tone: 'var(--accent)',
                 }),
@@ -398,7 +424,7 @@ export default function CircleTab({
                   : 'Counterpart not resolvable from a boxd.it link'
               }${
                 comment.commented_date
-                  ? ` · ${new Date(comment.commented_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`
+                  ? ` · ${formatDay(comment.commented_date)}`
                   : ''
               }`,
               text: comment.comment_text
