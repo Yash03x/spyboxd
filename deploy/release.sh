@@ -1099,6 +1099,35 @@ if restart_services && check_readiness && require_bundled_frontend_process; then
     exit 0
 fi
 
+describe_health_failure() {
+    # Two consecutive releases failed at "frontend sign-in" with nothing in
+    # this log to say why, and the deploy user's sudo allowlist cannot reach
+    # journalctl — so the failure must describe itself from within existing
+    # privileges. Connection refused and an HTTP error are opposite diagnoses:
+    # the first is a process that will not start, the second an app that did.
+    local probe
+    for probe in \
+        "local API|http://127.0.0.1:8000/health" \
+        "local frontend|http://127.0.0.1:3000/sign-in"; do
+        local label="${probe%%|*}" url="${probe#*|}" status body
+        status="$(curl --silent --output /tmp/spyboxd-health-probe.$$ \
+            --write-out '%{http_code} %{errormsg}' --max-time 8 "${url}" 2>&1 || true)"
+        body="$(head -c 300 /tmp/spyboxd-health-probe.$$ 2>/dev/null | tr -d '\0' | tr '\n' ' ')"
+        rm -f "/tmp/spyboxd-health-probe.$$"
+        log "DIAGNOSTIC ${label}: ${status}; body starts: ${body:-<empty>}" >&2
+    done
+    # Which start path the unit resolved to — the bundled runtime or the npm
+    # fallback — is in the sudo allowlist already.
+    log "DIAGNOSTIC frontend ExecStart: $(timeout --signal=TERM 10s \
+        sudo -n systemctl show spyboxd-frontend.service --property=ExecStart --value 2>&1 \
+        | head -c 400 || true)" >&2
+    # A full disk kills the frontend (it writes caches) long before the API
+    # (already running, appending little), which fits a code-independent,
+    # deterministic failure exactly.
+    log "DIAGNOSTIC disk: $(df -h /opt /var /tmp 2>&1 | tr '\n' '; ' || true)" >&2
+}
+
+describe_health_failure
 log "Health verification failed; rolling application services back"
 if [[ -n "${old_release}" && -d "${old_release}" ]]; then
     activate_release "${old_release}"
