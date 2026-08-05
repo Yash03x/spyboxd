@@ -428,7 +428,19 @@ jobs:
             exit 0
           fi
           status="$("${python_path}" "${canary_path}" status --lease-id "${lease_id}")"
-          [[ "${status}" == failed || "${status}" == cleanup_failed ]]
+          reason="$("${python_path}" "${canary_path}" reason --lease-id "${lease_id}" || true)"
+          echo "guardian exited within its startup window: status=${status} reason=${reason:-none recorded}" >&2
+          # POSIX sh, not bash: this heredoc runs under the VPS's /bin/sh, and
+          # the [[ ]] that used to sit here crashed with "[[: not found" (127)
+          # BEFORE reporting the status — replacing the guardian's own
+          # diagnosis at exactly the moment a diagnosis was needed. An orderly
+          # fast failure (status written) exits 0 so the workflow's reporting
+          # loop can read and print the reason; only a crash with no status
+          # fails the step outright.
+          case "${status}" in
+            failed|cleanup_failed) exit 0 ;;
+            *) exit 1 ;;
+          esac
           REMOTE
           guardian_started=1
 
