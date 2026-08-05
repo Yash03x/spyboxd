@@ -20,6 +20,18 @@ from sqlalchemy.orm import Session
 
 from services.import_contracts import IMPORTER_VERSION
 
+# The incremental RSS top-up. It is not a read of a profile: it layers the last
+# few activity items onto an authoritative full snapshot, writes non-
+# authoritative dataset rows carrying only those items, and stamps its own
+# importer version. Because it runs on a feed schedule it is almost always the
+# newest sync a profile has, so any panel that means "the last authoritative
+# read" must exclude it or it reports the top-up's shape as the library's.
+INCREMENTAL_SOURCE_KIND = "rss_incremental"
+
+# Sort floor for runs with no usable timestamp, so ranking never compares a
+# datetime against None.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
 from database.models import (
     LostEntry,
     MemberComment,
@@ -63,17 +75,26 @@ def _aware(value: Optional[datetime]) -> Optional[datetime]:
     return value.replace(tzinfo=timezone.utc)
 
 
-def _latest_syncs(db: Session, profile_ids: Sequence[int]) -> Dict[int, ProfileSync]:
-    """The most recent completed sync per profile."""
+def _latest_syncs(
+    db: Session, profile_ids: Sequence[int], *, full_only: bool = False
+) -> Dict[int, ProfileSync]:
+    """The most recent completed sync per profile.
+
+    ``full_only`` excludes the incremental RSS top-ups. They run every few
+    minutes and complete in under a second, so for any feed-watched profile the
+    newest sync of *any* kind is always one of them — which is the wrong answer
+    to every question of the form "when was this profile actually read, and by
+    what". See INCREMENTAL_SOURCE_KIND.
+    """
 
     if not profile_ids:
         return {}
-    syncs = (
-        db.query(ProfileSync)
-        .filter(ProfileSync.profile_id.in_(profile_ids), ProfileSync.status == "completed")
-        .order_by(ProfileSync.profile_id, ProfileSync.started_at.desc())
-        .all()
+    query = db.query(ProfileSync).filter(
+        ProfileSync.profile_id.in_(profile_ids), ProfileSync.status == "completed"
     )
+    if full_only:
+        query = query.filter(ProfileSync.source_kind != INCREMENTAL_SOURCE_KIND)
+    syncs = query.order_by(ProfileSync.profile_id, ProfileSync.started_at.desc()).all()
     latest: Dict[int, ProfileSync] = {}
     for sync in syncs:
         latest.setdefault(sync.profile_id, sync)
@@ -105,16 +126,24 @@ def build_ledger(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
             )
             .all()
         )
+        # Per (surface, profile): the newest AUTHORITATIVE run wins, and an
+        # incremental top-up is used only where no authoritative run exists.
+        # Ranking purely by recency let the RSS top-up — which carries a
+        # handful of recent items and is authoritative for nothing — stand in
+        # for the full snapshot underneath it, so the five surfaces RSS touches
+        # reported the group's whole diary as a few hundred rows and "none
+        # authoritative", while the four it does not touch reported the truth.
         newest: Dict[tuple, Any] = {}
         for dataset, sync in datasets:
             key = (dataset.dataset_name, sync.profile_id)
             when = _aware(sync.completed_at or sync.started_at)
+            rank = (bool(dataset.is_authoritative), when or _EPOCH)
             current = newest.get(key)
-            if current is None or (when is not None and (current[2] is None or when > current[2])):
-                newest[key] = (dataset, sync, when)
+            if current is None or rank > current[3]:
+                newest[key] = (dataset, sync, when, rank)
 
         by_surface: Dict[str, List[Any]] = defaultdict(list)
-        for (name, _profile_id), (dataset, sync, _when) in newest.items():
+        for (name, _profile_id), (dataset, sync, _when, _rank) in newest.items():
             by_surface[name].append((dataset, sync))
 
         for name, label in SURFACE_ORDER:
@@ -164,10 +193,12 @@ def build_ledger(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     return {
         "surfaces": rows,
         "caveat": (
-            "Each surface reports the most recent completed run that carried it, which is not "
-            "always the profile's latest run — a refresh that skips a surface does not unread it. "
-            "A surface with no row was never read for anybody in this selection, which is "
-            "different from being read and coming back empty, and the two must not look alike."
+            "Each surface reports its most recent authoritative read, falling back to an "
+            "incremental top-up only where no full read exists — a top-up carries the last few "
+            "items and does not replace the snapshot beneath it, and a refresh that skips a "
+            "surface does not unread it. A surface with no row was never read for anybody in "
+            "this selection, which is different from being read and coming back empty, and the "
+            "two must not look alike."
         ),
     }
 
@@ -238,7 +269,11 @@ def build_importers(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     collected are marked rather than faked.
     """
 
-    latest = _latest_syncs(db, [profile.id for profile in profiles])
+    # Full reads only. The RSS top-up carries its own importer version, and
+    # since it is always the newest sync a feed-watched profile has, reading
+    # the newest row of any kind flagged every healthy profile in the product
+    # as "read by an older importer" while its real full sync was current.
+    latest = _latest_syncs(db, [profile.id for profile in profiles], full_only=True)
     # The importer that ships with this deployment, not the newest version seen
     # in the selection: derived from the selection's own syncs, a set of
     # profiles ALL last read by an old importer reported itself "Up to date".
@@ -253,7 +288,7 @@ def build_importers(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
                     "username": profile.username,
                     "importer_version": None,
                     "is_current": False,
-                    "missing": "Never completed a sync, so nothing has been collected at all",
+                    "missing": "Never completed a full read, so nothing has been collected at all",
                 }
             )
             continue
@@ -444,12 +479,17 @@ def build_request_latency(db: Session, profiles: Sequence[Profile]) -> Dict[str,
     if not profile_ids:
         return {"runs": 0, "median_seconds": None, "worst_seconds": None, "caveat": "No profiles selected."}
 
+    # Full reads only. An RSS top-up finishes in well under a second, and it
+    # runs on a feed schedule, so the last 30 syncs of any kind are all
+    # top-ups: the panel measured them and answered "a request takes 0s"
+    # beside a request queue whose real answer is minutes.
     syncs = (
         db.query(ProfileSync.started_at, ProfileSync.completed_at)
         .filter(
             ProfileSync.profile_id.in_(profile_ids),
             ProfileSync.status == "completed",
             ProfileSync.completed_at.isnot(None),
+            ProfileSync.source_kind != INCREMENTAL_SOURCE_KIND,
         )
         .order_by(ProfileSync.started_at.desc())
         .limit(30)
@@ -468,8 +508,9 @@ def build_request_latency(db: Session, profiles: Sequence[Profile]) -> Dict[str,
             "median_seconds": None,
             "worst_seconds": None,
             "caveat": (
-                "No completed sync in this selection carries both a start and an end time, so "
-                "there is nothing to measure. An estimate would be a promise rather than a figure."
+                "No completed full read in this selection carries both a start and an end time, "
+                "so there is nothing to measure. An estimate would be a promise rather than a "
+                "figure."
             ),
         }
 
@@ -479,9 +520,10 @@ def build_request_latency(db: Session, profiles: Sequence[Profile]) -> Dict[str,
         "median_seconds": round(median),
         "worst_seconds": round(durations[-1]),
         "caveat": (
-            f"Median of the last {len(durations)} completed runs, so the estimate is measured "
-            "rather than promised. A large diary dominates: the worst case is a big profile read "
-            "at a rate that does not trip the feed."
+            f"Median of the last {len(durations)} completed full reads, so the estimate is "
+            "measured rather than promised. Incremental feed top-ups are excluded: they finish "
+            "in under a second and answer a different question. A large diary dominates the "
+            "worst case — a big profile read at a rate that does not trip the feed."
         ),
     }
 

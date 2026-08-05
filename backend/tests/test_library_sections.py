@@ -35,9 +35,12 @@ from database.models import (
     WatchlistItem,
 )
 from services.data_health import (
+    INCREMENTAL_SOURCE_KIND,
+    IMPORTER_VERSION,
     SURFACE_ORDER,
     build_counts,
     build_feeds,
+    build_importers,
     build_ledger,
     build_lost_list_films,
     build_request_latency,
@@ -701,3 +704,106 @@ def test_shared_firsts_caveat_counts_distinct_films(database: Session) -> None:
 
     assert len(payload["shared_firsts"]) == 2
     assert "1 qualifying film in total" in payload["caveat"]
+
+
+def _incremental_sync(
+    database: Session, profile: Profile, *, datasets: dict[str, int], minutes_after: int = 60
+) -> ProfileSync:
+    """An RSS top-up: newest, sub-second, non-authoritative, own importer."""
+
+    started = datetime(2026, 8, 3, 9, tzinfo=timezone.utc) + timedelta(minutes=minutes_after)
+    sync = ProfileSync(
+        profile_id=profile.id,
+        source_kind=INCREMENTAL_SOURCE_KIND,
+        source_fingerprint=f"fingerprint-{next(_IDS)}",
+        importer_version="1",
+        status="completed",
+        started_at=started,
+        completed_at=started,
+    )
+    database.add(sync)
+    database.commit()
+    for name, rows in datasets.items():
+        database.add(
+            SyncDataset(
+                profile_sync_id=sync.id,
+                dataset_name=name,
+                source_row_count=rows,
+                imported_row_count=rows,
+                is_authoritative=False,
+            )
+        )
+    database.commit()
+    return sync
+
+
+def test_a_feed_top_up_does_not_make_a_current_importer_look_old(
+    database: Session,
+) -> None:
+    """The RSS top-up stamps its own importer version and runs every few
+    minutes, so reading the newest sync of any kind flagged every healthy
+    profile in the product as needing a full refresh it did not need."""
+
+    viewer = _profile(database, "viewer")
+    full = _sync(database, viewer, datasets={"films": 400})
+    full.importer_version = IMPORTER_VERSION
+    database.commit()
+    _incremental_sync(database, viewer, datasets={"films": 3})
+
+    entry = build_importers(database, [viewer])["profiles"][0]
+
+    assert entry["importer_version"] == IMPORTER_VERSION
+    assert entry["missing"] == "Up to date"
+
+
+def test_latency_measures_full_reads_rather_than_sub_second_feed_polls(
+    database: Session,
+) -> None:
+    """A top-up finishes in under a second. Measuring those answered "a
+    request takes 0s" beside a queue whose real answer is minutes."""
+
+    viewer = _profile(database, "viewer")
+    _sync(database, viewer, datasets={"films": 400})  # one hour, start to end
+    for offset in range(5):
+        _incremental_sync(database, viewer, datasets={"films": 1}, minutes_after=offset)
+
+    result = build_request_latency(database, [viewer])
+
+    assert result["runs"] == 1
+    assert result["median_seconds"] == 3600
+    assert "full reads" in result["caveat"]
+
+
+def test_a_top_up_never_stands_in_for_the_snapshot_beneath_it(
+    database: Session,
+) -> None:
+    """Ranking the ledger purely by recency let a handful of RSS items
+    represent a whole library, and reported the surfaces RSS touches as
+    non-authoritative while the ones it skips told the truth."""
+
+    viewer = _profile(database, "viewer")
+    _sync(database, viewer, datasets={"films": 400, "lists": 12})
+    _incremental_sync(database, viewer, datasets={"films": 3})
+
+    surfaces = {row["dataset"]: row for row in build_ledger(database, [viewer])["surfaces"]}
+
+    assert surfaces["films"]["rows"] == 400
+    assert surfaces["films"]["authoritative_profiles"] == 1
+    # The surface RSS never touches must be unaffected by the change.
+    assert surfaces["lists"]["rows"] == 12
+
+
+def test_a_surface_only_ever_topped_up_still_reports_what_it_has(
+    database: Session,
+) -> None:
+    """Falling back to the incremental row matters: preferring authority must
+    not turn a surface that was genuinely read into "never read"."""
+
+    viewer = _profile(database, "viewer")
+    _incremental_sync(database, viewer, datasets={"films": 3})
+
+    surfaces = {row["dataset"]: row for row in build_ledger(database, [viewer])["surfaces"]}
+
+    assert surfaces["films"]["rows"] == 3
+    assert surfaces["films"]["authoritative_profiles"] == 0
+    assert "none authoritative" in surfaces["films"]["result"]
