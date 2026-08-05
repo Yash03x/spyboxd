@@ -8,11 +8,11 @@
   * {
     box-sizing: border-box;
   }
-  
+
   html {
     scroll-behavior: smooth;
   }
-  
+
   body {
     margin: 0;
     font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
@@ -22,169 +22,22 @@
     color: var(--ink);
     overflow-x: hidden;
   }
-  
+
   /* Custom scrollbar */
   ::-webkit-scrollbar {
     width: 8px;
   }
-  
+
   ::-webkit-scrollbar-track {
     background: rgba(31, 41, 55, 0.5);
   }
-  
+
   ::-webkit-scrollbar-thumb {
     background: linear-gradient(135deg, #f57c00, #e65100);
     border-radius: 4px;
   }
-  
+
   ::-webkit-scrollbar-thumb:hover {
     background: linear-gradient(135deg, #e65100, #c44100);
-  }
-}
-
-@layer components {
-  /* Enhanced Button Components */
-  .btn-primary {
-    @apply bg-gradient-to-r from-cinema-500 to-cinema-600 hover:from-cinema-600 hover:to-cinema-700 
-           text-white font-semibold py-3 px-6 rounded-xl shadow-cinema hover:shadow-glow
-           transform hover:scale-105 transition-all duration-300 ease-out
-           border border-cinema-400/20 backdrop-blur-sm;
-  }
-  
-  .btn-secondary {
-    @apply bg-white/10 hover:bg-white/20 text-white font-medium py-3 px-6 rounded-xl
-           border border-white/20 hover:border-white/30 backdrop-blur-md
-           transition-all duration-300 hover:shadow-soft;
-  }
-  
-  .btn-ghost {
-    @apply bg-transparent hover:bg-white/5 text-white/80 hover:text-white 
-           font-medium py-2 px-4 rounded-lg transition-all duration-200
-           border border-transparent hover:border-white/10;
-  }
-  
-  /* Glass Card Components */
-  .card {
-    @apply bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 
-           shadow-glass hover:shadow-lift transition-all duration-300 p-6
-           hover:bg-white/10 hover:border-white/20;
-  }
-  
-  .card-cinema {
-    @apply bg-gradient-to-br from-cinema-500/10 to-cinema-600/5 backdrop-blur-md 
-           rounded-2xl border border-cinema-400/20 shadow-cinema p-6
-           hover:from-cinema-500/20 hover:to-cinema-600/10 hover:border-cinema-400/30
-           transition-all duration-500;
-  }
-
-  /* Dense insight-workspace panels share the cinema card language without
-     the hover lift of card-cinema. */
-  .panel-insight {
-    @apply rounded-2xl border border-cinema-400/20 bg-gradient-to-br
-           from-cinema-500/10 to-cinema-600/5;
-  }
-
-  /* Stable treatment for tall, non-interactive analysis panels. */
-  .analysis-panel {
-    @apply rounded-2xl border border-cinema-400/20 bg-gradient-to-br
-           from-cinema-500/10 to-cinema-600/5 p-6;
-  }
-  
-  .card-noir {
-    @apply bg-noir-800/50 backdrop-blur-md rounded-2xl border border-noir-700/50 
-           shadow-xl p-6 hover:bg-noir-800/70 hover:border-noir-600/50
-           transition-all duration-300;
-  }
-  
-  /* Input Components */
-  .input-field {
-    @apply bg-white/5 border border-white/20 rounded-xl px-4 py-3 text-white 
-           placeholder-white/50 backdrop-blur-sm focus:bg-white/10 
-           focus:border-cinema-400/50 focus:outline-none focus:ring-2 
-           focus:ring-cinema-500/20 transition-all duration-300 cursor-text;
-  }
-
-  /* Select Dropdown Styling */
-  select.input-field {
-    @apply cursor-pointer;
-  }
-
-  select.input-field option {
-    @apply bg-slate-800 text-white py-2 px-3;
-  }
-
-  /* Better button cursor */
-  .btn-primary,
-  .btn-secondary,
-  .btn-ghost {
-    @apply cursor-pointer;
-  }
-
-  /* Disabled button states */
-  .btn-primary:disabled,
-  .btn-secondary:disabled,
-  .btn-ghost:disabled {
-    @apply opacity-50 cursor-not-allowed;
-  }
-  
-  /* Navigation */
-  .nav-link {
-    @apply text-white/80 hover:text-white font-medium px-4 py-2 rounded-lg
-           hover:bg-white/10 transition-all duration-200 relative
-           after:absolute after:bottom-0 after:left-0 after:w-0 after:h-0.5 
-           after:bg-cinema-500 after:transition-all after:duration-300
-           hover:after:w-full;
-  }
-  
-  .nav-link.active {
-    @apply text-cinema-400 bg-cinema-500/10 after:w-full;
-  }
-  
-  /* Loading & Animation States */
-  .loading-shimmer {
-    @apply bg-gradient-to-r from-transparent via-white/10 to-transparent 
-           bg-[length:200%_100%] animate-shimmer;
-  }
-  
-  .pulse-glow {
-    @apply animate-glow;
-  }
-  
-  /* Stats & Metrics */
-  .stat-card {
-    @apply card-cinema relative overflow-hidden;
-  }
-  
-  .stat-card::before {
-    content: '';
-    @apply absolute inset-0 bg-gradient-to-r from-transparent via-cinema-400/10 to-transparent
-           translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000;
-  }
-  
-  /* Text Utilities */
-  .text-glow {
-    text-shadow: 0 0 20px rgba(229, 81, 0, 0.5);
-  }
-  
-  .text-cinema-gradient {
-    @apply bg-gradient-to-r from-cinema-400 to-cinema-600 bg-clip-text text-transparent;
-  }
-  
-  /* Layout Helpers */
-  .glass-panel {
-    @apply bg-white/5 backdrop-blur-lg border border-white/10 rounded-2xl;
-  }
-  
-  .cinema-border {
-    @apply border-2 border-transparent bg-gradient-to-r from-cinema-400 to-cinema-600 bg-clip-border;
-  }
-  
-  /* Responsive Grid */
-  .grid-auto-fit {
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  }
-  
-  .grid-auto-fill {
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   }
 }

@@ -1,14 +1,17 @@
 'use client';
 
-import React from 'react';
-import { useQuery } from '@tanstack/react-query';
+import React, { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { usePathname, useSearchParams } from 'next/navigation';
 
 import Panel from '../../components/terminal/Panel';
-import Bars from '../../components/terminal/bodies/Bars';
 import Notes from '../../components/terminal/bodies/Notes';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
-import { BarsSkeleton, panelState } from '../../components/terminal/states';
+import { PanelSkeleton, panelState } from '../../components/terminal/states';
+import { count } from '../../components/terminal/plural';
 import { useAdminScope } from '../../hooks/useAdminScope';
+import { useCurrentUser } from '../../hooks/useCurrentUser';
 import {
   adminProfileRequestApi,
   dataHealthApi,
@@ -40,6 +43,24 @@ const REQUEST_STATE: Record<ProfileRequestStatus, { label: string; tone: string;
   },
 };
 
+/**
+ * One sentence per identity state, keyed by what /api/me reports. The states
+ * and their facts are the old profile manager's, restated in this voice.
+ */
+const IDENTITY_COPY: Record<string, string> = {
+  tracked: 'Synced, and part of your monitored set.',
+  pending: 'Requested automatically. It is awaiting review before a residential full sync.',
+  approved: 'Approved, and queued for the next residential full sync.',
+  rejected: 'The request was not approved. If the username is right, ask the administrator.',
+  available: 'Already synced here — monitor it from the chooser below.',
+  unlinked: 'Linked to this login, but its profile has not been requested yet.',
+  unconfigured:
+    'No Letterboxd username is linked to this login. Ask the administrator to repair the identity.',
+};
+
+const CATALOG_RESULT_LIMIT = 100;
+const CATALOG_SEARCH_DELAY_MS = 250;
+
 function relative(iso: string | null | undefined): string {
   if (!iso) return 'never';
   const then = new Date(iso).getTime();
@@ -58,15 +79,152 @@ function duration(seconds: number | null): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error ?? 'unknown error');
+}
+
+/** The one button style on this tab: mono, bordered, honest about being busy. */
+function ActionButton({
+  label,
+  busyLabel = 'SAVING…',
+  busy = false,
+  disabled = false,
+  tone = 'var(--ink3)',
+  onClick,
+  ariaLabel,
+}: {
+  label: string;
+  busyLabel?: string;
+  busy?: boolean;
+  disabled?: boolean;
+  tone?: string;
+  onClick: () => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || busy}
+      aria-label={ariaLabel ?? label}
+      className="rounded-[3px] border border-term-rule bg-transparent px-[7px] py-[2px] text-t9 font-bold tracking-tab hover:border-term-accent hover:text-term-accent disabled:cursor-not-allowed disabled:opacity-40"
+      style={{ color: tone }}
+    >
+      {busy ? busyLabel : label}
+    </button>
+  );
+}
+
+/** Inline outcome line for a mutation: the panel's own toast replacement. */
+function OutcomeLine({ outcome }: { outcome: { ok: boolean; text: string } | null }) {
+  if (!outcome) return null;
+  return (
+    <p
+      className="m-0 border-t border-term-rule2 px-[10px] py-[6px] font-term-sans text-t10"
+      style={{ color: outcome.ok ? 'var(--ok)' : 'var(--bad)' }}
+      role="status"
+    >
+      {outcome.text}
+    </p>
+  );
+}
+
+const inputClass =
+  'w-full rounded-[3px] border border-term-rule bg-transparent px-[8px] py-[5px] font-term-sans text-t11 text-term-ink placeholder:text-term-dim focus:border-term-accent focus:outline-none';
+
+const LIBRARY_STATES = ['all', 'synced', 'pending', 'error'] as const;
+type LibraryState = (typeof LIBRARY_STATES)[number];
+
+function matchesLibraryState(status: string | undefined, state: LibraryState): boolean {
+  if (state === 'all') return true;
+  if (state === 'synced') return status === 'completed';
+  if (state === 'error') return status === 'error';
+  return status !== 'completed';
+}
+
 export default function ProfilesTab({ profiles }: { profiles: string[] }) {
   const { isAdmin, userReady } = useAdminScope();
+  const currentUserQuery = useCurrentUser();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const isOnboarding = searchParams.get('onboarding') === '1';
+  const autoFocusPlaceholder = searchParams.get('add') === 'true';
+  const rawLibraryState = searchParams.get('state');
+  const libraryState: LibraryState = (LIBRARY_STATES as readonly string[]).includes(
+    rawLibraryState ?? '',
+  )
+    ? (rawLibraryState as LibraryState)
+    : 'all';
+  const queryClient = useQueryClient();
   const enabled = profiles.length > 0;
+
+  const libraryStateHref = (state: LibraryState) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (state === 'all') params.delete('state');
+    else params.set('state', state);
+    const query = params.toString();
+    return query ? `${pathname}?${query}` : pathname;
+  };
+
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [debouncedCatalogSearch, setDebouncedCatalogSearch] = useState('');
+  const [requestedUsername, setRequestedUsername] = useState('');
+  const [requestOutcome, setRequestOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [catalogOutcome, setCatalogOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [suggestionOutcome, setSuggestionOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [queueOutcome, setQueueOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [placeholderOutcome, setPlaceholderOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [residentialOutcome, setResidentialOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [exportOutcome, setExportOutcome] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busyProfileId, setBusyProfileId] = useState<number | null>(null);
+  const [busyUsername, setBusyUsername] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [adminNotes, setAdminNotes] = useState<Record<number, string>>({});
+  const [placeholderUsername, setPlaceholderUsername] = useState('');
+  const [residentialFiles, setResidentialFiles] = useState<FileList | null>(null);
+  const [exportFiles, setExportFiles] = useState<FileList | null>(null);
+  const [hasOwnerConsent, setHasOwnerConsent] = useState(false);
+  const residentialInputRef = useRef<HTMLInputElement>(null);
+  const exportInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(
+      () => setDebouncedCatalogSearch(catalogSearch.trim()),
+      CATALOG_SEARCH_DELAY_MS,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [catalogSearch]);
 
   const freshnessQuery = useQuery({
     queryKey: ['data-freshness', profiles],
     queryFn: () => dataHealthApi.getFreshness(profiles),
     enabled,
     staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const catalogQuery = useQuery({
+    queryKey: ['profile-catalog', debouncedCatalogSearch],
+    queryFn: () => profileApi.getCatalog(debouncedCatalogSearch, CATALOG_RESULT_LIMIT),
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const libraryQuery = useQuery({
+    queryKey: ['profiles'],
+    queryFn: profileApi.getProfiles,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  // The caller's personal monitoring set, for both roles: for a non-admin the
+  // library above IS that set, but for an admin it is the whole managed
+  // library, and counting it would report the library's size as "monitored".
+  const trackedQuery = useQuery({
+    queryKey: ['profiles', 'tracked', 'profile-manager'],
+    queryFn: profileApi.getTrackedProfiles,
+    staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
 
@@ -82,6 +240,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
     queryFn: () => followGraphApi.getSuggestions({ limit: 10, minOverlap: 2 }),
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
+    retry: false,
   });
 
   const latencyQuery = useQuery({
@@ -100,12 +259,215 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
     refetchOnWindowFocus: false,
   });
 
+  const refreshProfileSurfaces = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+      queryClient.invalidateQueries({ queryKey: ['profile-catalog'] }),
+      queryClient.invalidateQueries({ queryKey: ['profile-requests'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin-profile-requests'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-freshness'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-latency'] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] }),
+      queryClient.invalidateQueries({ queryKey: ['recent-changes'] }),
+      queryClient.invalidateQueries({ queryKey: ['follow-suggestions'] }),
+      queryClient.invalidateQueries({ queryKey: ['follow-graph'] }),
+      queryClient.invalidateQueries({ queryKey: ['current-user'] }),
+    ]);
+
+  const requestMutation = useMutation({
+    mutationFn: profileApi.requestProfile,
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      setRequestedUsername('');
+      setRequestOutcome({
+        ok: true,
+        text:
+          result.status === 'tracked'
+            ? 'Already synced — added straight to your monitored set.'
+            : 'Requested. Its state appears in YOUR REQUEST STATUS below.',
+      });
+    },
+    onError: (error: Error) =>
+      setRequestOutcome({ ok: false, text: `The request failed: ${errorText(error)}` }),
+  });
+
+  const trackMutation = useMutation({
+    mutationFn: async (profileId: number) => {
+      setBusyProfileId(profileId);
+      return profileApi.trackExisting(profileId);
+    },
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      setCatalogOutcome({ ok: true, text: `@${result.profile.username} is now monitored.` });
+    },
+    onError: (error: Error) =>
+      setCatalogOutcome({ ok: false, text: `Monitoring failed: ${errorText(error)}` }),
+    onSettled: () => setBusyProfileId(null),
+  });
+
+  const untrackMutation = useMutation({
+    mutationFn: async (username: string) => {
+      setBusyUsername(username);
+      return profileApi.stopTracking(username);
+    },
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      setCatalogOutcome({
+        ok: true,
+        text: `@${result.username} is no longer monitored. Its imported history stays.`,
+      });
+    },
+    onError: (error: Error) =>
+      setCatalogOutcome({ ok: false, text: `Unmonitoring failed: ${errorText(error)}` }),
+    onSettled: () => setBusyUsername(null),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (username: string) => {
+      setBusyUsername(username);
+      return profileApi.deleteProfile(username);
+    },
+    onSuccess: (_result, username) => {
+      void refreshProfileSurfaces();
+      setCatalogOutcome({ ok: true, text: `@${username} was deleted from the library.` });
+    },
+    onError: (error: Error) =>
+      setCatalogOutcome({ ok: false, text: `Deletion failed: ${errorText(error)}` }),
+    onSettled: () => {
+      setBusyUsername(null);
+      setConfirmingDelete(null);
+    },
+  });
+
+  const reviewMutation = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: 'approved' | 'rejected' }) =>
+      adminProfileRequestApi.updateRequest(id, status, adminNotes[id]?.trim() || undefined),
+    onSuccess: (result) => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['admin-profile-requests'] }),
+        queryClient.invalidateQueries({ queryKey: ['profile-requests'] }),
+      ]);
+      setAdminNotes((notes) => {
+        const next = { ...notes };
+        delete next[result.request.id];
+        return next;
+      });
+      setQueueOutcome({
+        ok: true,
+        text:
+          result.request.status === 'rejected'
+            ? `@${result.request.requested_username} was rejected.`
+            : `@${result.request.requested_username} was accepted for the next residential sync.`,
+      });
+    },
+    onError: (error: Error) =>
+      setQueueOutcome({ ok: false, text: `The decision failed: ${errorText(error)}` }),
+  });
+
+  const placeholderMutation = useMutation({
+    mutationFn: profileApi.createProfile,
+    onSuccess: (_result, username) => {
+      void refreshProfileSurfaces();
+      setPlaceholderUsername('');
+      setPlaceholderOutcome({
+        ok: true,
+        text: `@${username} exists as a placeholder. A residential upload fills it.`,
+      });
+    },
+    onError: (error: Error) =>
+      setPlaceholderOutcome({ ok: false, text: `Placeholder failed: ${errorText(error)}` }),
+  });
+
+  const uploadSummary = (result: Awaited<ReturnType<typeof profileApi.uploadFiles>>) => {
+    const loaded = result.loaded_profiles.length;
+    const kinds = Array.from(new Set((result.imports ?? []).map((item) => item.source_kind)));
+    const provenance = kinds.length > 0 ? ` Provenance: ${kinds.join(', ')}.` : '';
+    const errors = result.errors?.length ? ` Errors: ${result.errors.join(' ')}` : '';
+    return { loaded, text: `${count(loaded, 'bundle')} imported.${provenance}${errors}` };
+  };
+
+  const residentialMutation = useMutation({
+    mutationFn: (files: FileList) =>
+      profileApi.uploadFiles(files, { publish_owner_data: false, require_full_sync: true }),
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      const summary = uploadSummary(result);
+      setResidentialOutcome({ ok: (result.errors?.length ?? 0) === 0, text: summary.text });
+      setResidentialFiles(null);
+      if (residentialInputRef.current) residentialInputRef.current.value = '';
+    },
+    onError: (error: Error) =>
+      setResidentialOutcome({ ok: false, text: `The upload failed: ${errorText(error)}` }),
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: (files: FileList) => profileApi.uploadFiles(files, { publish_owner_data: true }),
+    onSuccess: (result) => {
+      void refreshProfileSurfaces();
+      const summary = uploadSummary(result);
+      setExportOutcome({ ok: (result.errors?.length ?? 0) === 0, text: summary.text });
+      setExportFiles(null);
+      setHasOwnerConsent(false);
+      if (exportInputRef.current) exportInputRef.current.value = '';
+    },
+    onError: (error: Error) =>
+      setExportOutcome({ ok: false, text: `The import failed: ${errorText(error)}` }),
+  });
+
+  const me = currentUserQuery.data;
+  const primaryUsername = me?.letterboxd_username ?? null;
+  const primaryStatus = me?.primary_profile_status ?? 'unconfigured';
+  const isPrimaryUsername = (username: string) =>
+    primaryUsername !== null && username.toLowerCase() === primaryUsername.toLowerCase();
+
+  const catalogProfiles = catalogQuery.data?.profiles ?? [];
+  const catalogTotal = catalogQuery.data?.total ?? 0;
+  const catalogLimit = catalogQuery.data?.limit ?? CATALOG_RESULT_LIMIT;
+  const isSearchPending = catalogSearch.trim() !== debouncedCatalogSearch;
+  const normalizedRequest = requestedUsername.trim().replace(/^@/, '');
+  const libraryProfiles = libraryQuery.data ?? [];
+  const filteredLibrary = libraryProfiles.filter((profile) =>
+    matchesLibraryState(profile.scraping_status, libraryState),
+  );
+
   return (
     <>
+      <Panel
+        title="WHO THIS LOGIN IS"
+        src="app_users · /api/me"
+        blurb={
+          isOnboarding
+            ? 'Welcome. This is the Letterboxd identity attached to the account you just created, and the state it starts in.'
+            : undefined
+        }
+        caveat="Your monitoring choices are private to this login. They decide what the rest of the product shows you, and nothing else sees them."
+      >
+        {panelState({
+          isLoading: currentUserQuery.isLoading,
+          error: currentUserQuery.error,
+          isEmpty: false,
+          severity: 'degraded',
+          onRetry: () => currentUserQuery.refetch(),
+          errorTitle: 'Your identity could not be loaded',
+          errorBody: 'Every other panel on this tab still works.',
+          skeleton: <PanelSkeleton rows={2} />,
+        }) ?? (
+          <div className="px-[10px] py-[10px]" data-testid="primary-profile-status">
+            <p className="m-0 terminal-num text-t14 font-bold text-term-ink">
+              {primaryUsername ? `@${primaryUsername}` : 'no username linked'}
+            </p>
+            <p className="m-0 mt-[5px] max-w-[42rem] font-term-sans text-t105 text-term-ink3">
+              {IDENTITY_COPY[primaryStatus] ?? IDENTITY_COPY.unconfigured}
+            </p>
+          </div>
+        )}
+      </Panel>
+
       <Panel
         title="EVERYONE WE HAVE SYNCED"
         src="profiles · profile_syncs"
         wide
+        blurb="Each row links to People › The circle, centred on that profile — the follow lists and the graph live there."
         caveat={freshnessQuery.data?.caveat}
       >
         {panelState({
@@ -132,6 +494,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
             head={['PROFILE', ['WATCHES', 'right'], ['LAST READ', 'right'], 'THEY REPORT']}
             rows={(freshnessQuery.data?.profiles ?? []).map((entry) => {
               return {
+                href: `/people?tab=circle&subject=${encodeURIComponent(entry.username)}`,
                 cells: [
                   cell(`@${entry.username}`),
                   cell(entry.watch_events.toLocaleString(), {
@@ -170,32 +533,292 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
       </Panel>
 
       <Panel
+        title="THE LIBRARY'S STATE"
+        src="profiles · scraping_status · data_coverage"
+        wide
+        blurb="Every profile this instance manages, with what its last read achieved. The roster above is freshness; this is depth."
+      >
+        <div className="flex items-center gap-[6px] border-b border-term-rule2 px-[10px] py-[5px]">
+          {LIBRARY_STATES.map((state) => (
+            <Link
+              key={state}
+              href={libraryStateHref(state)}
+              aria-current={libraryState === state ? 'true' : undefined}
+              className={`rounded-[3px] border px-[7px] py-[2px] text-t9 font-bold uppercase tracking-tab no-underline hover:no-underline ${
+                libraryState === state
+                  ? 'border-term-accent text-term-accent'
+                  : 'border-term-rule text-term-ink3 hover:border-term-accent hover:text-term-accent'
+              }`}
+            >
+              {state === 'pending' ? 'awaiting sync' : state}
+            </Link>
+          ))}
+          <span className="ml-auto font-term-sans text-t10 text-term-dim">
+            {libraryQuery.data
+              ? `${filteredLibrary.length.toLocaleString()} of ${count(libraryProfiles.length, isAdmin ? 'managed profile' : 'tracked profile')}`
+              : ''}
+          </span>
+        </div>
+        {panelState({
+          isLoading: libraryQuery.isLoading,
+          error: libraryQuery.error,
+          isEmpty: filteredLibrary.length === 0,
+          severity: 'degraded',
+          onRetry: () => libraryQuery.refetch(),
+          errorTitle: 'The library could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty:
+            libraryProfiles.length > 0
+              ? {
+                  title: `Nothing in the "${libraryState === 'pending' ? 'awaiting sync' : libraryState}" state`,
+                  body: `All ${count(libraryProfiles.length, 'profile')} sit in other states — the filter hid them, it did not lose them.`,
+                }
+              : {
+                  title: isAdmin ? 'No managed profiles yet' : 'No tracked profiles yet',
+                  body: isAdmin
+                    ? 'Add a placeholder below, or let a residential upload create profiles during import.'
+                    : 'Use ASK FOR SOMEONE NEW below to start building the set your product reads.',
+                },
+        }) ?? (
+          <Rows
+            columns="minmax(0,1.1fr) 58px 58px 48px 62px 78px 92px minmax(0,1.4fr)"
+            head={[
+              'PROFILE',
+              ['FILMS', 'right'],
+              ['RATED', 'right'],
+              ['AVG', 'right'],
+              ['REVIEWS', 'right'],
+              ['SYNCED', 'right'],
+              ['STATE', 'right'],
+              'COVERAGE',
+            ]}
+            rows={filteredLibrary.map((profile) => ({
+              cells: [
+                cell(`@${profile.username}`, { tone: 'var(--ink)' }),
+                cell(profile.total_films?.toLocaleString() ?? '—', { align: 'right' }),
+                cell(profile.rated_films?.toLocaleString() ?? '—', { align: 'right' }),
+                // A profile with no ratings has no average, not an average of
+                // zero.
+                cell(profile.rated_films ? profile.avg_rating.toFixed(1) : '—', {
+                  align: 'right',
+                  tone: profile.rated_films ? 'var(--accent)' : 'var(--dim)',
+                }),
+                cell(profile.total_reviews?.toLocaleString() ?? '—', { align: 'right' }),
+                cell(
+                  profile.last_scraped_at
+                    ? new Date(profile.last_scraped_at).toLocaleDateString()
+                    : 'no date',
+                  {
+                    align: 'right',
+                    size: '10px',
+                    tone: profile.last_scraped_at ? 'var(--muted)' : 'var(--dim)',
+                  },
+                ),
+                cell(
+                  profile.scraping_status === 'completed'
+                    ? 'full sync'
+                    : profile.scraping_status === 'error'
+                      ? 'error'
+                      : 'awaiting sync',
+                  {
+                    align: 'right',
+                    size: '10px',
+                    tone:
+                      profile.scraping_status === 'completed'
+                        ? 'var(--ok)'
+                        : profile.scraping_status === 'error'
+                          ? 'var(--bad)'
+                          : 'var(--accent)',
+                  },
+                ),
+                cell(
+                  profile.data_coverage?.summary ||
+                    'Run the local full sync workflow to populate this profile.',
+                  { font: 's', size: '10px', tone: 'var(--dim)', wrap: true },
+                ),
+              ],
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="CHOOSE WHO YOU MONITOR"
+        src="profiles/catalog · user_tracked_profiles"
+        wide
+        stats={
+          trackedQuery.data
+            ? [{ big: trackedQuery.data.length, unit: 'MONITORED', tone: 'var(--accent)' }]
+            : undefined
+        }
+        caveat="Stop monitoring somebody and their history stays. The store is append-only, so unmonitoring hides a profile from your product without deleting anything."
+      >
+        <div className="border-b border-term-rule2 px-[10px] py-[7px]">
+          <label className="block">
+            <span className="sr-only">Search available profiles</span>
+            <input
+              type="search"
+              value={catalogSearch}
+              onChange={(event) => setCatalogSearch(event.target.value)}
+              placeholder="Search available profiles…"
+              className={inputClass}
+            />
+          </label>
+        </div>
+        {panelState({
+          isLoading: catalogQuery.isLoading || isSearchPending || catalogQuery.isFetching,
+          error: catalogQuery.error,
+          isEmpty: catalogProfiles.length === 0,
+          severity: 'degraded',
+          onRetry: () => catalogQuery.refetch(),
+          errorTitle: 'Available profiles could not be loaded',
+          errorBody: 'You can still request a username by hand below.',
+          empty: {
+            title: debouncedCatalogSearch
+              ? 'No synced profiles match that search'
+              : 'No synced profiles are available yet',
+            body: debouncedCatalogSearch
+              ? 'The search runs over every synced profile, so a miss means the name is not here yet. Ask for it below.'
+              : 'Ask for a username below and it will be read on the next full refresh.',
+          },
+        }) ?? (
+          <>
+            <p
+              className="m-0 border-b border-term-rule2 px-[10px] py-[5px] font-term-sans text-t10 text-term-dim"
+              data-testid="profile-catalog-result-summary"
+            >
+              {catalogProfiles.length === catalogTotal
+                ? `${count(catalogTotal, `${debouncedCatalogSearch ? 'matching ' : ''}synced profile`)}`
+                : `Showing ${catalogProfiles.length.toLocaleString()} of ${catalogTotal.toLocaleString()} ${debouncedCatalogSearch ? 'matching ' : ''}synced profiles — results stop at ${catalogLimit.toLocaleString()} per search; refine the search to reach the rest.`}
+            </p>
+            <Rows
+              columns={
+                isAdmin
+                  ? 'minmax(0,1fr) 70px 110px 170px'
+                  : 'minmax(0,1fr) 70px 110px 110px'
+              }
+              head={['PROFILE', ['FILMS', 'right'], ['STATE', 'right'], ['ACTION', 'right']]}
+              rows={catalogProfiles.map((profile) => {
+                const busy =
+                  busyProfileId === profile.id || busyUsername === profile.username;
+                const primary = isPrimaryUsername(profile.username);
+                const confirming = confirmingDelete === profile.username;
+                return {
+                  cells: [
+                    cell(
+                      profile.display_name
+                        ? `@${profile.username} · ${profile.display_name}`
+                        : `@${profile.username}`,
+                      { tone: 'var(--ink)' },
+                    ),
+                    cell(profile.total_films.toLocaleString(), { align: 'right' }),
+                    cell(
+                      primary && profile.is_tracked
+                        ? 'your profile'
+                        : profile.is_tracked
+                          ? 'monitored'
+                          : 'not monitored',
+                      {
+                        align: 'right',
+                        size: '10px',
+                        tone:
+                          primary && profile.is_tracked
+                            ? 'var(--accent)'
+                            : profile.is_tracked
+                              ? 'var(--ok)'
+                              : 'var(--dim)',
+                      },
+                    ),
+                    cell(
+                      <span className="flex items-center justify-end gap-[5px]">
+                        {primary && profile.is_tracked ? (
+                          <span className="text-t9 text-term-dim">yours to keep</span>
+                        ) : (
+                          <ActionButton
+                            label={profile.is_tracked ? 'STOP' : 'MONITOR'}
+                            busy={busy && !confirming}
+                            onClick={() =>
+                              profile.is_tracked
+                                ? untrackMutation.mutate(profile.username)
+                                : trackMutation.mutate(profile.id)
+                            }
+                            ariaLabel={`${profile.is_tracked ? 'Stop monitoring' : 'Monitor'} ${profile.username}`}
+                          />
+                        )}
+                        {isAdmin ? (
+                          confirming ? (
+                            <>
+                              <ActionButton
+                                label="SURE?"
+                                busyLabel="DELETING…"
+                                busy={busy && deleteMutation.isPending}
+                                tone="var(--bad)"
+                                onClick={() => deleteMutation.mutate(profile.username)}
+                                ariaLabel={`Confirm deleting ${profile.username}`}
+                              />
+                              <ActionButton
+                                label="KEEP"
+                                onClick={() => setConfirmingDelete(null)}
+                                ariaLabel={`Keep ${profile.username}`}
+                              />
+                            </>
+                          ) : (
+                            <ActionButton
+                              label="DELETE"
+                              tone="var(--bad)"
+                              onClick={() => setConfirmingDelete(profile.username)}
+                              ariaLabel={`Delete profile ${profile.username}`}
+                            />
+                          )
+                        ) : null}
+                      </span>,
+                      { align: 'right' },
+                    ),
+                  ],
+                };
+              })}
+            />
+          </>
+        )}
+        <OutcomeLine outcome={catalogOutcome} />
+      </Panel>
+
+      <Panel
         title="ASK FOR SOMEONE NEW"
         src="profile_access_requests"
-        caveat="Stop watching somebody and their history stays. The store is append-only, so untracking hides a profile from the product without deleting anything."
+        blurb="A username Spyboxd does not hold yet. It goes to review, and once accepted it is read on the next residential full refresh."
+        caveat="A first import is a baseline: change-detection panels stay empty until the second refresh. An owner export unlocks likes, comments, pronouns and deleted history that public pages never show."
       >
-        <Notes
-          items={[
-            {
-              label: 'Paste a Letterboxd URL or handle',
-              text: (
-                <>
-                  Requests, tracking and the admin queue live on{' '}
-                  <a href="/profiles">the profile manager</a>. We check the account is public, queue
-                  a first read, and tell you which surfaces we expect to get.
-                </>
-              ),
-            },
-            {
-              label: 'A first import is a baseline',
-              text: 'Change-detection panels — gone quiet, changed their mind, unfollows — stay empty until the second refresh. This is stated up front rather than discovered.',
-            },
-            {
-              label: 'An export unlocks four more panels',
-              text: 'Likes, comments, pronouns and deleted history exist only in the owner’s official export. Public scraping never reaches them.',
-            },
-          ]}
-        />
+        <form
+          className="flex items-center gap-[7px] px-[10px] py-[9px]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (normalizedRequest) requestMutation.mutate(normalizedRequest);
+          }}
+        >
+          <label className="min-w-0 flex-1">
+            <span className="sr-only">Letterboxd username</span>
+            <input
+              type="text"
+              value={requestedUsername}
+              onChange={(event) => setRequestedUsername(event.target.value)}
+              placeholder="Letterboxd username"
+              autoComplete="off"
+              maxLength={16}
+              pattern="@?[A-Za-z0-9_]{2,15}"
+              title="Use 2–15 letters, numbers, or underscores."
+              className={inputClass}
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={!normalizedRequest || requestMutation.isPending}
+            className="shrink-0 rounded-[3px] border border-term-rule bg-transparent px-[9px] py-[5px] text-t95 font-bold tracking-tab text-term-ink3 hover:border-term-accent hover:text-term-accent disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {requestMutation.isPending ? 'SUBMITTING…' : 'ADD OR REQUEST'}
+          </button>
+        </form>
+        <OutcomeLine outcome={requestOutcome} />
       </Panel>
 
       <Panel
@@ -216,19 +839,88 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
             title: 'No social data synced yet',
             body: 'Suggestions appear once follow lists are imported for the monitored profiles.',
           },
-          skeleton: <BarsSkeleton rows={5} />,
         }) ?? (
-          <Bars
-            items={(suggestionsQuery.data?.suggestions ?? []).map((suggestion) => ({
-              name: `@${suggestion.username}`,
-              weight: suggestion.followed_by_count,
-              // Counted across every monitored profile, which is what the
-              // server measured. Dividing by the tab's current selection
-              // produced "10 of 6".
-              value: `${suggestion.followed_by_count} of ${suggestionsQuery.data?.monitored_profiles ?? '—'}`,
-              sub: suggestion.already_imported ? 'synced' : 'new',
-            }))}
-          />
+          <div data-testid="who-to-track-next">
+            <Rows
+              columns="minmax(0,1fr) minmax(0,1.2fr) 66px 96px"
+              head={[
+                'PROFILE',
+                'FOLLOWED BY',
+                ['FOLLOW', 'right'],
+                ['ACTION', 'right'],
+              ]}
+              rows={(suggestionsQuery.data?.suggestions ?? []).map((suggestion) => {
+                const canTrack =
+                  suggestion.already_imported && suggestion.profile_id !== null;
+                const busy =
+                  (canTrack && busyProfileId === suggestion.profile_id) ||
+                  busyUsername === suggestion.username;
+                const shown = suggestion.followed_by.slice(0, 3);
+                const hidden = suggestion.followed_by.length - shown.length;
+                return {
+                  cells: [
+                    cell(`@${suggestion.username}`, { tone: 'var(--ink)' }),
+                    cell(
+                      `${shown.map((name) => `@${name}`).join(' ')}${hidden > 0 ? ` +${hidden} more` : ''}`,
+                      { size: '10px', tone: 'var(--muted)' },
+                    ),
+                    cell(
+                      `${suggestion.followed_by_count} of ${suggestionsQuery.data?.monitored_profiles ?? '—'}`,
+                      { align: 'right', size: '10px' },
+                    ),
+                    cell(
+                      canTrack ? (
+                        <ActionButton
+                          label="MONITOR"
+                          busy={busy}
+                          onClick={() =>
+                            trackMutation.mutate(suggestion.profile_id as number, {
+                              onSuccess: () =>
+                                setSuggestionOutcome({
+                                  ok: true,
+                                  text: `@${suggestion.username} is now monitored.`,
+                                }),
+                              onError: (error: Error) =>
+                                setSuggestionOutcome({
+                                  ok: false,
+                                  text: `Monitoring failed: ${errorText(error)}`,
+                                }),
+                            })
+                          }
+                          ariaLabel={`Monitor ${suggestion.username}`}
+                        />
+                      ) : (
+                        <ActionButton
+                          label="REQUEST"
+                          busyLabel="REQUESTING…"
+                          busy={busyUsername === suggestion.username && requestMutation.isPending}
+                          onClick={() => {
+                            setBusyUsername(suggestion.username);
+                            requestMutation.mutate(suggestion.username, {
+                              onSuccess: () =>
+                                setSuggestionOutcome({
+                                  ok: true,
+                                  text: `@${suggestion.username} was requested. Its state appears in YOUR REQUEST STATUS.`,
+                                }),
+                              onError: (error: Error) =>
+                                setSuggestionOutcome({
+                                  ok: false,
+                                  text: `The request failed: ${errorText(error)}`,
+                                }),
+                              onSettled: () => setBusyUsername(null),
+                            });
+                          }}
+                          ariaLabel={`Request ${suggestion.username}`}
+                        />
+                      ),
+                      { align: 'right' },
+                    ),
+                  ],
+                };
+              })}
+            />
+            <OutcomeLine outcome={suggestionOutcome} />
+          </div>
         )}
       </Panel>
 
@@ -305,7 +997,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
         <Panel
           title="ADMIN · REQUEST QUEUE"
           src="profile_access_requests (admin scope)"
-          blurb="Visible only under the admin scope. Everything below is somebody else asking for a profile, in the order it will run."
+          blurb="Visible only under the admin scope. Everything below is somebody asking for a profile; a pending row takes an optional note and a decision."
           caveat="Approving a request queues a first read; it does not fetch anything on its own. The queue is worked through by the refresh schedule."
         >
           {panelState({
@@ -320,27 +1012,228 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
               body: 'Requests arrive here the moment any account asks for a username.',
             },
           }) ?? (
-            <Rows
-              columns="minmax(0,1fr) minmax(0,0.8fr) 82px"
-              head={['ACCOUNT', 'ASKED BY', ['STATE', 'right']]}
-              rows={(adminQueueQuery.data ?? []).map((request) => ({
-                cells: [
-                  cell(`@${request.requested_username}`, { tone: 'var(--ink)' }),
-                  cell(
-                    request.requester_letterboxd_username
-                      ? `@${request.requester_letterboxd_username}`
-                      : 'unknown',
-                    { size: '10px', tone: 'var(--muted)' },
-                  ),
-                  cell(REQUEST_STATE[request.status].label, {
-                    align: 'right',
-                    size: '10px',
-                    tone: REQUEST_STATE[request.status].tone,
-                  }),
-                ],
-              }))}
-            />
+            <div>
+              {(adminQueueQuery.data ?? []).map((request) => (
+                <div
+                  key={request.id}
+                  className="border-b border-term-rule2 px-[10px] py-[7px]"
+                >
+                  <div className="flex items-baseline justify-between gap-[9px]">
+                    <span className="terminal-num min-w-0 truncate text-t11 text-term-ink">
+                      @{request.requested_username}
+                    </span>
+                    {/* The Letterboxd name when we hold one. Falling back to
+                        the Clerk id is deliberate: a grandfathered account has
+                        no linked username, and showing nothing would hide who
+                        asked. */}
+                    <span className="terminal-num shrink-0 text-t10 text-term-muted">
+                      asked by{' '}
+                      {request.requester_letterboxd_username
+                        ? `@${request.requester_letterboxd_username}`
+                        : request.requester_user_id}
+                    </span>
+                    <span
+                      className="terminal-num shrink-0 text-t10"
+                      style={{ color: REQUEST_STATE[request.status].tone }}
+                    >
+                      {REQUEST_STATE[request.status].label}
+                    </span>
+                  </div>
+                  {request.status === 'pending' ? (
+                    <div className="mt-[6px] flex items-center gap-[6px]">
+                      <input
+                        value={adminNotes[request.id] ?? ''}
+                        onChange={(event) =>
+                          setAdminNotes((notes) => ({
+                            ...notes,
+                            [request.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Optional note"
+                        aria-label={`Note for ${request.requested_username}`}
+                        className={inputClass}
+                      />
+                      <ActionButton
+                        label="ACCEPT"
+                        busy={reviewMutation.isPending}
+                        tone="var(--ok)"
+                        onClick={() =>
+                          reviewMutation.mutate({ id: request.id, status: 'approved' })
+                        }
+                        ariaLabel={`Accept ${request.requested_username} for sync`}
+                      />
+                      <ActionButton
+                        label="REJECT"
+                        busy={reviewMutation.isPending}
+                        tone="var(--bad)"
+                        onClick={() =>
+                          reviewMutation.mutate({ id: request.id, status: 'rejected' })
+                        }
+                        ariaLabel={`Reject ${request.requested_username}`}
+                      />
+                    </div>
+                  ) : (
+                    <p className="m-0 mt-[4px] font-term-sans text-t10 text-term-dim">
+                      {request.note || 'No admin note.'} · {REQUEST_STATE[request.status].next}
+                    </p>
+                  )}
+                </div>
+              ))}
+              <OutcomeLine outcome={queueOutcome} />
+            </div>
           )}
+        </Panel>
+      ) : null}
+
+      {isAdmin ? (
+        <Panel
+          title="ADMIN · RESIDENTIAL SYNC INTAKE"
+          src="POST /upload/ · require_full_sync"
+          blurb="VPS scraping is disabled; full syncs come only from the local residential runner. Approve requests, run the batch script, and land the ZIP bundles here."
+          caveat="A successful upload fulfills matching approved profile requests. Owner-export publishing stays off on this path."
+        >
+          <Notes
+            items={[
+              {
+                label: 'The loop',
+                text: 'Approve pending requests · update sync-profiles.json on the residential machine · run scripts/batch_full_sync.py · upload the resulting ZIPs here if the runner did not.',
+              },
+            ]}
+          />
+          <div className="border-t border-term-rule2 px-[10px] py-[9px]" data-testid="residential-sync-upload">
+            <label className="block">
+              <span className="mb-[6px] block font-term-sans text-t10 font-semibold text-term-ink3">
+                Residential full-sync ZIP bundles
+              </span>
+              <input
+                ref={residentialInputRef}
+                type="file"
+                accept=".zip,application/zip"
+                multiple
+                aria-label="Residential full-sync ZIP bundles"
+                disabled={residentialMutation.isPending}
+                onChange={(event) => setResidentialFiles(event.target.files)}
+                className="block w-full font-term-sans text-t10 text-term-dim file:mr-3 file:cursor-pointer file:rounded-[3px] file:border file:border-term-rule file:bg-transparent file:px-[8px] file:py-[4px] file:text-t95 file:font-bold file:text-term-ink3 hover:file:border-term-accent hover:file:text-term-accent"
+              />
+            </label>
+            <div className="mt-[8px] flex items-center justify-between gap-[8px]">
+              <span className="font-term-sans text-t10 text-term-dim">
+                {residentialFiles?.length
+                  ? `${count(residentialFiles.length, 'ZIP')} selected`
+                  : 'Schema-v2 bundles produced from public Letterboxd HTML.'}
+              </span>
+              <ActionButton
+                label="IMPORT FULL SYNC"
+                busyLabel="UPLOADING…"
+                busy={residentialMutation.isPending}
+                disabled={!residentialFiles?.length}
+                tone="var(--accent)"
+                onClick={() => {
+                  if (residentialFiles?.length) residentialMutation.mutate(residentialFiles);
+                }}
+              />
+            </div>
+          </div>
+          <OutcomeLine outcome={residentialOutcome} />
+        </Panel>
+      ) : null}
+
+      {isAdmin ? (
+        <Panel
+          title="ADMIN · OWNER EXPORT INTAKE"
+          src="POST /upload/ · publish_owner_data"
+          blurb="A profile owner can opt in by sharing their official Letterboxd export ZIP. It adds export-only history, tags, private account data, and deleted records a public page cannot expose."
+          caveat="Export activity dates keep Letterboxd-export provenance and are never relabeled as confirmed viewing dates. The ZIP comes from letterboxd.com/user/exportdata/."
+        >
+          <div className="px-[10px] py-[9px]">
+            <label className="block">
+              <span className="mb-[6px] block font-term-sans text-t10 font-semibold text-term-ink3">
+                Official export ZIP
+              </span>
+              <input
+                ref={exportInputRef}
+                type="file"
+                accept=".zip,application/zip"
+                multiple
+                disabled={exportMutation.isPending}
+                onChange={(event) => {
+                  setExportFiles(event.target.files);
+                  setHasOwnerConsent(false);
+                }}
+                className="block w-full font-term-sans text-t10 text-term-dim file:mr-3 file:cursor-pointer file:rounded-[3px] file:border file:border-term-rule file:bg-transparent file:px-[8px] file:py-[4px] file:text-t95 file:font-bold file:text-term-ink3 hover:file:border-term-accent hover:file:text-term-accent"
+              />
+            </label>
+            <label className="mt-[8px] flex cursor-pointer items-start gap-[8px] border border-term-rule px-[8px] py-[6px] font-term-sans text-t10 leading-[15px] text-term-ink3">
+              <input
+                type="checkbox"
+                checked={hasOwnerConsent}
+                disabled={exportMutation.isPending}
+                onChange={(event) => setHasOwnerConsent(event.target.checked)}
+                className="mt-[2px] h-[12px] w-[12px] shrink-0 cursor-pointer accent-[var(--accent)] disabled:cursor-not-allowed"
+              />
+              <span>
+                I confirm that I have the account owner&apos;s permission and their consent to
+                publish all imported export contents — including private or deleted items — to
+                visitors of this site.
+              </span>
+            </label>
+            <div className="mt-[8px] flex items-center justify-between gap-[8px]">
+              <span className="font-term-sans text-t10 text-term-dim">
+                {exportFiles?.length
+                  ? `${count(exportFiles.length, 'ZIP')} selected`
+                  : 'Processed by the authenticated import endpoint.'}
+              </span>
+              <ActionButton
+                label="IMPORT OWNER EXPORT"
+                busyLabel="IMPORTING…"
+                busy={exportMutation.isPending}
+                disabled={!exportFiles?.length || !hasOwnerConsent}
+                tone="var(--accent)"
+                onClick={() => {
+                  if (exportFiles?.length && hasOwnerConsent) exportMutation.mutate(exportFiles);
+                }}
+              />
+            </div>
+          </div>
+          <OutcomeLine outcome={exportOutcome} />
+        </Panel>
+      ) : null}
+
+      {isAdmin ? (
+        <Panel
+          title="ADMIN · ADD A PLACEHOLDER"
+          src="POST /profiles/create"
+          blurb="Creates an empty profile row a residential upload can fill later. Uploads also create missing profiles on their own, so this exists for queueing a name ahead of its data."
+        >
+          <form
+            className="flex items-center gap-[7px] px-[10px] py-[9px]"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const username = placeholderUsername.trim();
+              if (username) placeholderMutation.mutate(username);
+            }}
+          >
+            <label className="min-w-0 flex-1">
+              <span className="sr-only">Letterboxd username</span>
+              <input
+                type="text"
+                value={placeholderUsername}
+                onChange={(event) => setPlaceholderUsername(event.target.value)}
+                placeholder="Letterboxd username"
+                autoComplete="off"
+                autoFocus={autoFocusPlaceholder}
+                className={inputClass}
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={!placeholderUsername.trim() || placeholderMutation.isPending}
+              className="shrink-0 rounded-[3px] border border-term-rule bg-transparent px-[9px] py-[5px] text-t95 font-bold tracking-tab text-term-ink3 hover:border-term-accent hover:text-term-accent disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {placeholderMutation.isPending ? 'ADDING…' : 'ADD PLACEHOLDER'}
+            </button>
+          </form>
+          <OutcomeLine outcome={placeholderOutcome} />
         </Panel>
       ) : null}
     </>

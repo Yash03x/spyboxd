@@ -236,7 +236,7 @@ export default function PublicDashboard() {
         />
         <div className="flex flex-wrap items-center gap-3 border-t border-term-rule2 px-[10px] py-[9px]">
           <Link
-            href={isSignedIn ? '/overview' : '/sign-in?redirect_url=%2Fprofiles'}
+            href={isSignedIn ? '/overview' : '/sign-in?redirect_url=%2Fdata%3Ftab%3Dprofiles'}
             className="rounded-[3px] border border-term-accent bg-term-accent px-3 py-[5px] text-t105 font-bold text-term-onaccent no-underline hover:no-underline"
           >
             {isSignedIn ? 'Choose monitored profiles' : 'Sign in for private tools'}
@@ -289,7 +289,7 @@ function PublicHeader({ isSignedIn }: { isSignedIn: boolean | undefined }) {
               Create account
             </Link>
             <Link
-              href="/sign-in?redirect_url=%2Fprofiles"
+              href="/sign-in?redirect_url=%2Fdata%3Ftab%3Dprofiles"
               className="rounded-[3px] border border-term-rule px-2 py-[3px] text-term-ink3 no-underline hover:border-term-accent hover:text-term-accent hover:no-underline"
             >
               Sign in to monitor profiles

@@ -30,14 +30,17 @@ test('a synced signup profile is identified and cannot be removed', async ({ pag
     primaryProfileStatus: 'tracked',
   });
 
+  // The retired manager path still routes to the new home, onboarding flag
+  // intact -- the sign-up force-redirect depends on it.
   await page.goto('/profiles?onboarding=1');
+  await expect(page).toHaveURL(/\/data\?tab=profiles&onboarding=1/);
 
   const identity = page.getByTestId('primary-profile-status');
   await expect(identity.getByText('@alpha', { exact: true })).toBeVisible();
-  await expect(identity.getByText(/synced and included/i)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Your Letterboxd profile alpha' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Remove alpha from My Profiles' })).toHaveCount(0);
-  await expect(page.getByTestId('tracked-profile-grid').getByText('Your profile', { exact: true })).toBeVisible();
+  await expect(identity.getByText(/part of your monitored set/i)).toBeVisible();
+  // The primary profile's catalog row is marked, and carries no stop button.
+  await expect(page.getByText('yours to keep', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop monitoring alpha' })).toHaveCount(0);
 });
 
 test('a missing signup profile explains its automatic sync request', async ({ page }) => {
@@ -51,8 +54,10 @@ test('a missing signup profile explains its automatic sync request', async ({ pa
 
   const identity = page.getByTestId('primary-profile-status');
   await expect(identity.getByText('@new_viewer', { exact: true })).toBeVisible();
-  await expect(identity.getByText(/automatically requested this profile/i)).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Request another profile' })).toBeVisible();
+  await expect(identity.getByText(/requested automatically/i)).toBeVisible();
+  await expect(
+    page.locator('.terminal-root section', { hasText: 'ASK FOR SOMEONE NEW' }).first(),
+  ).toBeVisible();
 });
 
 test('a legacy account without a canonical username receives a repair message', async ({ page }) => {
@@ -64,6 +69,7 @@ test('a legacy account without a canonical username receives a repair message', 
 
   await page.goto('/profiles?onboarding=1');
 
-  await expect(page.getByRole('heading', { name: 'Letterboxd username not linked' })).toBeVisible();
-  await expect(page.getByText(/pre-existing account has no Letterboxd username linked/i)).toBeVisible();
+  const identity = page.getByTestId('primary-profile-status');
+  await expect(identity.getByText('no username linked', { exact: true })).toBeVisible();
+  await expect(identity.getByText(/ask the administrator to repair the identity/i)).toBeVisible();
 });

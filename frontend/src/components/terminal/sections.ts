@@ -25,9 +25,11 @@ export interface TabDef {
    * cannot be a rough estimate, and e2e/panel-counts.spec.ts holds every one
    * of these to the rendered count.
    *
-   * Data › Profiles is the one tab whose panel count is not fixed: an admin
-   * sees an extra request-queue panel. The number here is what every reader
-   * gets; the admin panel is labelled as an addition.
+   * Data › Profiles is the one tab whose panel count is not fixed: it absorbed
+   * the old profile manager, and an admin sees four extra panels (request
+   * queue, residential intake, owner-export intake, placeholder add). The
+   * number here is what every reader gets; the admin panels are labelled as
+   * additions.
    */
   panels: number;
 }
@@ -129,7 +131,7 @@ export const SECTIONS: SectionDef[] = [
     blurb:
       'Was My Profiles. Choosing who you follow sits next to the sync health that decides what you actually get, and next to the honest inventory of what we cannot read.',
     tabs: [
-      { id: 'profiles', label: 'PROFILES', panels: 5 },
+      { id: 'profiles', label: 'PROFILES', panels: 8 },
       { id: 'refreshes', label: 'REFRESHES', panels: 4 },
       { id: 'missing', label: "WHAT'S MISSING", panels: 4 },
       { id: 'lost', label: 'LOST & FOUND', panels: 3 },

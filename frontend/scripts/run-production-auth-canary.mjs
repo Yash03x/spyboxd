@@ -778,14 +778,16 @@ async function main() {
       if (!page || !token || !session || !tokenCapturedAtMilliseconds) {
         fail(`canary ${task.label} browser session was not established`);
       }
+      // The retired manager path: a signed-in visit must land on its new home
+      // in Data › Profiles, not on a sign-in page and not on a 404.
       await page.goto(`${taskContract.appOrigin}/profiles`, {
         waitUntil: 'domcontentloaded',
         timeout: 45_000,
       });
       await page.waitForURL(
         (url) => url.origin === taskContract.appOrigin
-          && url.pathname === '/profiles'
-          && !url.search
+          && url.pathname === '/data'
+          && url.searchParams.get('tab') === 'profiles'
           && !url.hash,
         { timeout: 45_000 },
       );
