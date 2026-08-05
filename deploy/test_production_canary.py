@@ -121,7 +121,9 @@ def _good_responses():
                 },
             }
         ),
-        f"{web}/": _html_response("Spyboxd Letterboxd"),
+        f"{web}/": _html_response(
+            f'Spyboxd Letterboxd <body data-build-revision="{REVISION}">'
+        ),
         f"{web}/sign-in": _html_response("Spyboxd Clerk sign-in"),
     }
     for path in public_canary.PRIVATE_UI_PATHS:
@@ -1315,3 +1317,21 @@ class AbsentApiRouteControlTests(unittest.TestCase):
             covered = [p for p in public_canary.PRIVATE_API_PATHS if p.startswith(prefix)]
             self.assertTrue(covered, f"no {prefix} endpoint is checked by the canary")
         self.assertGreaterEqual(len(public_canary.PRIVATE_API_PATHS), 60)
+
+    def test_homepage_serving_a_different_build_revision_is_rejected(self):
+        """The web tier answering with last week's bundle is a failed deploy,
+        not a healthy one -- the frontend stamps its build revision into the
+        root layout and the canary holds it to the API's own revision."""
+
+        responses = _good_responses()
+        responses["https://spyboxd.com/"] = _html_response(
+            f'Spyboxd Letterboxd <body data-build-revision="{"b" * 40}">'
+        )
+        with self.assertRaises(public_canary.CanaryError) as caught:
+            public_canary.run_canary(
+                web_base="https://spyboxd.com",
+                api_base="https://api.spyboxd.com",
+                validator_path=DEPLOY_DIR / "check-runtime-health.py",
+                client=FakeClient(responses),
+            )
+        self.assertIn("public homepage", str(caught.exception))

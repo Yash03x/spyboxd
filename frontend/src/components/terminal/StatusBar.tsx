@@ -5,6 +5,7 @@ import React from 'react';
 import { SignOutButton, UserButton, useAuth } from '@clerk/nextjs';
 import { useQuery } from '@tanstack/react-query';
 import { LogOut } from 'lucide-react';
+import { BUILD_REVISION, SHORT_BUILD_REVISION } from '../../buildRevision';
 import { useCurrentUser } from '../../hooks/useCurrentUser';
 import { useScopedProfiles } from '../../hooks/useScopedProfiles';
 import { dashboardApi } from '../../services/api';
@@ -135,6 +136,17 @@ export default function StatusBar({ section, tab }: { section: SectionDef; tab: 
         )}
 
         <ThemeToggle />
+
+        {/* Which build is actually running -- the web half of the API's
+            /health revision. Hidden below lg: it is an operator's fact, not a
+            reader's, and phone width is spent on the reader. */}
+        <span
+          className="hidden text-t9 text-term-dim2 lg:inline"
+          title={`frontend build ${BUILD_REVISION}`}
+          data-testid="build-revision"
+        >
+          {SHORT_BUILD_REVISION}
+        </span>
       </div>
     </div>
   );
