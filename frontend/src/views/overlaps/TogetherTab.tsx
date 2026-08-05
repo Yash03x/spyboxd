@@ -10,6 +10,7 @@ import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
 import { MIN_RATED_OVERLAP, withRatedEvidence } from '../../components/terminal/pairEvidence';
+import { count } from '../../components/terminal/plural';
 import { spySignalsApi, type GroupSignalEvent, type GroupSignalPair } from '../../services/api';
 
 /** Was "gap days". The tier a co-watch falls into, said the way a person would. */
@@ -283,6 +284,118 @@ export default function TogetherTab({
                     ? pair.average_rating_gap.toFixed(2)
                     : '—',
               }))}
+          />
+        )}
+      </Panel>
+
+      {/* The three panels below were on v3's dashboard (GroupSignalsPanel) and
+          were silently dropped by the redesign handoff despite its "nothing is
+          dropped" promise. The endpoint has shipped all three lists the whole
+          time. */}
+      <Panel
+        title="EVERYONE'S SEEN IT"
+        src="group_signals.most_shared_titles"
+        blurb="The films that travel furthest across the selection — held by the most people, whatever they thought of them."
+        caveat="A film needs two holders to appear at all; the count is people, not watches, so a rewatcher counts once."
+      >
+        {panelState({
+          isLoading: signalsQuery.isLoading,
+          error: signalsQuery.error,
+          isEmpty: (signals?.most_shared_titles.length ?? 0) === 0,
+          onRetry: () => signalsQuery.refetch(),
+          errorTitle: 'Most shared titles could not be loaded',
+          errorBody: 'The overlap feed did not answer.',
+          empty: emptyState,
+          skeleton: <BarsSkeleton rows={6} />,
+        }) ?? (
+          <Bars
+            items={(signals?.most_shared_titles ?? []).slice(0, 8).map((movie) => ({
+              name: movie.year ? `${movie.title} (${movie.year})` : movie.title,
+              weight: movie.profile_count,
+              value: count(movie.profile_count, 'person', 'people'),
+              sub: movie.average_rating === null ? '—' : movie.average_rating.toFixed(1),
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="AGREED ON, AND LIKED"
+        src="group_signals.consensus_hits"
+        blurb="Shared watches with a strong average and little disagreement. The safest common ground the selection has."
+        caveat="Needs two or more ratings on the same film — an average of one opinion is not a consensus. Ranked by average, then by how tightly the stars cluster."
+      >
+        {panelState({
+          isLoading: signalsQuery.isLoading,
+          error: signalsQuery.error,
+          isEmpty: (signals?.consensus_hits.length ?? 0) === 0,
+          onRetry: () => signalsQuery.refetch(),
+          errorTitle: 'Consensus hits could not be loaded',
+          errorBody: 'The overlap feed did not answer.',
+          empty: emptyState,
+        }) ?? (
+          <Rows
+            columns="minmax(0,1.4fr) 52px 62px 58px"
+            head={['FILM', ['AVG', 'right'], ['RATERS', 'right'], ['SPREAD', 'right']]}
+            rows={(signals?.consensus_hits ?? []).slice(0, 8).map((movie) => ({
+              cells: [
+                cell(movie.year ? `${movie.title} (${movie.year})` : movie.title, {
+                  font: 's',
+                  size: '10.5px',
+                  wrap: true,
+                }),
+                cell(movie.average_rating === null ? '—' : movie.average_rating.toFixed(1), {
+                  align: 'right',
+                  tone: 'var(--ok)',
+                }),
+                cell(String(movie.rating_count), { align: 'right', size: '10px', tone: 'var(--muted)' }),
+                cell(movie.rating_stddev === null ? '—' : movie.rating_stddev.toFixed(2), {
+                  align: 'right',
+                  size: '10px',
+                  tone: 'var(--muted)',
+                }),
+              ],
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="SPLIT THE ROOM"
+        src="group_signals.divisive_titles"
+        blurb="Shared watches with the widest spread in stars — the whole selection against itself, not one pair. Head to head holds the pair version."
+        caveat="Spread is the standard deviation of the selection's own stars on the film, and it needs two or more raters to exist at all."
+      >
+        {panelState({
+          isLoading: signalsQuery.isLoading,
+          error: signalsQuery.error,
+          isEmpty: (signals?.divisive_titles.length ?? 0) === 0,
+          onRetry: () => signalsQuery.refetch(),
+          errorTitle: 'Divisive titles could not be loaded',
+          errorBody: 'The overlap feed did not answer.',
+          empty: emptyState,
+        }) ?? (
+          <Rows
+            columns="minmax(0,1.4fr) 52px 62px 58px"
+            head={['FILM', ['AVG', 'right'], ['RATERS', 'right'], ['SPREAD', 'right']]}
+            rows={(signals?.divisive_titles ?? []).slice(0, 8).map((movie) => ({
+              cells: [
+                cell(movie.year ? `${movie.title} (${movie.year})` : movie.title, {
+                  font: 's',
+                  size: '10.5px',
+                  wrap: true,
+                }),
+                cell(movie.average_rating === null ? '—' : movie.average_rating.toFixed(1), {
+                  align: 'right',
+                  tone: 'var(--ink2)',
+                }),
+                cell(String(movie.rating_count), { align: 'right', size: '10px', tone: 'var(--muted)' }),
+                cell(movie.rating_stddev === null ? '—' : movie.rating_stddev.toFixed(2), {
+                  align: 'right',
+                  tone: 'var(--bad)',
+                }),
+              ],
+            }))}
           />
         )}
       </Panel>

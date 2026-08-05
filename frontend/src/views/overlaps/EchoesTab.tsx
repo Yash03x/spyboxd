@@ -7,6 +7,7 @@ import Panel from '../../components/terminal/Panel';
 import { formatDay } from '../../components/terminal/dates';
 import Bars from '../../components/terminal/bodies/Bars';
 import Posters from '../../components/terminal/bodies/Posters';
+import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
 import {
@@ -78,6 +79,15 @@ export default function EchoesTab({ profiles, gapDays }: { profiles: string[]; g
     queryFn: () => firstWatchApi.getOrder(profiles),
     enabled: profiles.length >= 2,
     staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  // Same key TogetherTab uses, so this is a cache hit, not a second fetch.
+  const signalsQuery = useQuery({
+    queryKey: ['spy-signals', profiles, gapDays],
+    queryFn: () => spySignalsApi.getSignals(profiles, gapDays),
+    enabled: profiles.length >= 2,
+    staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
   });
 
@@ -212,6 +222,53 @@ export default function EchoesTab({ profiles, gapDays }: { profiles: string[]; g
               right: formatDay(entry.date),
               tone: 'var(--ok)',
               rightCaption: 'both first',
+            }))}
+          />
+        )}
+      </Panel>
+
+      {/* Restored from v3's dashboard (GroupSignalsPanel "Follow Paths"),
+          dropped by the redesign handoff without a stated reason. The endpoint
+          has shipped the list the whole time. */}
+      <Panel
+        title="WHO FOLLOWS WHOSE LEAD"
+        src="group_signals.follow_paths"
+        blurb="One person watches; the other watches the same film the next day, again and again. Directional, unlike everything else on this tab."
+        caveat="Counted per direction over next-day pairs only, and a path needs the earlier watch to be dated on both sides. A pattern is not a cause: they may share a feed, a household, or a release calendar."
+      >
+        {panelState({
+          isLoading: signalsQuery.isLoading,
+          error: signalsQuery.error,
+          isEmpty: (signalsQuery.data?.group_signals.follow_paths.length ?? 0) === 0,
+          onRetry: () => signalsQuery.refetch(),
+          errorTitle: 'Follow paths could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty:
+            profiles.length < 2
+              ? twoProfilesNeeded
+              : {
+                  title: 'No next-day pattern yet',
+                  body: 'Nobody in this selection has repeatedly watched a film the day after somebody else did.',
+                },
+        }) ?? (
+          <Rows
+            columns="minmax(0,1fr) 58px minmax(0,1.2fr)"
+            head={['WHO LEADS WHOM', ['TIMES', 'right'], 'FOR EXAMPLE']}
+            rows={(signalsQuery.data?.group_signals.follow_paths ?? []).slice(0, 8).map((path) => ({
+              cells: [
+                cell(`@${path.leader} → @${path.follower}`, { size: '10.5px' }),
+                cell(String(path.next_day_overlap_count), {
+                  align: 'right',
+                  tone: 'var(--accent)',
+                }),
+                cell(
+                  path.sample_titles
+                    .slice(0, 2)
+                    .map((entry) => entry.title)
+                    .join(', '),
+                  { font: 's', size: '10px', tone: 'var(--dim)', wrap: true },
+                ),
+              ],
             }))}
           />
         )}

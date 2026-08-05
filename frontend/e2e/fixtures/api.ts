@@ -219,7 +219,14 @@ const groupSignals = {
       alignment_score: 41,
     },
   ],
-  follow_paths: [],
+  follow_paths: [
+    {
+      leader: 'alpha',
+      follower: 'bravo',
+      next_day_overlap_count: 4,
+      sample_titles: [{ title: 'Shared Fixture Film', year: 2024 }],
+    },
+  ],
 };
 
 const publicDashboard = {
