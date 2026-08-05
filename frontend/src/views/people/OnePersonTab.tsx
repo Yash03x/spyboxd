@@ -1254,6 +1254,155 @@ export default function OnePersonTab({ subject }: { subject: string }) {
         )}
       </Panel>
 
+      {/* The four panels below were rendered by v3's Analysis page and were
+          silently dropped by the redesign handoff despite its own "nothing is
+          dropped" promise. The API has computed and shipped every field the
+          whole time; they were fetched on every load and thrown away. */}
+      <Panel
+        title="THE FACES THEY KEEP SEEING"
+        src="movie_enrichments.credits · cast"
+        blurb="Actors, counted across the library. The billing order is TMDB's; the counting is ours."
+        caveat={
+          stats
+            ? `Only the casts TMDB records: ${Math.round(stats.coverage.enrichment_ratio * 100)}% of their films carry credits, and the rest contribute nobody rather than an unknown actor.`
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty: (stats?.top_actors.length ?? 0) === 0,
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: 'Actors could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'No cast credits enriched yet',
+            body: 'TMDB enrichment has not reached enough of this library.',
+            cta: { label: 'SEE THE MATCH RATE', href: sectionHref('films', 'gaps') },
+          },
+          skeleton: <BarsSkeleton rows={8} />,
+        }) ?? (
+          <Bars
+            items={(stats?.top_actors ?? []).slice(0, 8).map((person) => ({
+              name: person.name,
+              weight: person.count,
+              value: count(person.count, 'film'),
+              // The average's real denominator is rated_count, not count — an
+              // actor seen nine times with one rated film has an average of
+              // one opinion, and below three it is noise rather than a lean.
+              sub:
+                person.average_rating === null || person.rated_count < 3
+                  ? '—'
+                  : person.average_rating.toFixed(1),
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="THE STUDIOS BEHIND IT"
+        src="movie_enrichments.raw_payload · production_companies"
+        blurb="Production companies, counted across the library. A studio habit is taste nobody chose on purpose."
+        caveat={
+          stats
+            ? `Only what TMDB records, over the ${Math.round(stats.coverage.enrichment_ratio * 100)}% of films with metadata. Co-productions count once per named company, so these overlap.`
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty: (stats?.top_studios.length ?? 0) === 0,
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: 'Studios could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'No studio credits enriched yet',
+            body: 'TMDB enrichment has not reached enough of this library.',
+            cta: { label: 'SEE THE MATCH RATE', href: sectionHref('films', 'gaps') },
+          },
+          skeleton: <BarsSkeleton rows={8} />,
+        }) ?? (
+          <Bars
+            items={(stats?.top_studios ?? []).slice(0, 8).map((studio) => ({
+              name: studio.name,
+              weight: studio.count,
+              value: count(studio.count, 'film'),
+              sub:
+                studio.average_rating === null || studio.rated_count < 3
+                  ? '—'
+                  : studio.average_rating.toFixed(1),
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="WHAT LANGUAGE THE FILMS SPEAK"
+        src="enrichments.original_language · spoken_languages"
+        blurb="Original language, not subtitles: an English-language film shot abroad counts as English here and as its country in the atlas."
+        caveat={
+          stats
+            ? `Capped by enrichment: ${Math.round(stats.coverage.enrichment_ratio * 100)}% of their films carry a language, and the rest are excluded rather than counted as silent.`
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty: (stats?.languages.length ?? 0) === 0,
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: 'Languages could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'No language metadata enriched yet',
+            body: 'TMDB enrichment has not reached enough of this library.',
+            cta: { label: 'SEE THE MATCH RATE', href: sectionHref('films', 'gaps') },
+          },
+          skeleton: <BarsSkeleton rows={6} />,
+        }) ?? (
+          <Bars
+            items={(stats?.languages ?? []).slice(0, 8).map((bucket) => ({
+              name: bucket.label,
+              weight: bucket.count,
+              value: count(bucket.count, 'film'),
+              sub:
+                bucket.average_rating === null || bucket.rated_count < 3
+                  ? '—'
+                  : bucket.average_rating.toFixed(1),
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="REVIEWS, YEAR BY YEAR"
+        src="reviews.published_date"
+        blurb="When the writing happened. A review habit that started, stopped, or never existed — the volume says which."
+        caveat="Counts only reviews carrying a publication date. A review without one exists but sits in no year, so these bars can undercount the total above."
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty: (stats?.reviews.reviews_by_year.length ?? 0) === 0,
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: 'Review years could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'No dated reviews',
+            body: 'Either they have written none, or none of what they wrote carries a publication date.',
+          },
+        }) ?? (
+          <Spark
+            items={(stats?.reviews.reviews_by_year ?? []).map((entry) => ({
+              label: String(entry.year).slice(2),
+              value: entry.count,
+              display: entry.count === 0 ? '—' : String(entry.count),
+            }))}
+          />
+        )}
+      </Panel>
+
       {/* Always rendered. This used to disappear entirely when the import
           reported no limitation, which made a clean import indistinguishable
           from the panel not existing — and left the tab holding one more panel
