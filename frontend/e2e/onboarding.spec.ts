@@ -38,9 +38,10 @@ test('a synced signup profile is identified and cannot be removed', async ({ pag
   const identity = page.getByTestId('primary-profile-status');
   await expect(identity.getByText('@alpha', { exact: true })).toBeVisible();
   await expect(identity.getByText(/part of your monitored set/i)).toBeVisible();
-  // The primary profile's catalog row is marked, and carries no stop button.
-  await expect(page.getByText('yours to keep', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Stop monitoring alpha' })).toHaveCount(0);
+  // The primary profile is marked in both the library and the catalog, and
+  // carries no stop button in either.
+  await expect(page.getByText('yours to keep', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /Stop monitoring alpha/ })).toHaveCount(0);
 });
 
 test('a missing signup profile explains its automatic sync request', async ({ page }) => {

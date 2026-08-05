@@ -29,7 +29,9 @@ function DataSection() {
 
   return (
     <TerminalShell section={section} tabId={tab.id} controls={controls}>
-      {tab.id === 'profiles' ? <ProfilesTab profiles={selection.selected} /> : null}
+      {tab.id === 'profiles' ? (
+        <ProfilesTab profiles={selection.selected} selectionLoading={selection.isLoading} />
+      ) : null}
       {tab.id === 'refreshes' ? <RefreshesTab profiles={selection.selected} /> : null}
       {tab.id === 'missing' ? <MissingTab profiles={selection.selected} /> : null}
       {tab.id === 'lost' ? <LostFoundTab profiles={selection.selected} /> : null}

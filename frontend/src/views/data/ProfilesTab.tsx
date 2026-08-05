@@ -2,7 +2,12 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { usePathname, useSearchParams } from 'next/navigation';
 
 import Panel from '../../components/terminal/Panel';
@@ -84,6 +89,11 @@ function errorText(error: unknown): string {
   return String(error ?? 'unknown error');
 }
 
+interface Outcome {
+  ok: boolean;
+  text: string;
+}
+
 /** The one button style on this tab: mono, bordered, honest about being busy. */
 function ActionButton({
   label,
@@ -93,6 +103,7 @@ function ActionButton({
   tone = 'var(--ink3)',
   onClick,
   ariaLabel,
+  ariaExpanded,
 }: {
   label: string;
   busyLabel?: string;
@@ -101,6 +112,7 @@ function ActionButton({
   tone?: string;
   onClick: () => void;
   ariaLabel?: string;
+  ariaExpanded?: boolean;
 }) {
   return (
     <button
@@ -108,6 +120,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled || busy}
       aria-label={ariaLabel ?? label}
+      aria-expanded={ariaExpanded}
       className="rounded-[3px] border border-term-rule bg-transparent px-[7px] py-[2px] text-t9 font-bold tracking-tab hover:border-term-accent hover:text-term-accent disabled:cursor-not-allowed disabled:opacity-40"
       style={{ color: tone }}
     >
@@ -116,16 +129,80 @@ function ActionButton({
   );
 }
 
-/** Inline outcome line for a mutation: the panel's own toast replacement. */
-function OutcomeLine({ outcome }: { outcome: { ok: boolean; text: string } | null }) {
-  if (!outcome) return null;
+/**
+ * Arm-and-confirm without a dialog. The arming control is the SAME element in
+ * both states, so keyboard focus survives the swap; only the escape hatch
+ * mounts and unmounts beside it.
+ */
+function ArmedAction({
+  label,
+  confirmLabel,
+  busyLabel,
+  ariaLabelIdle,
+  ariaLabelArmed,
+  armed,
+  busy,
+  tone = 'var(--bad)',
+  onArm,
+  onConfirm,
+  onDisarm,
+  subject,
+}: {
+  label: string;
+  confirmLabel: string;
+  busyLabel: string;
+  ariaLabelIdle: string;
+  ariaLabelArmed: string;
+  armed: boolean;
+  busy: boolean;
+  tone?: string;
+  onArm: () => void;
+  onConfirm: () => void;
+  onDisarm: () => void;
+  subject: string;
+}) {
+  return (
+    <>
+      <ActionButton
+        label={armed ? confirmLabel : label}
+        busyLabel={busyLabel}
+        busy={busy}
+        tone={tone}
+        onClick={armed ? onConfirm : onArm}
+        ariaLabel={armed ? ariaLabelArmed : ariaLabelIdle}
+        ariaExpanded={armed}
+      />
+      {armed ? (
+        <ActionButton
+          label="KEEP"
+          busy={false}
+          disabled={busy}
+          onClick={onDisarm}
+          ariaLabel={`Keep ${subject}`}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Inline outcome line for a mutation: the panel's own toast replacement. The
+ * live region is always mounted so screen readers announce content changes;
+ * it collapses visually while empty.
+ */
+function OutcomeLine({ outcome }: { outcome: Outcome | null }) {
   return (
     <p
-      className="m-0 border-t border-term-rule2 px-[10px] py-[6px] font-term-sans text-t10"
-      style={{ color: outcome.ok ? 'var(--ok)' : 'var(--bad)' }}
       role="status"
+      aria-live="polite"
+      className={
+        outcome
+          ? 'm-0 border-t border-term-rule2 px-[10px] py-[6px] font-term-sans text-t10'
+          : 'm-0 h-0 overflow-hidden'
+      }
+      style={outcome ? { color: outcome.ok ? 'var(--ok)' : 'var(--bad)' } : undefined}
     >
-      {outcome.text}
+      {outcome ? outcome.text : ''}
     </p>
   );
 }
@@ -140,16 +217,24 @@ function matchesLibraryState(status: string | undefined, state: LibraryState): b
   if (state === 'all') return true;
   if (state === 'synced') return status === 'completed';
   if (state === 'error') return status === 'error';
-  return status !== 'completed';
+  // "Awaiting sync" is everything not yet read AND not failed -- the three
+  // chips must partition the library, or a filtered count double-counts.
+  return status !== 'completed' && status !== 'error';
 }
 
-export default function ProfilesTab({ profiles }: { profiles: string[] }) {
+export default function ProfilesTab({
+  profiles,
+  selectionLoading = false,
+}: {
+  profiles: string[];
+  selectionLoading?: boolean;
+}) {
   const { isAdmin, userReady } = useAdminScope();
   const currentUserQuery = useCurrentUser();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const isOnboarding = searchParams.get('onboarding') === '1';
-  const autoFocusPlaceholder = searchParams.get('add') === 'true';
+  const wantsPlaceholderFocus = searchParams.get('add') === 'true';
   const rawLibraryState = searchParams.get('state');
   const libraryState: LibraryState = (LIBRARY_STATES as readonly string[]).includes(
     rawLibraryState ?? '',
@@ -169,17 +254,24 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
 
   const [catalogSearch, setCatalogSearch] = useState('');
   const [debouncedCatalogSearch, setDebouncedCatalogSearch] = useState('');
+  const [librarySearch, setLibrarySearch] = useState('');
   const [requestedUsername, setRequestedUsername] = useState('');
-  const [requestOutcome, setRequestOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-  const [catalogOutcome, setCatalogOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-  const [suggestionOutcome, setSuggestionOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-  const [queueOutcome, setQueueOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-  const [placeholderOutcome, setPlaceholderOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-  const [residentialOutcome, setResidentialOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-  const [exportOutcome, setExportOutcome] = useState<{ ok: boolean; text: string } | null>(null);
-  const [busyProfileId, setBusyProfileId] = useState<number | null>(null);
-  const [busyUsername, setBusyUsername] = useState<string | null>(null);
+  const [askBusy, setAskBusy] = useState(false);
+  const [requestOutcome, setRequestOutcome] = useState<Outcome | null>(null);
+  const [catalogOutcome, setCatalogOutcome] = useState<Outcome | null>(null);
+  const [libraryOutcome, setLibraryOutcome] = useState<Outcome | null>(null);
+  const [suggestionOutcome, setSuggestionOutcome] = useState<Outcome | null>(null);
+  const [queueOutcome, setQueueOutcome] = useState<Outcome | null>(null);
+  const [placeholderOutcome, setPlaceholderOutcome] = useState<Outcome | null>(null);
+  const [residentialOutcome, setResidentialOutcome] = useState<Outcome | null>(null);
+  const [exportOutcome, setExportOutcome] = useState<Outcome | null>(null);
+  // Sets, not scalars: two in-flight mutations must not clear each other's
+  // busy state when the first one settles.
+  const [busyProfileIds, setBusyProfileIds] = useState<ReadonlySet<number>>(new Set());
+  const [busyUsernames, setBusyUsernames] = useState<ReadonlySet<string>>(new Set());
+  const [busyRequestId, setBusyRequestId] = useState<number | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [confirmingUntrack, setConfirmingUntrack] = useState<string | null>(null);
   const [adminNotes, setAdminNotes] = useState<Record<number, string>>({});
   const [placeholderUsername, setPlaceholderUsername] = useState('');
   const [residentialFiles, setResidentialFiles] = useState<FileList | null>(null);
@@ -187,6 +279,24 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
   const [hasOwnerConsent, setHasOwnerConsent] = useState(false);
   const residentialInputRef = useRef<HTMLInputElement>(null);
   const exportInputRef = useRef<HTMLInputElement>(null);
+  const placeholderInputRef = useRef<HTMLInputElement>(null);
+
+  const addBusyProfile = (id: number) =>
+    setBusyProfileIds((prev) => new Set(prev).add(id));
+  const removeBusyProfile = (id: number) =>
+    setBusyProfileIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  const addBusyUsername = (username: string) =>
+    setBusyUsernames((prev) => new Set(prev).add(username));
+  const removeBusyUsername = (username: string) =>
+    setBusyUsernames((prev) => {
+      const next = new Set(prev);
+      next.delete(username);
+      return next;
+    });
 
   useEffect(() => {
     const timeout = window.setTimeout(
@@ -195,6 +305,15 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
     );
     return () => window.clearTimeout(timeout);
   }, [catalogSearch]);
+
+  // ?add=true deep-links the admin straight into the placeholder form. The
+  // panel mounts late (after /api/me resolves), so this must not yank focus
+  // away from anything the reader has since started using.
+  useEffect(() => {
+    if (!wantsPlaceholderFocus || !isAdmin) return;
+    const input = placeholderInputRef.current;
+    if (input && document.activeElement === document.body) input.focus();
+  }, [wantsPlaceholderFocus, isAdmin]);
 
   const freshnessQuery = useQuery({
     queryKey: ['data-freshness', profiles],
@@ -209,6 +328,10 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
     queryFn: () => profileApi.getCatalog(debouncedCatalogSearch, CATALOG_RESULT_LIMIT),
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
+    // A refetch (new search term, or an invalidation after a mutation) keeps
+    // the current rows on screen rather than unmounting the list to a
+    // skeleton under the reader's cursor.
+    placeholderData: keepPreviousData,
   });
 
   const libraryQuery = useQuery({
@@ -222,7 +345,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
   // library above IS that set, but for an admin it is the whole managed
   // library, and counting it would report the library's size as "monitored".
   const trackedQuery = useQuery({
-    queryKey: ['profiles', 'tracked', 'profile-manager'],
+    queryKey: ['profiles', 'tracked', 'data-profiles'],
     queryFn: profileApi.getTrackedProfiles,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
@@ -237,7 +360,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
 
   const suggestionsQuery = useQuery({
     queryKey: ['follow-suggestions', 'data'],
-    queryFn: () => followGraphApi.getSuggestions({ limit: 10, minOverlap: 2 }),
+    queryFn: () => followGraphApi.getSuggestions({ limit: 20, minOverlap: 2 }),
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
     retry: false,
@@ -274,74 +397,49 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
       queryClient.invalidateQueries({ queryKey: ['current-user'] }),
     ]);
 
+  // Mutation configs hold only what is true for EVERY caller (the surface
+  // refresh and busy bookkeeping). Outcome lines and input clearing belong to
+  // the panel that initiated the call, and live in per-call callbacks --
+  // config-level versions fired for other panels' calls too, wiping the ask
+  // form mid-typing and writing outcome lines under the wrong panel.
   const requestMutation = useMutation({
-    mutationFn: profileApi.requestProfile,
-    onSuccess: (result) => {
-      void refreshProfileSurfaces();
-      setRequestedUsername('');
-      setRequestOutcome({
-        ok: true,
-        text:
-          result.status === 'tracked'
-            ? 'Already synced — added straight to your monitored set.'
-            : 'Requested. Its state appears in YOUR REQUEST STATUS below.',
-      });
-    },
-    onError: (error: Error) =>
-      setRequestOutcome({ ok: false, text: `The request failed: ${errorText(error)}` }),
+    mutationFn: (username: string) => profileApi.requestProfile(username),
+    onSuccess: () => void refreshProfileSurfaces(),
+    onMutate: (username) => addBusyUsername(username),
+    onSettled: (_data, _error, username) => removeBusyUsername(username),
   });
 
   const trackMutation = useMutation({
-    mutationFn: async (profileId: number) => {
-      setBusyProfileId(profileId);
-      return profileApi.trackExisting(profileId);
-    },
-    onSuccess: (result) => {
-      void refreshProfileSurfaces();
-      setCatalogOutcome({ ok: true, text: `@${result.profile.username} is now monitored.` });
-    },
-    onError: (error: Error) =>
-      setCatalogOutcome({ ok: false, text: `Monitoring failed: ${errorText(error)}` }),
-    onSettled: () => setBusyProfileId(null),
+    mutationFn: (profileId: number) => profileApi.trackExisting(profileId),
+    onSuccess: () => void refreshProfileSurfaces(),
+    onMutate: (profileId) => addBusyProfile(profileId),
+    onSettled: (_data, _error, profileId) => removeBusyProfile(profileId),
   });
 
   const untrackMutation = useMutation({
-    mutationFn: async (username: string) => {
-      setBusyUsername(username);
-      return profileApi.stopTracking(username);
+    mutationFn: (username: string) => profileApi.stopTracking(username),
+    onSuccess: () => void refreshProfileSurfaces(),
+    onMutate: (username) => addBusyUsername(username),
+    onSettled: (_data, _error, username) => {
+      removeBusyUsername(username);
+      setConfirmingUntrack((current) => (current === username ? null : current));
     },
-    onSuccess: (result) => {
-      void refreshProfileSurfaces();
-      setCatalogOutcome({
-        ok: true,
-        text: `@${result.username} is no longer monitored. Its imported history stays.`,
-      });
-    },
-    onError: (error: Error) =>
-      setCatalogOutcome({ ok: false, text: `Unmonitoring failed: ${errorText(error)}` }),
-    onSettled: () => setBusyUsername(null),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (username: string) => {
-      setBusyUsername(username);
-      return profileApi.deleteProfile(username);
-    },
-    onSuccess: (_result, username) => {
-      void refreshProfileSurfaces();
-      setCatalogOutcome({ ok: true, text: `@${username} was deleted from the library.` });
-    },
-    onError: (error: Error) =>
-      setCatalogOutcome({ ok: false, text: `Deletion failed: ${errorText(error)}` }),
-    onSettled: () => {
-      setBusyUsername(null);
-      setConfirmingDelete(null);
+    mutationFn: (username: string) => profileApi.deleteProfile(username),
+    onSuccess: () => void refreshProfileSurfaces(),
+    onMutate: (username) => addBusyUsername(username),
+    onSettled: (_data, _error, username) => {
+      removeBusyUsername(username);
+      setConfirmingDelete((current) => (current === username ? null : current));
     },
   });
 
   const reviewMutation = useMutation({
     mutationFn: ({ id, status }: { id: number; status: 'approved' | 'rejected' }) =>
       adminProfileRequestApi.updateRequest(id, status, adminNotes[id]?.trim() || undefined),
+    onMutate: ({ id }) => setBusyRequestId(id),
     onSuccess: (result) => {
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin-profile-requests'] }),
@@ -362,6 +460,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
     },
     onError: (error: Error) =>
       setQueueOutcome({ ok: false, text: `The decision failed: ${errorText(error)}` }),
+    onSettled: () => setBusyRequestId(null),
   });
 
   const placeholderMutation = useMutation({
@@ -414,6 +513,50 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
       setExportOutcome({ ok: false, text: `The import failed: ${errorText(error)}` }),
   });
 
+  const submitRequest = (username: string, setOutcome: (outcome: Outcome) => void) =>
+    requestMutation.mutate(username, {
+      onSuccess: (result) =>
+        setOutcome({
+          ok: true,
+          text:
+            result.status === 'tracked'
+              ? `@${username} was already synced — added straight to your monitored set.`
+              : `@${username} was requested. Its state appears in YOUR REQUEST STATUS.`,
+        }),
+      onError: (error: Error) =>
+        setOutcome({ ok: false, text: `The request failed: ${errorText(error)}` }),
+    });
+
+  const submitTrack = (
+    profileId: number,
+    username: string,
+    setOutcome: (outcome: Outcome) => void,
+  ) =>
+    trackMutation.mutate(profileId, {
+      onSuccess: () => setOutcome({ ok: true, text: `@${username} is now monitored.` }),
+      onError: (error: Error) =>
+        setOutcome({ ok: false, text: `Monitoring failed: ${errorText(error)}` }),
+    });
+
+  const submitUntrack = (username: string, setOutcome: (outcome: Outcome) => void) =>
+    untrackMutation.mutate(username, {
+      onSuccess: () =>
+        setOutcome({
+          ok: true,
+          text: `@${username} is no longer monitored. Its imported history stays.`,
+        }),
+      onError: (error: Error) =>
+        setOutcome({ ok: false, text: `Unmonitoring failed: ${errorText(error)}` }),
+    });
+
+  const submitDelete = (username: string, setOutcome: (outcome: Outcome) => void) =>
+    deleteMutation.mutate(username, {
+      onSuccess: () =>
+        setOutcome({ ok: true, text: `@${username} was deleted from the library.` }),
+      onError: (error: Error) =>
+        setOutcome({ ok: false, text: `Deletion failed: ${errorText(error)}` }),
+    });
+
   const me = currentUserQuery.data;
   const primaryUsername = me?.letterboxd_username ?? null;
   const primaryStatus = me?.primary_profile_status ?? 'unconfigured';
@@ -423,11 +566,16 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
   const catalogProfiles = catalogQuery.data?.profiles ?? [];
   const catalogTotal = catalogQuery.data?.total ?? 0;
   const catalogLimit = catalogQuery.data?.limit ?? CATALOG_RESULT_LIMIT;
-  const isSearchPending = catalogSearch.trim() !== debouncedCatalogSearch;
+  const isSearchPending =
+    catalogSearch.trim() !== debouncedCatalogSearch || catalogQuery.isFetching;
   const normalizedRequest = requestedUsername.trim().replace(/^@/, '');
   const libraryProfiles = libraryQuery.data ?? [];
-  const filteredLibrary = libraryProfiles.filter((profile) =>
-    matchesLibraryState(profile.scraping_status, libraryState),
+  const normalizedLibrarySearch = librarySearch.trim().toLowerCase();
+  const filteredLibrary = libraryProfiles.filter(
+    (profile) =>
+      matchesLibraryState(profile.scraping_status, libraryState) &&
+      (normalizedLibrarySearch === '' ||
+        profile.username.toLowerCase().includes(normalizedLibrarySearch)),
   );
 
   return (
@@ -471,7 +619,10 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
         caveat={freshnessQuery.data?.caveat}
       >
         {panelState({
-          isLoading: freshnessQuery.isLoading,
+          // A disabled query reports "not loading", but an unresolved
+          // selection is not an empty roster -- claiming "nobody synced" while
+          // the profile list is still on the wire would be a false statement.
+          isLoading: freshnessQuery.isLoading || (selectionLoading && !enabled),
           error: freshnessQuery.error,
           isEmpty: (freshnessQuery.data?.profiles.length ?? 0) === 0,
           severity: 'fatal',
@@ -538,7 +689,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
         wide
         blurb="Every profile this instance manages, with what its last read achieved. The roster above is freshness; this is depth."
       >
-        <div className="flex items-center gap-[6px] border-b border-term-rule2 px-[10px] py-[5px]">
+        <div className="flex flex-wrap items-center gap-[6px] border-b border-term-rule2 px-[10px] py-[5px]">
           {LIBRARY_STATES.map((state) => (
             <Link
               key={state}
@@ -553,6 +704,16 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
               {state === 'pending' ? 'awaiting sync' : state}
             </Link>
           ))}
+          <label className="min-w-[140px] flex-1">
+            <span className="sr-only">Search the library</span>
+            <input
+              type="search"
+              value={librarySearch}
+              onChange={(event) => setLibrarySearch(event.target.value)}
+              placeholder="Search the library…"
+              className={inputClass}
+            />
+          </label>
           <span className="ml-auto font-term-sans text-t10 text-term-dim">
             {libraryQuery.data
               ? `${filteredLibrary.length.toLocaleString()} of ${count(libraryProfiles.length, isAdmin ? 'managed profile' : 'tracked profile')}`
@@ -570,8 +731,10 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
           empty:
             libraryProfiles.length > 0
               ? {
-                  title: `Nothing in the "${libraryState === 'pending' ? 'awaiting sync' : libraryState}" state`,
-                  body: `All ${count(libraryProfiles.length, 'profile')} sit in other states — the filter hid them, it did not lose them.`,
+                  title: normalizedLibrarySearch
+                    ? 'No library profile matches that search'
+                    : `Nothing in the "${libraryState === 'pending' ? 'awaiting sync' : libraryState}" state`,
+                  body: `All ${count(libraryProfiles.length, 'profile')} sit outside this view — the filter hid them, it did not lose them.`,
                 }
               : {
                   title: isAdmin ? 'No managed profiles yet' : 'No tracked profiles yet',
@@ -580,8 +743,13 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                     : 'Use ASK FOR SOMEONE NEW below to start building the set your product reads.',
                 },
         }) ?? (
+          // Nine columns cannot compress into a phone viewport; the table
+          // keeps its geometry and scrolls sideways instead of overflowing
+          // into the neighbouring panels.
+          <div className="overflow-x-auto">
+            <div className="min-w-[880px]">
           <Rows
-            columns="minmax(0,1.1fr) 58px 58px 48px 62px 78px 92px minmax(0,1.4fr)"
+            columns="minmax(0,1.1fr) 58px 58px 48px 62px 78px 92px minmax(0,1.2fr) 118px"
             head={[
               'PROFILE',
               ['FILMS', 'right'],
@@ -591,55 +759,104 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
               ['SYNCED', 'right'],
               ['STATE', 'right'],
               'COVERAGE',
+              ['ACTION', 'right'],
             ]}
-            rows={filteredLibrary.map((profile) => ({
-              cells: [
-                cell(`@${profile.username}`, { tone: 'var(--ink)' }),
-                cell(profile.total_films?.toLocaleString() ?? '—', { align: 'right' }),
-                cell(profile.rated_films?.toLocaleString() ?? '—', { align: 'right' }),
-                // A profile with no ratings has no average, not an average of
-                // zero.
-                cell(profile.rated_films ? profile.avg_rating.toFixed(1) : '—', {
-                  align: 'right',
-                  tone: profile.rated_films ? 'var(--accent)' : 'var(--dim)',
-                }),
-                cell(profile.total_reviews?.toLocaleString() ?? '—', { align: 'right' }),
-                cell(
-                  profile.last_scraped_at
-                    ? new Date(profile.last_scraped_at).toLocaleDateString()
-                    : 'no date',
-                  {
+            rows={filteredLibrary.map((profile) => {
+              const busy = busyUsernames.has(profile.username);
+              const primary = isPrimaryUsername(profile.username);
+              return {
+                cells: [
+                  cell(`@${profile.username}`, { tone: 'var(--ink)' }),
+                  cell(profile.total_films?.toLocaleString() ?? '—', { align: 'right' }),
+                  cell(profile.rated_films?.toLocaleString() ?? '—', { align: 'right' }),
+                  // A profile with no ratings has no average, not an average
+                  // of zero.
+                  cell(profile.rated_films ? profile.avg_rating.toFixed(1) : '—', {
                     align: 'right',
-                    size: '10px',
-                    tone: profile.last_scraped_at ? 'var(--muted)' : 'var(--dim)',
-                  },
-                ),
-                cell(
-                  profile.scraping_status === 'completed'
-                    ? 'full sync'
-                    : profile.scraping_status === 'error'
-                      ? 'error'
-                      : 'awaiting sync',
-                  {
-                    align: 'right',
-                    size: '10px',
-                    tone:
-                      profile.scraping_status === 'completed'
-                        ? 'var(--ok)'
-                        : profile.scraping_status === 'error'
-                          ? 'var(--bad)'
-                          : 'var(--accent)',
-                  },
-                ),
-                cell(
-                  profile.data_coverage?.summary ||
-                    'Run the local full sync workflow to populate this profile.',
-                  { font: 's', size: '10px', tone: 'var(--dim)', wrap: true },
-                ),
-              ],
-            }))}
+                    tone: profile.rated_films ? 'var(--accent)' : 'var(--dim)',
+                  }),
+                  cell(profile.total_reviews?.toLocaleString() ?? '—', { align: 'right' }),
+                  cell(
+                    profile.last_scraped_at
+                      ? new Date(profile.last_scraped_at).toLocaleDateString()
+                      : 'no date',
+                    {
+                      align: 'right',
+                      size: '10px',
+                      tone: profile.last_scraped_at ? 'var(--muted)' : 'var(--dim)',
+                    },
+                  ),
+                  cell(
+                    profile.scraping_status === 'completed'
+                      ? 'full sync'
+                      : profile.scraping_status === 'error'
+                        ? 'error'
+                        : 'awaiting sync',
+                    {
+                      align: 'right',
+                      size: '10px',
+                      tone:
+                        profile.scraping_status === 'completed'
+                          ? 'var(--ok)'
+                          : profile.scraping_status === 'error'
+                            ? 'var(--bad)'
+                            : 'var(--accent)',
+                    },
+                  ),
+                  cell(
+                    profile.data_coverage?.summary ||
+                      'Run the local full sync workflow to populate this profile.',
+                    { font: 's', size: '10px', tone: 'var(--dim)', wrap: true },
+                  ),
+                  // The library carries actions the catalog cannot: it lists
+                  // profiles the catalog hides (errored, placeholders, and --
+                  // for a non-admin -- anything tracked from outside their
+                  // follow corner), and without this column those rows had no
+                  // way to be untracked or deleted at all.
+                  cell(
+                    <span className="flex items-center justify-end gap-[5px]">
+                      {isAdmin ? (
+                        <ArmedAction
+                          label="DELETE"
+                          confirmLabel="SURE?"
+                          busyLabel="DELETING…"
+                          ariaLabelIdle={`Delete profile ${profile.username}`}
+                          ariaLabelArmed={`Confirm deleting ${profile.username}`}
+                          armed={confirmingDelete === profile.username}
+                          busy={busy && deleteMutation.isPending}
+                          onArm={() => setConfirmingDelete(profile.username)}
+                          onConfirm={() => submitDelete(profile.username, setLibraryOutcome)}
+                          onDisarm={() => setConfirmingDelete(null)}
+                          subject={profile.username}
+                        />
+                      ) : primary ? (
+                        <span className="text-t9 text-term-dim">yours to keep</span>
+                      ) : (
+                        <ArmedAction
+                          label="STOP"
+                          confirmLabel="SURE?"
+                          busyLabel="SAVING…"
+                          ariaLabelIdle={`Stop monitoring ${profile.username} from the library`}
+                          ariaLabelArmed={`Confirm stop monitoring ${profile.username}`}
+                          armed={confirmingUntrack === profile.username}
+                          busy={busy && untrackMutation.isPending}
+                          onArm={() => setConfirmingUntrack(profile.username)}
+                          onConfirm={() => submitUntrack(profile.username, setLibraryOutcome)}
+                          onDisarm={() => setConfirmingUntrack(null)}
+                          subject={profile.username}
+                        />
+                      )}
+                    </span>,
+                    { align: 'right' },
+                  ),
+                ],
+              };
+            })}
           />
+            </div>
+          </div>
         )}
+        <OutcomeLine outcome={libraryOutcome} />
       </Panel>
 
       <Panel
@@ -666,9 +883,9 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
           </label>
         </div>
         {panelState({
-          isLoading: catalogQuery.isLoading || isSearchPending || catalogQuery.isFetching,
+          isLoading: catalogQuery.isLoading,
           error: catalogQuery.error,
-          isEmpty: catalogProfiles.length === 0,
+          isEmpty: catalogProfiles.length === 0 && !isSearchPending,
           severity: 'degraded',
           onRetry: () => catalogQuery.refetch(),
           errorTitle: 'Available profiles could not be loaded',
@@ -687,6 +904,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
               className="m-0 border-b border-term-rule2 px-[10px] py-[5px] font-term-sans text-t10 text-term-dim"
               data-testid="profile-catalog-result-summary"
             >
+              {isSearchPending ? 'Searching… · ' : ''}
               {catalogProfiles.length === catalogTotal
                 ? `${count(catalogTotal, `${debouncedCatalogSearch ? 'matching ' : ''}synced profile`)}`
                 : `Showing ${catalogProfiles.length.toLocaleString()} of ${catalogTotal.toLocaleString()} ${debouncedCatalogSearch ? 'matching ' : ''}synced profiles — results stop at ${catalogLimit.toLocaleString()} per search; refine the search to reach the rest.`}
@@ -700,9 +918,8 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
               head={['PROFILE', ['FILMS', 'right'], ['STATE', 'right'], ['ACTION', 'right']]}
               rows={catalogProfiles.map((profile) => {
                 const busy =
-                  busyProfileId === profile.id || busyUsername === profile.username;
+                  busyProfileIds.has(profile.id) || busyUsernames.has(profile.username);
                 const primary = isPrimaryUsername(profile.username);
-                const confirming = confirmingDelete === profile.username;
                 return {
                   cells: [
                     cell(
@@ -736,40 +953,29 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                         ) : (
                           <ActionButton
                             label={profile.is_tracked ? 'STOP' : 'MONITOR'}
-                            busy={busy && !confirming}
+                            busy={busy && (trackMutation.isPending || untrackMutation.isPending)}
                             onClick={() =>
                               profile.is_tracked
-                                ? untrackMutation.mutate(profile.username)
-                                : trackMutation.mutate(profile.id)
+                                ? submitUntrack(profile.username, setCatalogOutcome)
+                                : submitTrack(profile.id, profile.username, setCatalogOutcome)
                             }
                             ariaLabel={`${profile.is_tracked ? 'Stop monitoring' : 'Monitor'} ${profile.username}`}
                           />
                         )}
                         {isAdmin ? (
-                          confirming ? (
-                            <>
-                              <ActionButton
-                                label="SURE?"
-                                busyLabel="DELETING…"
-                                busy={busy && deleteMutation.isPending}
-                                tone="var(--bad)"
-                                onClick={() => deleteMutation.mutate(profile.username)}
-                                ariaLabel={`Confirm deleting ${profile.username}`}
-                              />
-                              <ActionButton
-                                label="KEEP"
-                                onClick={() => setConfirmingDelete(null)}
-                                ariaLabel={`Keep ${profile.username}`}
-                              />
-                            </>
-                          ) : (
-                            <ActionButton
-                              label="DELETE"
-                              tone="var(--bad)"
-                              onClick={() => setConfirmingDelete(profile.username)}
-                              ariaLabel={`Delete profile ${profile.username}`}
-                            />
-                          )
+                          <ArmedAction
+                            label="DELETE"
+                            confirmLabel="SURE?"
+                            busyLabel="DELETING…"
+                            ariaLabelIdle={`Delete profile ${profile.username}`}
+                            ariaLabelArmed={`Confirm deleting ${profile.username}`}
+                            armed={confirmingDelete === profile.username}
+                            busy={busy && deleteMutation.isPending}
+                            onArm={() => setConfirmingDelete(profile.username)}
+                            onConfirm={() => submitDelete(profile.username, setCatalogOutcome)}
+                            onDisarm={() => setConfirmingDelete(null)}
+                            subject={profile.username}
+                          />
                         ) : null}
                       </span>,
                       { align: 'right' },
@@ -793,7 +999,23 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
           className="flex items-center gap-[7px] px-[10px] py-[9px]"
           onSubmit={(event) => {
             event.preventDefault();
-            if (normalizedRequest) requestMutation.mutate(normalizedRequest);
+            if (!normalizedRequest || askBusy) return;
+            setAskBusy(true);
+            requestMutation.mutate(normalizedRequest, {
+              onSuccess: (result) => {
+                setRequestedUsername('');
+                setRequestOutcome({
+                  ok: true,
+                  text:
+                    result.status === 'tracked'
+                      ? `@${normalizedRequest} was already synced — added straight to your monitored set.`
+                      : `@${normalizedRequest} was requested. Its state appears in YOUR REQUEST STATUS below.`,
+                });
+              },
+              onError: (error: Error) =>
+                setRequestOutcome({ ok: false, text: `The request failed: ${errorText(error)}` }),
+              onSettled: () => setAskBusy(false),
+            });
           }}
         >
           <label className="min-w-0 flex-1">
@@ -812,10 +1034,10 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
           </label>
           <button
             type="submit"
-            disabled={!normalizedRequest || requestMutation.isPending}
+            disabled={!normalizedRequest || askBusy}
             className="shrink-0 rounded-[3px] border border-term-rule bg-transparent px-[9px] py-[5px] text-t95 font-bold tracking-tab text-term-ink3 hover:border-term-accent hover:text-term-accent disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {requestMutation.isPending ? 'SUBMITTING…' : 'ADD OR REQUEST'}
+            {askBusy ? 'SUBMITTING…' : 'ADD OR REQUEST'}
           </button>
         </form>
         <OutcomeLine outcome={requestOutcome} />
@@ -853,15 +1075,19 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                 const canTrack =
                   suggestion.already_imported && suggestion.profile_id !== null;
                 const busy =
-                  (canTrack && busyProfileId === suggestion.profile_id) ||
-                  busyUsername === suggestion.username;
+                  (canTrack && busyProfileIds.has(suggestion.profile_id as number)) ||
+                  busyUsernames.has(suggestion.username);
                 const shown = suggestion.followed_by.slice(0, 3);
                 const hidden = suggestion.followed_by.length - shown.length;
+                const followsBack =
+                  suggestion.follows_back_count > 0
+                    ? ` · follows ${suggestion.follows_back_count} back`
+                    : '';
                 return {
                   cells: [
                     cell(`@${suggestion.username}`, { tone: 'var(--ink)' }),
                     cell(
-                      `${shown.map((name) => `@${name}`).join(' ')}${hidden > 0 ? ` +${hidden} more` : ''}`,
+                      `${shown.map((name) => `@${name}`).join(' ')}${hidden > 0 ? ` +${hidden} more` : ''}${followsBack}`,
                       { size: '10px', tone: 'var(--muted)' },
                     ),
                     cell(
@@ -874,18 +1100,11 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                           label="MONITOR"
                           busy={busy}
                           onClick={() =>
-                            trackMutation.mutate(suggestion.profile_id as number, {
-                              onSuccess: () =>
-                                setSuggestionOutcome({
-                                  ok: true,
-                                  text: `@${suggestion.username} is now monitored.`,
-                                }),
-                              onError: (error: Error) =>
-                                setSuggestionOutcome({
-                                  ok: false,
-                                  text: `Monitoring failed: ${errorText(error)}`,
-                                }),
-                            })
+                            submitTrack(
+                              suggestion.profile_id as number,
+                              suggestion.username,
+                              setSuggestionOutcome,
+                            )
                           }
                           ariaLabel={`Monitor ${suggestion.username}`}
                         />
@@ -893,23 +1112,8 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                         <ActionButton
                           label="REQUEST"
                           busyLabel="REQUESTING…"
-                          busy={busyUsername === suggestion.username && requestMutation.isPending}
-                          onClick={() => {
-                            setBusyUsername(suggestion.username);
-                            requestMutation.mutate(suggestion.username, {
-                              onSuccess: () =>
-                                setSuggestionOutcome({
-                                  ok: true,
-                                  text: `@${suggestion.username} was requested. Its state appears in YOUR REQUEST STATUS.`,
-                                }),
-                              onError: (error: Error) =>
-                                setSuggestionOutcome({
-                                  ok: false,
-                                  text: `The request failed: ${errorText(error)}`,
-                                }),
-                              onSettled: () => setBusyUsername(null),
-                            });
-                          }}
+                          busy={busy}
+                          onClick={() => submitRequest(suggestion.username, setSuggestionOutcome)}
                           ariaLabel={`Request ${suggestion.username}`}
                         />
                       ),
@@ -943,13 +1147,18 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
           },
         }) ?? (
           <Rows
-            columns="minmax(0,1fr) 82px minmax(0,1.3fr)"
-            head={['ACCOUNT', ['STATE', 'right'], 'WHAT NEXT']}
+            columns="minmax(0,1fr) 74px 82px minmax(0,1.2fr)"
+            head={['ACCOUNT', ['ASKED', 'right'], ['STATE', 'right'], 'WHAT NEXT']}
             rows={(requestsQuery.data ?? []).map((request) => {
               const state = REQUEST_STATE[request.status];
               return {
                 cells: [
                   cell(`@${request.requested_username}`, { tone: 'var(--ink)' }),
+                  cell(new Date(request.requested_at).toLocaleDateString(), {
+                    align: 'right',
+                    size: '10px',
+                    tone: 'var(--muted)',
+                  }),
                   cell(state.label, { align: 'right', size: '10px', tone: state.tone }),
                   cell(state.next, {
                     font: 's',
@@ -980,7 +1189,7 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
         caveat={latencyQuery.data?.caveat}
       >
         {panelState({
-          isLoading: latencyQuery.isLoading,
+          isLoading: latencyQuery.isLoading || (selectionLoading && !enabled),
           error: latencyQuery.error,
           isEmpty: (latencyQuery.data?.runs ?? 0) === 0,
           onRetry: () => latencyQuery.refetch(),
@@ -1031,6 +1240,8 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                       {request.requester_letterboxd_username
                         ? `@${request.requester_letterboxd_username}`
                         : request.requester_user_id}
+                      {' · '}
+                      {new Date(request.requested_at).toLocaleString()}
                     </span>
                     <span
                       className="terminal-num shrink-0 text-t10"
@@ -1055,7 +1266,8 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                       />
                       <ActionButton
                         label="ACCEPT"
-                        busy={reviewMutation.isPending}
+                        busy={busyRequestId === request.id && reviewMutation.isPending}
+                        disabled={busyRequestId !== null && busyRequestId !== request.id}
                         tone="var(--ok)"
                         onClick={() =>
                           reviewMutation.mutate({ id: request.id, status: 'approved' })
@@ -1064,7 +1276,8 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
                       />
                       <ActionButton
                         label="REJECT"
-                        busy={reviewMutation.isPending}
+                        busy={busyRequestId === request.id && reviewMutation.isPending}
+                        disabled={busyRequestId !== null && busyRequestId !== request.id}
                         tone="var(--bad)"
                         onClick={() =>
                           reviewMutation.mutate({ id: request.id, status: 'rejected' })
@@ -1216,12 +1429,12 @@ export default function ProfilesTab({ profiles }: { profiles: string[] }) {
             <label className="min-w-0 flex-1">
               <span className="sr-only">Letterboxd username</span>
               <input
+                ref={placeholderInputRef}
                 type="text"
                 value={placeholderUsername}
                 onChange={(event) => setPlaceholderUsername(event.target.value)}
                 placeholder="Letterboxd username"
                 autoComplete="off"
-                autoFocus={autoFocusPlaceholder}
                 className={inputClass}
               />
             </label>
