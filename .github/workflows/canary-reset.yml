@@ -1,0 +1,159 @@
+name: Canary Reset
+
+# Maintenance, dispatch-only: reset the authenticated canary's identities to
+# the guardian's bootstrap state after a Clerk account was replaced. Deletes
+# ONLY canary app_users rows (plus their tracked-profile and request rows);
+# profiles and imported history are never touched. Dry run unless `execute`
+# is checked, and the script refuses administrators outright either way.
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: Actually delete (unchecked = dry run that changes nothing)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read # checkout the exact reset script
+
+jobs:
+  canary_reset:
+    name: Reset canary identities to bootstrap
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      # Shares the auth canary's group so a reset can never race a live
+      # guardian run against the same rows.
+      group: spyboxd-production-auth-canary
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: https://spyboxd.com
+
+    steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Check out the exact reset script and SSH helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Establish one pinned IPv4 production SSH connection
+        env:
+          SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: deploy/production-ssh.sh open
+
+      - name: Allocate private remote paths
+        id: remote
+        run: |
+          set -Eeuo pipefail
+          script_path="$(deploy/production-ssh.sh run mktemp /tmp/spyboxd-canary-reset.XXXXXX)"
+          [[ "${script_path}" =~ ^/tmp/spyboxd-canary-reset\.[A-Za-z0-9]{6}$ ]]
+          env_path="$(deploy/production-ssh.sh run mktemp /tmp/spyboxd-canary-reset-env.XXXXXX)"
+          [[ "${env_path}" =~ ^/tmp/spyboxd-canary-reset-env\.[A-Za-z0-9]{6}$ ]]
+          printf 'script_path=%s\n' "${script_path}" >>"${GITHUB_OUTPUT}"
+          printf 'env_path=%s\n' "${env_path}" >>"${GITHUB_OUTPUT}"
+
+      - name: Install the exact remote reset script
+        env:
+          REMOTE_SCRIPT_PATH: ${{ steps.remote.outputs.script_path }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${REMOTE_SCRIPT_PATH}" =~ ^/tmp/spyboxd-canary-reset\.[A-Za-z0-9]{6}$ ]]
+          expected_hash="$(sha256sum deploy/run-canary-reset.py | awk '{print $1}')"
+          [[ "${expected_hash}" =~ ^[0-9a-f]{64}$ ]]
+          deploy/production-ssh.sh copy \
+            deploy/run-canary-reset.py \
+            "spyboxd-production:${REMOTE_SCRIPT_PATH}"
+          deploy/production-ssh.sh run sh -s -- \
+            "${REMOTE_SCRIPT_PATH}" "${expected_hash}" <<'REMOTE'
+          set -eu
+          script_path="$1"
+          expected_hash="$2"
+          actual_hash="$(sha256sum "${script_path}" | awk '{print $1}')"
+          [ "${actual_hash}" = "${expected_hash}" ]
+          chmod 0600 "${script_path}"
+          REMOTE
+
+      - name: Stage the private canary identity configuration
+        env:
+          REMOTE_ENV_PATH: ${{ steps.remote.outputs.env_path }}
+          SPYBOXD_CANARY_PROFILE_A: ${{ secrets.SPYBOXD_CANARY_PROFILE_A }}
+          SPYBOXD_CANARY_PROFILE_B: ${{ secrets.SPYBOXD_CANARY_PROFILE_B }}
+          SPYBOXD_CANARY_USER_A_ID: ${{ secrets.SPYBOXD_CANARY_USER_A_ID }}
+          SPYBOXD_CANARY_USER_B_ID: ${{ secrets.SPYBOXD_CANARY_USER_B_ID }}
+        run: |
+          set -Eeuo pipefail
+          local_env="${RUNNER_TEMP}/spyboxd-canary-reset.env"
+          [[ "${REMOTE_ENV_PATH}" =~ ^/tmp/spyboxd-canary-reset-env\.[A-Za-z0-9]{6}$ ]]
+          [[ "${SPYBOXD_CANARY_USER_A_ID}" =~ ^user_[A-Za-z0-9]+$ ]]
+          [[ "${SPYBOXD_CANARY_USER_B_ID}" =~ ^user_[A-Za-z0-9]+$ ]]
+          [[ "${SPYBOXD_CANARY_PROFILE_A}" =~ ^[A-Za-z0-9_]{2,15}$ ]]
+          [[ "${SPYBOXD_CANARY_PROFILE_B}" =~ ^[A-Za-z0-9_]{2,15}$ ]]
+          umask 077
+          {
+            printf 'SPYBOXD_CANARY_USER_A_ID=%s\n' "${SPYBOXD_CANARY_USER_A_ID}"
+            printf 'SPYBOXD_CANARY_PROFILE_A=%s\n' "${SPYBOXD_CANARY_PROFILE_A}"
+            printf 'SPYBOXD_CANARY_USER_B_ID=%s\n' "${SPYBOXD_CANARY_USER_B_ID}"
+            printf 'SPYBOXD_CANARY_PROFILE_B=%s\n' "${SPYBOXD_CANARY_PROFILE_B}"
+          } >"${local_env}"
+          chmod 0600 "${local_env}"
+          deploy/production-ssh.sh copy \
+            "${local_env}" \
+            "spyboxd-production:${REMOTE_ENV_PATH}"
+          rm -f -- "${local_env}"
+
+      - name: Run the reset (dry run unless execute was checked)
+        env:
+          REMOTE_SCRIPT_PATH: ${{ steps.remote.outputs.script_path }}
+          REMOTE_ENV_PATH: ${{ steps.remote.outputs.env_path }}
+          EXECUTE: ${{ inputs.execute && '1' || '' }}
+        run: |
+          set -Eeuo pipefail
+          deploy/production-ssh.sh run sh -s -- \
+            "${REMOTE_SCRIPT_PATH}" "${REMOTE_ENV_PATH}" "${EXECUTE}" <<'REMOTE'
+          set -eu
+          script_path="$1"
+          env_path="$2"
+          execute="$3"
+          current_link=/opt/spyboxd/current
+          python_path="${current_link}/.venv/bin/python"
+          [ -L "${current_link}" ] && [ -x "${python_path}" ]
+          chmod 0600 "${env_path}"
+          if [ -n "${execute}" ]; then
+            "${python_path}" "${script_path}" --env-file "${env_path}" --execute
+          else
+            "${python_path}" "${script_path}" --env-file "${env_path}"
+          fi
+          REMOTE
+
+      - name: Securely remove remote one-run material
+        if: always()
+        env:
+          REMOTE_SCRIPT_PATH: ${{ steps.remote.outputs.script_path }}
+          REMOTE_ENV_PATH: ${{ steps.remote.outputs.env_path }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "${REMOTE_ENV_PATH}" =~ ^/tmp/spyboxd-canary-reset-env\.[A-Za-z0-9]{6}$ ]]; then
+            deploy/production-ssh.sh run rm -f -- "${REMOTE_ENV_PATH}" || true
+          fi
+          if [[ "${REMOTE_SCRIPT_PATH}" =~ ^/tmp/spyboxd-canary-reset\.[A-Za-z0-9]{6}$ ]]; then
+            deploy/production-ssh.sh run rm -f -- "${REMOTE_SCRIPT_PATH}" || true
+          fi
+
+      - name: Close production SSH and securely remove local key material
+        if: always()
+        run: |
+          if [[ -x deploy/production-ssh.sh ]]; then
+            deploy/production-ssh.sh close || true
+          fi

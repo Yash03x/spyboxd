@@ -309,3 +309,31 @@ class AuthCanaryDiagnosticsTests(unittest.TestCase):
                     continue
                 self.assertNotIn("[[", stripped, f"bashism in sh heredoc: {stripped}")
         self.assertIn("guardian exited within its startup window", workflow)
+
+    def test_the_canary_reset_is_dispatch_only_dry_run_first_and_posix(self) -> None:
+        """A production-row delete must be asked for twice: dispatch, then execute."""
+
+        import re
+
+        workflow = read_repo_file(".github/workflows/canary-reset.yml")
+        script = read_repo_file("deploy/run-canary-reset.py")
+
+        self.assertIn("workflow_dispatch", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertIn("default: false", workflow)
+        # Same concurrency group as the auth canary, so a reset can never race
+        # a live guardian run against the same rows.
+        self.assertIn("group: spyboxd-production-auth-canary", workflow)
+        for block in re.findall(r"sh -s --.*?<<'REMOTE'(.*?)\n\s*REMOTE", workflow, re.S):
+            for line in block.splitlines():
+                if not line.strip().startswith("#"):
+                    self.assertNotIn("[[", line, f"bashism in sh heredoc: {line.strip()}")
+
+        # The script's own guarantees: dry run default, admin refusal, and the
+        # dry-run transaction is rolled back rather than committed.
+        self.assertIn('"--execute", action="store_true"', script)
+        self.assertIn("belongs to an administrator; refusing", script)
+        self.assertIn("transaction.rollback()", script)
+        self.assertIn("DELETE FROM app_users", script)
+        self.assertNotIn("DELETE FROM profiles", script)
+        self.assertNotIn("DELETE FROM watch_events", script)
