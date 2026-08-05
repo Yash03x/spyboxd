@@ -117,7 +117,10 @@ jobs:
         env:
           REMOTE_SCRIPT_PATH: ${{ steps.remote.outputs.script_path }}
           REMOTE_ENV_PATH: ${{ steps.remote.outputs.env_path }}
-          EXECUTE: ${{ inputs.execute && '1' || '' }}
+          # A word, never an empty string: the SSH layer joins argv with
+          # spaces, so an empty third argument simply vanishes and `set -u`
+          # kills the remote script with "parameter not set".
+          EXECUTE: ${{ inputs.execute && 'execute' || 'dry-run' }}
         run: |
           set -Eeuo pipefail
           deploy/production-ssh.sh run sh -s -- \
@@ -130,7 +133,7 @@ jobs:
           python_path="${current_link}/.venv/bin/python"
           [ -L "${current_link}" ] && [ -x "${python_path}" ]
           chmod 0600 "${env_path}"
-          if [ -n "${execute}" ]; then
+          if [ "${execute}" = "execute" ]; then
             "${python_path}" "${script_path}" --env-file "${env_path}" --execute
           else
             "${python_path}" "${script_path}" --env-file "${env_path}"
