@@ -430,6 +430,9 @@ jobs:
       NEXT_TELEMETRY_DISABLED: "1"
       API_URL: https://api.spyboxd.com
       NEXT_PUBLIC_API_BASE_URL: https://api.spyboxd.com
+      # Inlined into the bundle at build time; the production canary compares
+      # it against the API's /health revision after every deploy.
+      NEXT_PUBLIC_BUILD_REVISION: ${{ github.sha }}
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.PRODUCTION_CLERK_PUBLISHABLE_KEY }}
       # Build-only sentinel. The real live secret remains only in the VPS runtime env.
       CLERK_SECRET_KEY: ${{ format('sk_{0}_{1}', 'live', 'ci_build_only_not_a_secret') }}

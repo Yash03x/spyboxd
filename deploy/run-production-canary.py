@@ -391,8 +391,15 @@ def run_canary(
     except Exception as exc:
         raise CanaryError("public data or RSS semantic health contract failed") from exc
 
+    # The homepage must not only render -- it must be THIS release's frontend.
+    # The bundle stamps its own build revision into the root layout
+    # (data-build-revision on <body>), and the API states its revision at
+    # /ready; the two ship as one bundle, so anything but equality means the
+    # web tier is serving a different build than the API it fronts.
     _html_response(
-        request_client.get(f"{web_base}/"), "public homepage", ("spyboxd", "letterboxd")
+        request_client.get(f"{web_base}/"),
+        "public homepage",
+        ("spyboxd", "letterboxd", f'data-build-revision="{revision}"'),
     )
     _html_response(
         request_client.get(f"{web_base}/sign-in"),
