@@ -5,36 +5,41 @@ import { installApiMocks } from './fixtures/api';
 test('backend admin truth exposes management and the residential sync queue', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
 
-  await page.goto('/profiles');
+  await page.goto('/data?tab=profiles');
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Profiles', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Admin add placeholder' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Profile request queue' })).toBeVisible();
-  await expect(page.getByText('@queuedprofile', { exact: true }).last()).toBeVisible();
-  await expect(page.getByText('Awaiting residential sync', { exact: true })).toBeVisible();
+  const queue = page.locator('.terminal-root section', { hasText: 'ADMIN · REQUEST QUEUE' }).first();
+  await expect(queue).toBeVisible();
+  await expect(queue.getByText('@queuedprofile', { exact: true })).toBeVisible();
+  await expect(queue.getByText('accepted', { exact: true })).toBeVisible();
+  await expect(
+    page.locator('.terminal-root section', { hasText: 'ADMIN · ADD A PLACEHOLDER' }).first(),
+  ).toBeVisible();
 });
 
 test('the request queue names the requester rather than printing a Clerk id', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
 
-  await page.goto('/profiles');
+  await page.goto('/data?tab=profiles');
 
-  // Scoped to the admin queue: the same username also appears on the ordinary
-  // request card, which deliberately carries no requester line at all.
-  const queued = page.locator('article').filter({ hasText: 'Requester' }).first();
-  await expect(queued).toContainText('Requester @e2erequester');
+  // Scoped to the admin queue: the same username also appears in the ordinary
+  // request-status panel, which deliberately carries no requester line at all.
+  const queue = page.locator('.terminal-root section', { hasText: 'ADMIN · REQUEST QUEUE' }).first();
+  await expect(queue.getByText(/asked by @e2erequester/).first()).toBeVisible();
   // The opaque id is what an admin was reading before, and it must not be what
   // they read when a linked account exists.
-  await expect(queued).not.toContainText('user_e2e');
+  await expect(queue).not.toContainText('user_e2e');
 });
 
 test('admin can upload residential full-sync bundles without owner-export publishing consent', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
 
-  await page.goto('/profiles');
+  await page.goto('/data?tab=profiles');
   const uploadPanel = page.getByTestId('residential-sync-upload');
   await expect(uploadPanel).toBeVisible();
-  await expect(uploadPanel.getByText('Owner-export publishing stays off for this import.')).toBeVisible();
+  const residentialPanel = page
+    .locator('.terminal-root section', { hasText: 'ADMIN · RESIDENTIAL SYNC INTAKE' })
+    .first();
+  await expect(residentialPanel.getByText('Owner-export publishing stays off on this path.')).toBeVisible();
 
   const uploadRequestPromise = page.waitForRequest((request) => (
     new URL(request.url()).pathname === '/upload/' && request.method() === 'POST'
@@ -44,7 +49,7 @@ test('admin can upload residential full-sync bundles without owner-export publis
     { name: 'bravo.zip', mimeType: 'application/zip', buffer: Buffer.from('bravo fixture') },
   ]);
   await expect(uploadPanel.getByText('2 ZIPs selected')).toBeVisible();
-  await uploadPanel.getByRole('button', { name: 'Import full sync' }).click();
+  await uploadPanel.getByRole('button', { name: 'IMPORT FULL SYNC' }).click();
 
   const uploadRequest = await uploadRequestPromise;
   const uploadBody = uploadRequest.postData() ?? '';
@@ -54,34 +59,38 @@ test('admin can upload residential full-sync bundles without owner-export publis
   expect(uploadBody).toMatch(/name="publish_owner_data"\r\n\r\nfalse\r\n/);
   expect(uploadBody).toContain('name="require_full_sync"');
   expect(uploadBody).toMatch(/name="require_full_sync"\r\n\r\ntrue\r\n/);
-  await expect(page.getByText('2 residential full-sync bundles imported. Provenance: full_html_upload.')).toBeVisible();
-  await expect(uploadPanel.getByText('A successful upload fulfills matching approved profile requests.')).toBeVisible();
+  await expect(page.getByText('2 bundles imported. Provenance: full_html_upload.')).toBeVisible();
+  await expect(residentialPanel.getByText('A successful upload fulfills matching approved profile requests.')).toBeVisible();
 });
 
 test('residential bundle upload is not rendered for non-admin users', async ({ page }) => {
   await installApiMocks(page, { isAdmin: false });
 
-  await page.goto('/profiles');
+  await page.goto('/data?tab=profiles');
 
   await expect(page.getByTestId('residential-sync-upload')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Residential Sync Workflow' })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Optional owner-provided Letterboxd export' })).toHaveCount(0);
+  await expect(page.getByText('ADMIN · RESIDENTIAL SYNC INTAKE')).toHaveCount(0);
+  await expect(page.getByText('ADMIN · OWNER EXPORT INTAKE')).toHaveCount(0);
+  await expect(page.getByText('ADMIN · REQUEST QUEUE')).toHaveCount(0);
+  await expect(page.getByText('ADMIN · ADD A PLACEHOLDER')).toHaveCount(0);
 });
 
 test('admin library mutations refresh the selectable profile catalog', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
-  page.on('dialog', (dialog) => dialog.accept());
   let catalogRequestCount = 0;
   page.on('request', (request) => {
     if (new URL(request.url()).pathname === '/profiles/catalog') catalogRequestCount += 1;
   });
 
-  await page.goto('/profiles');
+  await page.goto('/data?tab=profiles');
   await expect(page.getByTestId('profile-catalog-result-summary')).toBeVisible();
   const initialCatalogRequestCount = catalogRequestCount;
-  await page.getByTestId('tracked-profile-grid').getByTitle('Delete profile').first().click();
+  // Deleting is a two-step arm-and-confirm in the catalog rows, not a browser
+  // dialog: the first press arms the row, the second one deletes.
+  await page.getByRole('button', { name: /^Delete profile / }).first().click();
+  await page.getByRole('button', { name: /^Confirm deleting / }).first().click();
 
-  await expect(page.getByText('Profile deleted successfully.')).toBeVisible();
+  await expect(page.getByText(/was deleted from the library\./)).toBeVisible();
   await expect.poll(() => catalogRequestCount).toBeGreaterThan(initialCatalogRequestCount);
 });
 

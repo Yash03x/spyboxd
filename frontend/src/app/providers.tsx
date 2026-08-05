@@ -4,7 +4,6 @@ import { useAuth } from '@clerk/nextjs';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
-import { Toaster } from 'react-hot-toast';
 import { setApiTokenProvider } from '../services/api';
 
 export default function Providers({ children }: { children: React.ReactNode }) {
@@ -63,14 +62,13 @@ export default function Providers({ children }: { children: React.ReactNode }) {
               alt=""
               width={48}
               height={48}
-              className="mx-auto h-12 w-12 rounded-xl border border-cinema-400/20 shadow-glow"
+              className="mx-auto h-12 w-12 rounded-xl border border-term-rule"
               priority
             />
             <p className="mt-4 text-sm text-white/55">Preparing Spyboxd…</p>
           </div>
         </main>
       )}
-      <Toaster />
     </QueryClientProvider>
   );
 }

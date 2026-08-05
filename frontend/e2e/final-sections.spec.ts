@@ -158,13 +158,23 @@ test('Lost & found explains why deleted history exists at all', async ({ page })
   await expect(lost).toContainText('the film or thread was removed from Letterboxd');
 });
 
-test('Data Profiles points mutations at the manager that still owns them', async ({ page }) => {
+test('Data Profiles owns its mutations now that the old manager is gone', async ({ page }) => {
   await page.goto('/data?tab=profiles');
 
   await expect(page.getByText('▸ EVERYONE WE HAVE SYNCED', { exact: false })).toBeVisible();
+  // The ASK panel is the request form itself, not a pointer at a page that no
+  // longer exists.
   const ask = page.locator('.terminal-root section', { hasText: 'ASK FOR SOMEONE NEW' }).first();
-  await expect(ask.getByRole('link', { name: 'the profile manager' })).toHaveAttribute(
-    'href',
-    '/profiles',
+  await expect(ask.getByRole('textbox', { name: 'Letterboxd username' })).toBeVisible();
+  await expect(ask.getByRole('button', { name: 'ADD OR REQUEST' })).toBeVisible();
+  await expect(ask.getByRole('link', { name: 'the profile manager' })).toHaveCount(0);
+
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === '/profiles/requests' && request.method() === 'POST',
   );
+  await ask.getByRole('textbox', { name: 'Letterboxd username' }).fill('somebody_new');
+  await ask.getByRole('button', { name: 'ADD OR REQUEST' }).click();
+  const request = await requestPromise;
+  expect(request.postDataJSON()).toEqual({ username: 'somebody_new' });
 });

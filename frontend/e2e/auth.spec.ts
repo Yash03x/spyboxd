@@ -37,9 +37,9 @@ test('the aggregate dashboard is the anonymous landing page', async ({ page }) =
   const createAccountLink = page.getByRole('link', { name: 'Create account' });
   await expect(createAccountLink).toHaveAttribute('href', '/sign-up');
   await expect(signInLink).toBeVisible();
-  await expect(signInLink).toHaveAttribute('href', '/sign-in?redirect_url=%2Fprofiles');
+  await expect(signInLink).toHaveAttribute('href', '/sign-in?redirect_url=%2Fdata%3Ftab%3Dprofiles');
   await expect(page.getByRole('link', { name: 'Sign in for private tools' }))
-    .toHaveAttribute('href', '/sign-in?redirect_url=%2Fprofiles');
+    .toHaveAttribute('href', '/sign-in?redirect_url=%2Fdata%3Ftab%3Dprofiles');
   await expect(page.getByText('@alpha', { exact: true })).toHaveCount(0);
   expect(apiRequests.length).toBeGreaterThanOrEqual(1);
   expect(apiRequests.every(({ path }) => path === '/api/public/dashboard')).toBe(true);
