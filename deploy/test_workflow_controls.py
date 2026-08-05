@@ -288,3 +288,24 @@ class AuthCanaryDiagnosticsTests(unittest.TestCase):
         workflow = read_repo_file(".github/workflows/production-canary.yml")
 
         self.assertIn("2>/dev/null", workflow)
+
+    def test_the_remote_guardian_heredoc_is_posix_sh(self) -> None:
+        """The VPS runs these blocks under /bin/sh, where [[ is not found.
+
+        The fast-death diagnostic used [[ ]] and crashed with exit 127 before
+        reporting the guardian's status — replacing the diagnosis at exactly
+        the moment one was needed.
+        """
+
+        import re
+
+        workflow = read_repo_file(".github/workflows/production-canary.yml")
+        blocks = re.findall(r"sh -s --.*?<<'REMOTE'(.*?)\n\s*REMOTE", workflow, re.S)
+        self.assertTrue(blocks, "no remote sh heredoc found")
+        for block in blocks:
+            for line in block.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                self.assertNotIn("[[", stripped, f"bashism in sh heredoc: {stripped}")
+        self.assertIn("guardian exited within its startup window", workflow)
