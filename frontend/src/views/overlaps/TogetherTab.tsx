@@ -124,6 +124,20 @@ export default function TogetherTab({
     cta: { label: 'CHOOSE WHO TO MONITOR', href: sectionHref('data', 'profiles') },
   };
 
+  /**
+   * "Two profiles are needed" is true only when fewer than two are selected.
+   * Every panel here used it for any empty result, so two sparse profiles
+   * with nothing in common were told to go and monitor somebody — with a
+   * button to a page whose job they had already done.
+   */
+  const nothingFound = (what: string) =>
+    profiles.length < 2
+      ? emptyState
+      : {
+          title: `No ${what} in this window`,
+          body: 'The selected profiles have nothing that qualifies here. Widen the closeness above, pick a different pair, or wait for the next refresh.',
+        };
+
   return (
     <>
       <Panel
@@ -174,7 +188,13 @@ export default function TogetherTab({
           summary
             ? [
                 { big: summary.same_day_events.toLocaleString(), unit: 'SAME DAY', tone: 'var(--ok)' },
-                { big: summary.one_day_gap_events.toLocaleString(), unit: 'WITHIN A DAY' },
+                // Only while the window actually includes it. The backend
+                // counts one-day gaps regardless of the selected closeness,
+                // so under SAME DAY this printed a WITHIN A DAY figure larger
+                // than the IN THIS WINDOW total sitting beside it.
+                ...(gapDays >= 1
+                  ? [{ big: summary.one_day_gap_events.toLocaleString(), unit: 'WITHIN A DAY' }]
+                  : []),
                 { big: windowTotal.toLocaleString(), unit: 'IN THIS WINDOW' },
               ]
             : undefined
@@ -188,7 +208,7 @@ export default function TogetherTab({
           onRetry: () => signalsQuery.refetch(),
           errorTitle: 'Closeness tiers could not be counted',
           errorBody: 'The overlap feed did not answer.',
-          empty: emptyState,
+          empty: nothingFound('overlap close enough to measure'),
           skeleton: <BarsSkeleton rows={3} />,
         }) ?? (
           <Bars
@@ -264,7 +284,7 @@ export default function TogetherTab({
           onRetry: () => signalsQuery.refetch(),
           errorTitle: 'The pair leaderboard could not be loaded',
           errorBody: 'The overlap feed did not answer.',
-          empty: emptyState,
+          empty: nothingFound('pair with a shared film'),
           skeleton: <BarsSkeleton rows={6} />,
         }) ?? (
           <Bars
@@ -305,7 +325,7 @@ export default function TogetherTab({
           onRetry: () => signalsQuery.refetch(),
           errorTitle: 'Most shared titles could not be loaded',
           errorBody: 'The overlap feed did not answer.',
-          empty: emptyState,
+          empty: nothingFound('film everybody has seen'),
           skeleton: <BarsSkeleton rows={6} />,
         }) ?? (
           <Bars
@@ -332,7 +352,7 @@ export default function TogetherTab({
           onRetry: () => signalsQuery.refetch(),
           errorTitle: 'Consensus hits could not be loaded',
           errorBody: 'The overlap feed did not answer.',
-          empty: emptyState,
+          empty: nothingFound('film the group agreed on'),
         }) ?? (
           <Rows
             columns="minmax(0,1.4fr) 52px 62px 58px"
@@ -373,7 +393,7 @@ export default function TogetherTab({
           onRetry: () => signalsQuery.refetch(),
           errorTitle: 'Divisive titles could not be loaded',
           errorBody: 'The overlap feed did not answer.',
-          empty: emptyState,
+          empty: nothingFound('film that split the room'),
         }) ?? (
           <Rows
             columns="minmax(0,1.4fr) 52px 62px 58px"

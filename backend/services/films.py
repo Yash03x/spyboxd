@@ -255,7 +255,15 @@ def build_runtime(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     watched: Counter[str] = Counter()
     seen: set[int] = set()
     for row in rows:
-        if row.enrichment_movie_id is None or row.runtime_minutes is None or row.movie_id in seen:
+        # TMDB stores an unfilled runtime as 0, not as null, so `is None` alone
+        # let every unmeasured film land in the shortest band -- the panel
+        # reported a taste for films under 90 minutes that was really a gap in
+        # enrichment. A runtime of zero is an absence.
+        if (
+            row.enrichment_movie_id is None
+            or not row.runtime_minutes
+            or row.movie_id in seen
+        ):
             continue
         seen.add(row.movie_id)
         for label, low, high in RUNTIME_BANDS:
@@ -265,15 +273,24 @@ def build_runtime(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
 
     queued: Counter[str] = Counter()
     if profile_ids:
+        # Distinct films, matching WATCHED. Counting watchlist rows meant a
+        # film four people had queued arrived as four, so QUEUED and WATCHED
+        # were different units printed as one ratio.
         queue_rows = (
-            db.query(MovieEnrichment.runtime_minutes)
+            db.query(MovieEnrichment.movie_id, MovieEnrichment.runtime_minutes)
             .join(WatchlistItem, WatchlistItem.movie_id == MovieEnrichment.movie_id)
             .filter(WatchlistItem.profile_id.in_(profile_ids), WatchlistItem.removed_at.is_(None))
+            .distinct()
             .all()
         )
-        for (runtime,) in queue_rows:
-            if runtime is None:
+        # Deduplicated here rather than with DISTINCT ON, which Postgres only
+        # accepts alongside a matching ORDER BY and SQLite does not implement
+        # at all -- the shape of bug this repository has shipped before.
+        queued_seen: set[int] = set()
+        for movie_id, runtime in queue_rows:
+            if not runtime or movie_id in queued_seen:
                 continue
+            queued_seen.add(movie_id)
             for label, low, high in RUNTIME_BANDS:
                 if runtime >= low and (high is None or runtime <= high):
                     queued[label] += 1

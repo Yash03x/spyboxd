@@ -837,3 +837,33 @@ def test_a_surface_only_ever_topped_up_still_reports_what_it_has(
     assert surfaces["films"]["rows"] == 3
     assert surfaces["films"]["authoritative_profiles"] == 0
     assert "none authoritative" in surfaces["films"]["result"]
+
+
+def test_a_film_with_no_recorded_runtime_is_not_a_short_film(database: Session) -> None:
+    """TMDB stores an unfilled runtime as 0, not as null. Counting those put
+    every unmeasured film in the shortest band, so the panel reported a taste
+    for films under 90 minutes that was really a gap in enrichment."""
+
+    viewer = _profile(database, "viewer")
+    _film(database, viewer, _movie(database, "Unmeasured", runtime=0))
+    _film(database, viewer, _movie(database, "Genuinely Short", runtime=80))
+
+    bands = {band["label"]: band for band in build_runtime(database, [viewer])["bands"]}
+
+    assert bands["under 90"]["watched"] == 1
+
+
+def test_queued_and_watched_are_the_same_unit(database: Session) -> None:
+    """QUEUED counted watchlist rows while WATCHED counted distinct films, so
+    one film four people had queued arrived as four and the ratio beside them
+    divided one unit by another."""
+
+    first = _profile(database, "first")
+    second = _profile(database, "second")
+    movie = _movie(database, "Everybody Queued It", runtime=100)
+    _queued(database, first, movie, date(2026, 1, 1))
+    _queued(database, second, movie, date(2026, 1, 2))
+
+    bands = {band["label"]: band for band in build_runtime(database, [first, second])["bands"]}
+
+    assert bands["90–110"]["queued"] == 1
