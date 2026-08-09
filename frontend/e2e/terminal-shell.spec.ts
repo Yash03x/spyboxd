@@ -29,7 +29,7 @@ test('Overview renders the eight panels, each naming the table it reads', async 
 
   for (const title of [
     'THE GROUP, IN FIVE NUMBERS',
-    'WHAT CHANGED SINCE THE LAST REFRESH',
+    'THE LATEST CHANGES WE DETECTED',
     'WHO WATCHES WITH WHOM',
     'EVERYONE WE ARE WATCHING',
     'THIS YEAR, MONTH BY MONTH',

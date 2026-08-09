@@ -10,6 +10,8 @@ import Spark from '../../components/terminal/bodies/Spark';
 import { CoWatchMatrix } from '../../components/terminal/bodies/Matrix';
 import { BarsSkeleton, PanelSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
+import { formatDay } from '../../components/terminal/dates';
+import { count } from '../../components/terminal/plural';
 import { importState, sinceLabel } from '../../components/terminal/profileState';
 import { MIN_RATED_OVERLAP, withRatedEvidence } from '../../components/terminal/pairEvidence';
 import { useAdminScope } from '../../hooks/useAdminScope';
@@ -134,6 +136,10 @@ export default function OverviewTab() {
     refetchOnWindowFocus: false,
   });
 
+  // The window the panel actually drew from, so the caveat states it rather
+  // than the copy implying one.
+  const oldestChangeAt = changesQuery.data?.changes.at(-1)?.detected_at ?? null;
+
   const marathonsQuery = useQuery({
     queryKey: ['activity-marathons', usernames],
     queryFn: () => activityApi.getMarathons(usernames, 6),
@@ -215,11 +221,21 @@ export default function OverviewTab() {
         })}
       </Panel>
 
+      {/* Titled "since the last refresh" while asking for the whole change
+          history, which the API distinguishes and reports back in `scope`.
+          The section's question is "what happened while I was away", and a
+          reader who was away a fortnight is not served by one sync's worth of
+          rows -- so the query stays and the copy stops claiming otherwise.
+          The caveat prints the window it actually drew from. */}
       <Panel
-        title="WHAT CHANGED SINCE THE LAST REFRESH"
-        src="refresh_runs · watch_events"
-        blurb="Detected by comparing this sync against the last one. Anything with a zero is not an error — a profile that was not due yet has nothing to report."
-        caveat="Change needs two authoritative reads. A profile's first import is a baseline and deliberately emits nothing."
+        title="THE LATEST CHANGES WE DETECTED"
+        src="profile_data_changes · detected_at"
+        blurb="The most recent changes across the selection, newest first — not one sync's worth. A profile that was not due yet has nothing here, which is not the same as nothing having happened."
+        caveat={
+          oldestChangeAt
+            ? `The ${count(changesQuery.data?.changes.length ?? 0, 'most recent change')}, reaching back to ${formatDay(oldestChangeAt)}. Change needs two authoritative reads: a profile's first import is a baseline and deliberately emits nothing.`
+            : "Change needs two authoritative reads. A profile's first import is a baseline and deliberately emits nothing."
+        }
       >
         {panelState({
           isLoading: changesQuery.isLoading,
@@ -230,8 +246,8 @@ export default function OverviewTab() {
           errorBody: 'The rest of the tab is unaffected; this strip retries on demand.',
           onRetry: () => changesQuery.refetch(),
           empty: {
-            title: 'Nothing changed in the last sync',
-            body: 'Every tracked surface came back identical to the previous read. New rows appear here the moment a refresh finds one.',
+            title: 'No change detected yet',
+            body: 'Every tracked surface has come back identical to the read before it. New rows appear here the moment a refresh finds one.',
             cta: { label: 'OPEN REFRESH LEDGER', href: sectionHref('data', 'refreshes') },
           },
         }) ?? (

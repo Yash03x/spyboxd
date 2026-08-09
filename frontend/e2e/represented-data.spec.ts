@@ -140,3 +140,17 @@ test('a ranked list is distinguishable from a bag of films', async ({ page }) =>
   await expect(panel.getByText('ranked', { exact: true })).toBeVisible();
   await expect(panel.getByText('unordered', { exact: true })).toBeVisible();
 });
+
+test('the changes strip states the window it actually drew from', async ({ page }) => {
+  await page.goto('/overview');
+
+  const panel = page
+    .locator('.terminal-root section', { hasText: 'THE LATEST CHANGES WE DETECTED' })
+    .first();
+  await expect(panel).toBeVisible();
+  // It asks the API for history, so it must not claim to be one sync's worth.
+  await expect(panel).not.toContainText('since the last refresh');
+  await expect(panel).not.toContainText('comparing this sync against the last one');
+  // And it names the window it drew from rather than leaving it implied.
+  await expect(panel).toContainText('reaching back to');
+});
