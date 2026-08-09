@@ -74,7 +74,14 @@ def _decode_dotenv_value(raw_value: str) -> str:
 
 def read_database_url(env_path: Path) -> str:
     if env_path.is_symlink() or not env_path.is_file():
-        fail("the production database environment file must be a regular file")
+        # The commonest cause by far is that it was never created: the deploy
+        # account's sudo cannot write /etc/spyboxd, so the drill cannot
+        # bootstrap itself and skipped silently every night instead.
+        fail(
+            f"{env_path} is missing or is not a regular file. Run "
+            "deploy/provision-restore-drill.sh as root on the VPS to create the "
+            "restore role and this file."
+        )
 
     database_url: str | None = None
     try:
@@ -646,7 +653,8 @@ def run_restore_drill() -> None:
     ):
         fail(
             "the restore-drill environment file must be root-owned, grouped to the "
-            "deploy account's primary group, and mode 0640"
+            "deploy account's primary group, and mode 0640. "
+            "deploy/provision-restore-drill.sh writes it that way."
         )
 
     connection = parse_database_url(database_url)
