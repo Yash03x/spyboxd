@@ -58,10 +58,16 @@ jobs:
       # Runs before any credential is loaded, and includes the check that no
       # database-touching function is unclassified -- so a coverage gap is
       # caught here rather than discovered against production.
+      #
+      # The locked requirements are installed because two of these assertions
+      # import the real `services` package. Skipping them without the stack
+      # would turn the completeness check into a no-op on the one run where it
+      # is about to matter.
       - name: Test the sweep's own safety and completeness rules
         run: |
           set -Eeuo pipefail
-          python3 -m pip install --quiet --disable-pip-version-check pytest
+          python3 -m pip install --quiet --disable-pip-version-check \
+            -r requirements.lock pytest
           python3 -m pytest -q deploy/test_panel_sweep.py
 
       - name: Establish one pinned IPv4 production SSH connection

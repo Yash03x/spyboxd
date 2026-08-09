@@ -218,6 +218,30 @@ def test_the_real_service_package_has_no_undeclared_database_functions() -> None
     assert stale == [], f"these exclusions name functions that no longer exist: {stale}"
 
 
+def test_postgres_is_asked_for_a_read_only_transaction_and_sqlite_is_not() -> None:
+    """The guard that stops a stray write from landing on production.
+
+    Asserted in both directions: a missing statement on Postgres is a silent
+    loss of the protection, and issuing it on SQLite is an error.
+    """
+
+    class Recorder:
+        def __init__(self, dialect_name: str):
+            self.bind = types.SimpleNamespace(dialect=types.SimpleNamespace(name=dialect_name))
+            self.statements = []
+
+        def execute(self, statement):
+            self.statements.append(str(statement))
+
+    postgres = Recorder("postgresql")
+    sweep_module.make_read_only(postgres)
+    assert postgres.statements == ["SET TRANSACTION READ ONLY"]
+
+    sqlite = Recorder("sqlite")
+    sweep_module.make_read_only(sqlite)
+    assert sqlite.statements == []
+
+
 def test_only_the_database_url_is_taken_from_the_api_environment(tmp_path) -> None:
     """api.env holds every production secret. A read-only checker has business
     with exactly one line of it."""

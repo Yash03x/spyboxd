@@ -210,11 +210,15 @@ def make_read_only(db: Any) -> None:
     everywhere; this is the extra one that holds where it counts.
     """
 
-    from sqlalchemy import text
-
     dialect = getattr(getattr(db, "bind", None), "dialect", None)
     if getattr(dialect, "name", None) != "postgresql":
         return
+
+    # Imported after the check, not before it: on the path where this function
+    # does nothing it should also need nothing, so the safety tests can run
+    # anywhere without the database stack installed.
+    from sqlalchemy import text
+
     db.execute(text("SET TRANSACTION READ ONLY"))
 
 
