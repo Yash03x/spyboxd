@@ -25,6 +25,11 @@ export default function AvailabilityTab({
     refetchOnWindowFocus: false,
   });
 
+  // The selected region's staleness, as the freshness panel below reports it.
+  const regionIsStale = Boolean(
+    availabilityQuery.data?.regions.find((entry) => entry.region === region)?.stale,
+  );
+
   return (
     <>
       <Panel
@@ -74,12 +79,11 @@ export default function AvailabilityTab({
                 ? `read ${new Date(film.checked_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
                 : 'read date unknown',
               // The freshness table one card down says a stale reading is
-              // "shown greyed, not hidden"; nothing was ever greyed. A row
-              // whose provider reading is over a fortnight old is dimmed, so
-              // the claim and the rendering agree.
-              dim: film.checked_at
-                ? Date.now() - new Date(film.checked_at).getTime() > 14 * 24 * 3600 * 1000
-                : true,
+              // "shown greyed, not hidden"; nothing was ever greyed. The
+              // verdict comes from that same table's own row for this region
+              // rather than from a clock read during render -- the server has
+              // already decided, and it decides for every film here at once.
+              dim: regionIsStale,
             }))}
           />
         )}
