@@ -439,3 +439,37 @@ class FailureAlertTests(unittest.TestCase):
 
     def test_the_alert_runs_the_same_hardened_runner_as_everything_else(self) -> None:
         self.assertIn(HARDEN_RUNNER, read_repo_file(self.ALERT))
+
+
+class RestoreDrillProvisioningTests(unittest.TestCase):
+    """The drill has never once run: it needs a credential file the deploy
+    account's sudo cannot write, so it failed on the first check every night
+    and the schedule skipped without telling anybody."""
+
+    SCRIPT = "deploy/provision-restore-drill.sh"
+
+    def test_the_drill_names_the_script_that_unblocks_it(self) -> None:
+        drill = read_repo_file("deploy/postgres_restore_drill.py")
+        self.assertIn("deploy/provision-restore-drill.sh", drill)
+
+    def test_the_restore_role_can_create_a_database_but_is_not_a_superuser(self) -> None:
+        contents = read_repo_file(self.SCRIPT)
+        # The drill refuses a superuser outright, and the application role must
+        # stay NOCREATEDB — which is the whole reason for a separate role.
+        self.assertIn("CREATEDB NOSUPERUSER", contents)
+        self.assertNotIn("SUPERUSER;", contents)
+
+    def test_the_credential_never_reaches_argv(self) -> None:
+        contents = read_repo_file(self.SCRIPT)
+        # `ps` is world readable; the password goes in on stdin.
+        self.assertNotIn("-v password=", contents)
+        self.assertIn("\\set password", contents)
+
+    def test_the_file_is_written_with_the_ownership_the_drill_demands(self) -> None:
+        contents = read_repo_file(self.SCRIPT)
+        self.assertIn("install -o root -g \"${deploy_group}\" -m 0640", contents)
+        drill = read_repo_file("deploy/postgres_restore_drill.py")
+        self.assertIn("0o640", drill)
+
+    def test_it_refuses_to_run_as_anybody_but_root(self) -> None:
+        self.assertIn('[ "$(id -u)" -eq 0 ]', read_repo_file(self.SCRIPT))
