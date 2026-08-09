@@ -1,0 +1,105 @@
+name: Failure Alert
+
+# Production failures used to land only in the Actions tab, which nobody
+# watches on a good day — the authenticated canary was broken for three days
+# before anyone noticed, and the deploy that a fresh npm advisory blocked
+# failed silently on a merge whose own PR checks were green.
+#
+# Each workflow that guards production calls this at the end of a failed run.
+# It is a called workflow rather than a `workflow_run` listener on purpose:
+# `workflow_run` executes in the base repository's context and is the standard
+# shape of a pwn-request, so the security audit rejects it outright and is
+# right to. Called this way there is no cross-workflow trigger to abuse, and
+# the caller decides when its own failure is worth reporting.
+#
+# The alert is a GitHub issue rather than a chat integration: no secret, no
+# third-party auth, no egress, it reaches whatever notification settings the
+# account already has, and it carries its own state — a still-broken canary
+# comments on the one open issue instead of filing a new one every six hours,
+# so the comment count is how long it has been broken and closing the issue is
+# the acknowledgement.
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: The failing workflow, named as its own `name:` declares it.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    name: Raise or update the failure issue
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: File or update the issue for this workflow
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          # Through the environment, never interpolated into the script body:
+          # a branch name is attacker-chosen on a fork and must not be able to
+          # close a string literal.
+          FAILING_WORKFLOW: ${{ inputs.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_BRANCH: ${{ github.ref_name }}
+          RUN_SHA: ${{ github.sha }}
+        with:
+          script: |
+            const {FAILING_WORKFLOW, RUN_URL, RUN_BRANCH, RUN_SHA} = process.env;
+            // One open issue per workflow, found by an exact title rather than
+            // by a label: a label can be edited off an issue by hand, and a
+            // second issue for an already-known failure is the noise that
+            // makes people stop reading these.
+            const title = `${FAILING_WORKFLOW} is failing`;
+            const body = [
+              `**${FAILING_WORKFLOW}** failed.`,
+              '',
+              `- Run: ${RUN_URL}`,
+              `- Branch: \`${RUN_BRANCH}\``,
+              `- Commit: \`${RUN_SHA}\``,
+              '',
+              'This issue stays open until somebody closes it. A repeat failure',
+              'comments here rather than filing a second issue, so the comment',
+              'count is how long this has been broken.',
+            ].join('\n');
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const match = existing.find(
+              (issue) => issue.title === title && !issue.pull_request,
+            );
+
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body,
+              });
+              core.notice(`Commented on existing issue #${match.number}`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+            });
+            core.notice(`Filed issue #${created.data.number}`);

@@ -337,3 +337,105 @@ class AuthCanaryDiagnosticsTests(unittest.TestCase):
         self.assertIn("DELETE FROM app_users", script)
         self.assertNotIn("DELETE FROM profiles", script)
         self.assertNotIn("DELETE FROM watch_events", script)
+
+
+class FailureAlertTests(unittest.TestCase):
+    """A production failure has to reach somebody.
+
+    The authenticated canary was broken for three days before anyone noticed,
+    and a deploy blocked by a fresh npm advisory failed silently on a merge
+    whose own PR checks were green. Both landed only in the Actions tab.
+    """
+
+    ALERT = ".github/workflows/failure-alert.yml"
+
+    GUARDED = (
+        ".github/workflows/ci.yml",
+        ".github/workflows/production-canary.yml",
+        ".github/workflows/tmdb-enrichment.yml",
+        ".github/workflows/postgres-restore-drill.yml",
+        ".github/workflows/canary-reset.yml",
+    )
+
+    def test_every_workflow_that_guards_production_reports_its_own_failure(self) -> None:
+        for relative_path in self.GUARDED:
+            contents = read_repo_file(relative_path)
+            self.assertIn(
+                "uses: ./.github/workflows/failure-alert.yml",
+                contents,
+                f"{relative_path} never reports a failure to anybody",
+            )
+            # The name it reports itself under must be its own `name:`, or the
+            # issue title splits and a still-broken workflow files a second
+            # issue instead of updating the open one.
+            declared = contents.splitlines()[0]
+            self.assertTrue(declared.startswith("name: "))
+            name = declared.removeprefix("name: ").strip()
+            self.assertIn(f"workflow: {name}", contents)
+
+    def test_every_alert_covers_all_of_its_workflow_s_jobs(self) -> None:
+        for relative_path in self.GUARDED:
+            contents = read_repo_file(relative_path)
+            jobs = set(re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", contents.split("\njobs:", 1)[1]))
+            jobs.discard("alert_on_failure")
+            # Scoped to the alert job: several of these workflows have their
+            # own `needs:` earlier in the file, and reading the first one
+            # tested a different job's dependencies.
+            alert_block = contents.split("\n  alert_on_failure:", 1)
+            self.assertEqual(len(alert_block), 2, relative_path)
+            needs = re.search(r"(?m)^    needs: \[([^\]]*)\]", alert_block[1])
+            self.assertIsNotNone(needs, relative_path)
+            watched = {entry.strip() for entry in needs.group(1).split(",") if entry.strip()}
+            # A job left out of `needs` is a job whose failure is silent.
+            self.assertEqual(
+                jobs,
+                watched,
+                f"{relative_path} does not alert on every one of its jobs",
+            )
+
+    def test_only_a_real_failure_raises_an_alert(self) -> None:
+        for relative_path in self.GUARDED:
+            contents = read_repo_file(relative_path)
+            # A cancelled run is somebody pressing the button and a skipped one
+            # is a guard working; alerting on either trains people to ignore
+            # these. And a fork's failing pull request must not file issues.
+            self.assertIn(
+                "if: always() && contains(needs.*.result, 'failure') "
+                "&& github.ref == 'refs/heads/main'",
+                contents,
+                relative_path,
+            )
+
+    def test_the_alert_is_called_rather_than_triggered_by_workflow_run(self) -> None:
+        """`workflow_run` runs in the base repository's context and is the
+        standard shape of a pwn-request; the security audit rejects it."""
+
+        contents = read_repo_file(self.ALERT)
+        triggers = re.search(r"(?ms)^on:\n((?:^[ ]{2}.*\n|^\n)*)", contents)
+        self.assertIsNotNone(triggers)
+        self.assertIn("workflow_call:", triggers.group(1))
+        self.assertNotIn("workflow_run", triggers.group(1))
+
+    def test_a_repeat_failure_updates_one_issue_rather_than_filing_another(self) -> None:
+        contents = read_repo_file(self.ALERT)
+        self.assertIn("issues.createComment", contents)
+        self.assertIn("issue.title === title", contents)
+
+    def test_the_alert_can_write_issues_and_nothing_else(self) -> None:
+        contents = read_repo_file(self.ALERT)
+        job_permissions = re.search(
+            r"(?ms)^    permissions:\n((?:^      .*\n)+)", contents
+        )
+        self.assertIsNotNone(job_permissions)
+        granted = dict(
+            line.strip().split(": ", 1)
+            for line in job_permissions.group(1).splitlines()
+            if ": " in line
+        )
+        self.assertEqual(granted.get("issues"), "write")
+        self.assertEqual(granted.get("contents"), "read")
+        self.assertNotIn("actions", granted)
+        self.assertNotIn("packages", granted)
+
+    def test_the_alert_runs_the_same_hardened_runner_as_everything_else(self) -> None:
+        self.assertIn(HARDEN_RUNNER, read_repo_file(self.ALERT))
