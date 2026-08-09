@@ -28,12 +28,17 @@ def render(report: Dict[str, Any]) -> List[str]:
 
     failures = report.get("failures") or []
     if failures:
-        lines += ["", "| Builder | Subject | Seconds | Problem |", "| --- | --- | --- | --- |"]
+        lines += [
+            "",
+            "| Builder | Subject | Seconds | Rows | Problem |",
+            "| --- | --- | --- | --- | --- |",
+        ]
         for failure in failures:
             problem = "over budget" if failure.get("over_budget") else "raised"
+            rows = failure.get("rows")
             lines.append(
                 f"| `{failure['builder']}` | {failure['subject']} "
-                f"| {failure['seconds']} | {problem} |"
+                f"| {failure['seconds']} | {rows if rows is not None else '-'} | {problem} |"
             )
 
     slowest = report.get("slowest") or []
@@ -42,11 +47,13 @@ def render(report: Dict[str, Any]) -> List[str]:
             "",
             "<details><summary>Slowest ten</summary>",
             "",
-            "| Builder | Subject | Seconds |",
-            "| --- | --- | --- |",
+            "| Builder | Subject | Seconds | Rows |",
+            "| --- | --- | --- | --- |",
         ]
         lines += [
-            f"| `{row['builder']}` | {row['subject']} | {row['seconds']} |" for row in slowest
+            f"| `{row['builder']}` | {row['subject']} | {row['seconds']} "
+            f"| {row.get('rows') if row.get('rows') is not None else '-'} |"
+            for row in slowest
         ]
         lines += ["", "</details>"]
     return lines
