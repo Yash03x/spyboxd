@@ -59,15 +59,17 @@ jobs:
       # database-touching function is unclassified -- so a coverage gap is
       # caught here rather than discovered against production.
       #
-      # The locked requirements are installed because two of these assertions
-      # import the real `services` package. Skipping them without the stack
-      # would turn the completeness check into a no-op on the one run where it
-      # is about to matter.
+      # The dev lock rather than the production one: two of these assertions
+      # import the real `services` package, so they need the database stack,
+      # and pytest itself has to arrive hash-pinned from the same file --
+      # `--require-hashes` rejects an unpinned package named alongside it.
+      # This is the file CI installs, so the sweep checks itself against the
+      # same versions that gated the commit it is about to run.
       - name: Test the sweep's own safety and completeness rules
         run: |
           set -Eeuo pipefail
           python3 -m pip install --quiet --disable-pip-version-check \
-            -r requirements.lock pytest
+            --require-hashes -r requirements-dev.lock
           python3 -m pytest -q deploy/test_panel_sweep.py
 
       - name: Establish one pinned IPv4 production SSH connection
