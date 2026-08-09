@@ -355,7 +355,43 @@ class FailureAlertTests(unittest.TestCase):
         ".github/workflows/tmdb-enrichment.yml",
         ".github/workflows/postgres-restore-drill.yml",
         ".github/workflows/canary-reset.yml",
+        ".github/workflows/panel-sweep.yml",
     )
+
+    # Touches production but deliberately does not file an issue, with the
+    # reason. An unlisted production workflow fails the enumeration test below,
+    # so this stays a decision rather than an omission.
+    UNGUARDED = {
+        ".github/workflows/rollback.yml": (
+            "manual dispatch only; a rollback has a person watching it, and an "
+            "issue filed behind their back would arrive after they already knew"
+        ),
+    }
+
+    def test_no_production_workflow_escapes_this_list(self) -> None:
+        """The list above used to be hand-maintained, which is how a new
+        production workflow gets written with no alerting and nothing says so.
+
+        Every workflow that claims the production environment must be either
+        guarded or explicitly excused.
+        """
+
+        production = {
+            f".github/workflows/{path.name}"
+            for path in sorted(ROOT.glob(".github/workflows/*.yml"))
+            if "name: production" in path.read_text(encoding="utf-8")
+        }
+        classified = set(self.GUARDED) | set(self.UNGUARDED)
+        self.assertEqual(
+            production - classified,
+            set(),
+            "these reach production and are neither guarded nor excused",
+        )
+        self.assertEqual(
+            classified - production,
+            set(),
+            "these are classified but no longer reach production",
+        )
 
     def test_every_workflow_that_guards_production_reports_its_own_failure(self) -> None:
         for relative_path in self.GUARDED:
