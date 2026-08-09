@@ -25,7 +25,9 @@ from database.models import (
     MovieList,
     MovieListItem,
     MovieWatchProvider,
+    AppUser,
     Profile,
+    ProfileAccessRequest,
     ProfileFeedState,
     ProfileFilm,
     ProfileSync,
@@ -72,7 +74,9 @@ def _compile_big_integer_as_sqlite_integer(_type, _compiler, **_kwargs):
 
 
 TABLES = (
+    AppUser.__table__,
     Profile.__table__,
+    ProfileAccessRequest.__table__,
     ProfileSync.__table__,
     SyncDataset.__table__,
     ProfileFeedState.__table__,
@@ -229,6 +233,30 @@ def _sync(database: Session, profile: Profile, *, datasets: dict[str, int]) -> P
         )
     database.commit()
     return sync
+
+
+
+def _fulfilled_request(
+    database: Session, profile: Profile, *, waited: timedelta
+) -> ProfileAccessRequest:
+    """Somebody asked, and `waited` later the profile was available."""
+
+    user = AppUser(clerk_user_id=f"user_{next(_IDS)}")
+    database.add(user)
+    database.commit()
+    requested_at = datetime(2026, 8, 1, 9, tzinfo=timezone.utc)
+    request = ProfileAccessRequest(
+        user_id=user.id,
+        requested_username=profile.username,
+        normalized_username=profile.username.casefold(),
+        status="fulfilled",
+        fulfilled_profile_id=profile.id,
+        requested_at=requested_at,
+        resolved_at=requested_at + waited,
+    )
+    database.add(request)
+    database.commit()
+    return request
 
 
 def test_a_runtime_band_nobody_queued_has_no_ratio(database: Session) -> None:
@@ -633,7 +661,7 @@ def test_a_backing_off_feed_reports_why(database: Session) -> None:
     assert "429" in feed["why"]
 
 
-def test_latency_refuses_to_estimate_without_a_completed_run(database: Session) -> None:
+def test_latency_refuses_to_estimate_without_a_fulfilled_request(database: Session) -> None:
     viewer = _profile(database, "viewer")
 
     result = build_request_latency(database, [viewer])
@@ -756,22 +784,24 @@ def test_a_feed_top_up_does_not_make_a_current_importer_look_old(
     assert entry["missing"] == "Up to date"
 
 
-def test_latency_measures_full_reads_rather_than_sub_second_feed_polls(
+def test_latency_measures_the_wait_a_person_had_rather_than_the_import(
     database: Session,
 ) -> None:
-    """A top-up finishes in under a second. Measuring those answered "a
-    request takes 0s" beside a queue whose real answer is minutes."""
+    """A sync row times the ingestion of a bundle the runner already produced
+    -- seconds, for work that waited days on a human. Timing those answered
+    "a request takes 0s" beside a queue whose real answer is days."""
 
     viewer = _profile(database, "viewer")
-    _sync(database, viewer, datasets={"films": 400})  # one hour, start to end
+    _sync(database, viewer, datasets={"films": 400})
     for offset in range(5):
         _incremental_sync(database, viewer, datasets={"films": 1}, minutes_after=offset)
+    _fulfilled_request(database, viewer, waited=timedelta(days=2))
 
     result = build_request_latency(database, [viewer])
 
     assert result["runs"] == 1
-    assert result["median_seconds"] == 3600
-    assert "full reads" in result["caveat"]
+    assert result["median_seconds"] == int(timedelta(days=2).total_seconds())
+    assert "asking to available" in result["caveat"]
 
 
 def test_a_top_up_never_stands_in_for_the_snapshot_beneath_it(

@@ -39,6 +39,7 @@ from database.models import (
     MovieList,
     MovieListItem,
     Profile,
+    ProfileAccessRequest,
     ProfileFeedState,
     ProfileFilm,
     ProfileFollowEdge,
@@ -473,33 +474,38 @@ def build_removed(db: Session, profiles: Sequence[Profile], *, limit: int = 20) 
 
 
 def build_request_latency(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
-    """How long a completed sync actually takes, measured rather than promised."""
+    """How long asking for a profile actually takes, end to end.
 
-    profile_ids = [profile.id for profile in profiles]
-    if not profile_ids:
-        return {"runs": 0, "median_seconds": None, "worst_seconds": None, "caveat": "No profiles selected."}
+    Measured from the moment somebody asked to the moment the profile became
+    available, across every request this instance has fulfilled.
 
-    # Full reads only. An RSS top-up finishes in well under a second, and it
-    # runs on a feed schedule, so the last 30 syncs of any kind are all
-    # top-ups: the panel measured them and answered "a request takes 0s"
-    # beside a request queue whose real answer is minutes.
-    syncs = (
-        db.query(ProfileSync.started_at, ProfileSync.completed_at)
+    It deliberately does not measure ``profile_syncs``. Those rows time the
+    *ingestion* of a bundle the residential runner already produced — seconds,
+    for work that took a person hours to get around to — so a panel asking
+    "how long does a request take" answered "0s" beside a queue whose real
+    answer is days. The wait is dominated by the two things a sync row cannot
+    see: waiting for an admin to run the batch, and the scrape itself. Request
+    to availability is the only span that contains both.
+    """
+
+    del profiles  # Fulfilment latency is a property of the instance, not of a selection.
+
+    rows = (
+        db.query(ProfileAccessRequest.requested_at, ProfileAccessRequest.resolved_at)
         .filter(
-            ProfileSync.profile_id.in_(profile_ids),
-            ProfileSync.status == "completed",
-            ProfileSync.completed_at.isnot(None),
-            ProfileSync.source_kind != INCREMENTAL_SOURCE_KIND,
+            ProfileAccessRequest.status == "fulfilled",
+            ProfileAccessRequest.resolved_at.isnot(None),
+            ProfileAccessRequest.requested_at.isnot(None),
         )
-        .order_by(ProfileSync.started_at.desc())
+        .order_by(ProfileAccessRequest.resolved_at.desc())
         .limit(30)
         .all()
     )
 
     durations = sorted(
-        (completed - started).total_seconds()
-        for started, completed in syncs
-        if completed and started and completed >= started
+        (resolved - requested).total_seconds()
+        for requested, resolved in rows
+        if resolved and requested and resolved >= requested
     )
 
     if not durations:
@@ -508,9 +514,8 @@ def build_request_latency(db: Session, profiles: Sequence[Profile]) -> Dict[str,
             "median_seconds": None,
             "worst_seconds": None,
             "caveat": (
-                "No completed full read in this selection carries both a start and an end time, "
-                "so there is nothing to measure. An estimate would be a promise rather than a "
-                "figure."
+                "No request has been fulfilled yet, so there is nothing to measure. An estimate "
+                "would be a promise rather than a figure."
             ),
         }
 
@@ -520,10 +525,11 @@ def build_request_latency(db: Session, profiles: Sequence[Profile]) -> Dict[str,
         "median_seconds": round(median),
         "worst_seconds": round(durations[-1]),
         "caveat": (
-            f"Median of the last {len(durations)} completed full reads, so the estimate is "
-            "measured rather than promised. Incremental feed top-ups are excluded: they finish "
-            "in under a second and answer a different question. A large diary dominates the "
-            "worst case — a big profile read at a rate that does not trip the feed."
+            f"Measured across the last {len(durations)} fulfilled "
+            f"{'request' if len(durations) == 1 else 'requests'}, from asking to available. "
+            "A full read runs on a residential machine somebody has to start, so the wait is "
+            "mostly queue rather than compute — which is why this is measured rather than "
+            "promised."
         ),
     }
 

@@ -30,7 +30,11 @@ function duration(seconds: number | null): string {
   if (seconds < 90) return `${Math.round(seconds)}s`;
   const minutes = Math.round(seconds / 60);
   if (minutes < 90) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  const hours = Math.floor(minutes / 60);
+  // Days, once there are any. A wait that is mostly somebody getting round
+  // to starting a batch reads as "2d 3h", not as "51h 0m".
+  if (hours >= 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  return `${hours}h ${minutes % 60}m`;
 }
 
 export default function RefreshesTab({ profiles }: { profiles: string[] }) {
@@ -199,7 +203,7 @@ export default function RefreshesTab({ profiles }: { profiles: string[] }) {
 
       <Panel
         title="FULL REFRESH · OWNER EXPORT"
-        src="profile_syncs · exports"
+        src="profile_access_requests · exports"
         stats={
           latencyQuery.data && latencyQuery.data.runs
             ? [

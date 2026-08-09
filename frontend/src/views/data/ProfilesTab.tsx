@@ -81,7 +81,11 @@ function duration(seconds: number | null): string {
   if (seconds < 90) return `${Math.round(seconds)}s`;
   const minutes = Math.round(seconds / 60);
   if (minutes < 90) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  const hours = Math.floor(minutes / 60);
+  // Days, once there are any. A wait that is mostly somebody getting round
+  // to starting a batch reads as "2d 3h", not as "51h 0m".
+  if (hours >= 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function errorText(error: unknown): string {
@@ -1175,8 +1179,8 @@ export default function ProfilesTab({
 
       <Panel
         title="HOW LONG A REQUEST ACTUALLY TAKES"
-        src="profile_syncs durations"
-        blurb="Measured from completed runs rather than promised."
+        src="profile_access_requests · requested_at → resolved_at"
+        blurb="From asking to available, across every request this instance has fulfilled — not how long the import ran."
         stats={
           latencyQuery.data && latencyQuery.data.runs
             ? [
@@ -1197,7 +1201,7 @@ export default function ProfilesTab({
           errorBody: 'Every other panel on this tab is unaffected.',
           empty: {
             title: 'Nothing measurable yet',
-            body: 'No completed sync carries both a start and an end time, so an estimate would be a promise rather than a figure.',
+            body: 'No request has been fulfilled here yet, so an estimate would be a promise rather than a figure.',
           },
         })}
       </Panel>

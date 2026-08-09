@@ -345,9 +345,16 @@ def get_request_latency(
     db: Session = Depends(get_db),
     user: ClerkUser = Depends(get_current_user),
 ):
-    """How long a completed sync actually takes, measured rather than promised."""
+    """How long asking for a profile actually takes, measured rather than promised.
 
-    return build_request_latency(db, _selected_profiles(db, user, profiles))
+    Fulfilment latency is a property of the instance rather than of a
+    selection, so `profiles` is still validated for access -- an unauthorized
+    username must not answer differently here than anywhere else -- and then
+    deliberately not used to filter the measurement.
+    """
+
+    _selected_profiles(db, user, profiles)
+    return build_request_latency(db, [])
 
 
 @router.get("/data-health/freshness")
