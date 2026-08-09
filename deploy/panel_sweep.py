@@ -114,6 +114,10 @@ class Result:
     subject: str
     seconds: float
     size: Optional[int] = None
+    # How many library rows sat underneath this call. A latency number cannot
+    # be read without it: 7s over 4,000 films and 7s over 200 are different
+    # defects, and only one of them is about the query.
+    scale: Optional[int] = None
     error: Optional[str] = None
     over_budget: bool = False
 
@@ -174,17 +178,49 @@ def plan_call(
     second = parameters[1] if len(parameters) > 1 else None
 
     if second == "profiles":
-        return [("all profiles", lambda db: function(db, profiles))]
+        return [("all profiles", lambda db: function(db, profiles), None)]
     if second == "profile":
+        # Largest first: a builder that is fine on a small library and slow on
+        # a big one is the failure worth finding, and sampling the alphabet
+        # would have missed it.
+        sampled = sorted(profiles, key=_library_size_key, reverse=True)[:SINGLE_PROFILE_SAMPLE]
         return [
-            (profile.username, (lambda p: lambda db: function(db, p))(profile))
-            for profile in profiles[:SINGLE_PROFILE_SAMPLE]
+            (
+                profile.username,
+                (lambda p: lambda db: function(db, p))(profile),
+                _library_size(profile),
+            )
+            for profile in sampled
         ]
     if second == "pair" and len(profiles) >= 2:
-        pair = list(profiles[:2])
+        pair = sorted(profiles, key=_library_size_key, reverse=True)[:2]
         subject = " + ".join(profile.username for profile in pair)
-        return [(subject, lambda db: function(db, pair, profiles))]
+        return [
+            (
+                subject,
+                lambda db: function(db, pair, profiles),
+                sum(_library_size(profile) or 0 for profile in pair) or None,
+            )
+        ]
     return []
+
+
+def _library_size(profile: Any) -> Optional[int]:
+    """Rows behind a profile, as stamped on it by the loader."""
+
+    size = getattr(profile, "_sweep_library_size", None)
+    return size if isinstance(size, int) else None
+
+
+def _library_size_key(profile: Any) -> int:
+    """Sort key: an unstamped profile sorts last rather than raising.
+
+    None is a legitimate answer here -- a caller may not have stamped sizes --
+    and comparing it would turn a missing measurement into a crash.
+    """
+
+    size = _library_size(profile)
+    return size if size is not None else -1
 
 
 def measure(result_size: Any) -> Optional[int]:
@@ -254,14 +290,20 @@ def run_sweep(session_factory: Callable[[], Any], profile_loader: Callable[[Any]
                 sweep.undeclared.append(name)
                 continue
             budget = BUDGET_OVERRIDES.get(name, DEFAULT_BUDGET_SECONDS)
-            for subject, call in calls:
+            for subject, call, scale in calls:
                 started = time.monotonic()
                 try:
                     payload = call(db)
                 except Exception:  # noqa: BLE001 - the point is to report any failure
                     elapsed = time.monotonic() - started
                     sweep.results.append(
-                        Result(name, subject, elapsed, error=traceback.format_exc(limit=6))
+                        Result(
+                            name,
+                            subject,
+                            elapsed,
+                            scale=scale,
+                            error=traceback.format_exc(limit=6),
+                        )
                     )
                     # A failed builder can leave the transaction unusable.
                     db.rollback()
@@ -274,6 +316,7 @@ def run_sweep(session_factory: Callable[[], Any], profile_loader: Callable[[Any]
                         subject,
                         elapsed,
                         size=measure(payload),
+                        scale=scale,
                         over_budget=elapsed > budget,
                     )
                 )
@@ -288,14 +331,28 @@ def run_sweep(session_factory: Callable[[], Any], profile_loader: Callable[[Any]
 
 
 def load_completed_profiles(db: Any) -> List[Any]:
-    from database.models import Profile
+    from sqlalchemy import func
 
-    return (
+    from database.models import Profile, ProfileFilm
+
+    profiles = (
         db.query(Profile)
         .filter(Profile.scraping_status == "completed")
         .order_by(Profile.username)
         .all()
     )
+
+    # One aggregate for the whole set, so every latency in the report can be
+    # read against the number of rows it was working over.
+    sizes = dict(
+        db.query(ProfileFilm.profile_id, func.count(ProfileFilm.id))
+        .filter(ProfileFilm.removed_at.is_(None))
+        .group_by(ProfileFilm.profile_id)
+        .all()
+    )
+    for profile in profiles:
+        profile._sweep_library_size = int(sizes.get(profile.id, 0))
+    return profiles
 
 
 def report(sweep: Sweep, *, as_json: bool) -> None:
@@ -312,13 +369,21 @@ def report(sweep: Sweep, *, as_json: bool) -> None:
                             "builder": r.name,
                             "subject": r.subject,
                             "seconds": round(r.seconds, 3),
+                            "rows": r.scale,
                             "error": r.error,
                             "over_budget": r.over_budget,
                         }
                         for r in sweep.failures
                     ],
+                    # `rows` is what separates "slow per row" from "a lot of
+                    # rows" -- without it a latency number cannot be read.
                     "slowest": [
-                        {"builder": r.name, "subject": r.subject, "seconds": round(r.seconds, 3)}
+                        {
+                            "builder": r.name,
+                            "subject": r.subject,
+                            "seconds": round(r.seconds, 3),
+                            "rows": r.scale,
+                        }
                         for r in sorted(sweep.results, key=lambda r: -r.seconds)[:10]
                     ],
                 },
@@ -329,8 +394,8 @@ def report(sweep: Sweep, *, as_json: bool) -> None:
 
     print(f"panel sweep: {len(sweep.results)} builder calls against production data")
     for result in sorted(sweep.results, key=lambda r: -r.seconds)[:10]:
-        size = "-" if result.size is None else str(result.size)
-        print(f"  {result.seconds:6.2f}s  {size:>6}  {result.name} [{result.subject}]")
+        rows = "-" if result.scale is None else str(result.scale)
+        print(f"  {result.seconds:6.2f}s  over {rows:>6} rows  {result.name} [{result.subject}]")
 
     for name in sweep.undeclared:
         print(f"UNDECLARED: {name} reaches the database and is neither swept nor excluded", file=sys.stderr)

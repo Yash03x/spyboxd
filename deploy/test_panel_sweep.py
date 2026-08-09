@@ -51,9 +51,11 @@ sweep_module = _load_sweep()
 
 
 class FakeProfile:
-    def __init__(self, username: str, identifier: int):
+    def __init__(self, username: str, identifier: int, library_size: int | None = None):
         self.username = username
         self.id = identifier
+        if library_size is not None:
+            self._sweep_library_size = library_size
 
 
 class FakeSession:
@@ -206,7 +208,14 @@ def test_a_single_profile_instance_is_refused_rather_than_half_swept(monkeypatch
         _run(monkeypatch, _package(build_anything=build_anything), profiles=[FakeProfile("solo", 1)])
 
 
-def test_single_profile_builders_are_sampled_not_skipped(monkeypatch) -> None:
+def test_single_profile_builders_sample_the_largest_libraries(monkeypatch) -> None:
+    """Sampling by name would have missed this class of defect entirely.
+
+    The first real finding was a builder that ran in about a second on two
+    profiles and took seven on the biggest one. A sample that ignores size
+    reports a pass on exactly the libraries where nothing goes wrong.
+    """
+
     seen = []
 
     def build_per_person(db, profile):
@@ -214,11 +223,31 @@ def test_single_profile_builders_are_sampled_not_skipped(monkeypatch) -> None:
         return {}
 
     monkeypatch.setattr(sweep_module, "SINGLE_PROFILE_SAMPLE", 2)
-    people = [FakeProfile(name, index) for index, name in enumerate("abcde", start=1)]
+    people = [
+        FakeProfile("small", 1, library_size=90),
+        FakeProfile("biggest", 2, library_size=4200),
+        FakeProfile("middling", 3, library_size=700),
+    ]
     result, _ = _run(monkeypatch, _package(build_per_person=build_per_person), profiles=people)
 
     assert result.ok
-    assert seen == ["a", "b"]
+    assert seen == ["biggest", "middling"]
+    # And the row count travels with the result, so a latency can be read.
+    assert {r.subject: r.scale for r in result.results} == {"biggest": 4200, "middling": 700}
+
+
+def test_an_unstamped_profile_sorts_last_rather_than_crashing(monkeypatch) -> None:
+    """A caller that did not measure library sizes still gets a sweep."""
+
+    def build_per_person(db, profile):
+        return {}
+
+    monkeypatch.setattr(sweep_module, "SINGLE_PROFILE_SAMPLE", 3)
+    people = [FakeProfile("unmeasured", 1), FakeProfile("measured", 2, library_size=10)]
+    result, _ = _run(monkeypatch, _package(build_per_person=build_per_person), profiles=people)
+
+    assert result.ok
+    assert [r.subject for r in result.results] == ["measured", "unmeasured"]
 
 
 def test_the_real_service_package_has_no_undeclared_database_functions() -> None:
