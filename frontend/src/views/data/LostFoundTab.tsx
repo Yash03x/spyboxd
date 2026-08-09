@@ -24,7 +24,15 @@ const KIND_LABEL: Record<string, string> = {
   orphaned: 'the entry survived but its target could not be resolved',
 };
 
-export default function LostFoundTab({ profiles }: { profiles: string[] }) {
+export default function LostFoundTab({
+  profiles,
+  selectionLoading = false,
+}: {
+  profiles: string[];
+  /** The profile list is still on the wire; an empty selection is not
+   *  yet a fact, so a disabled query must not report an absence. */
+  selectionLoading?: boolean;
+}) {
   const enabled = profiles.length > 0;
   const options = { enabled, staleTime: 5 * 60 * 1000, refetchOnWindowFocus: false };
 
@@ -48,7 +56,7 @@ export default function LostFoundTab({ profiles }: { profiles: string[] }) {
         caveat={lostQuery.data?.caveat}
       >
         {panelState({
-          isLoading: lostQuery.isLoading,
+          isLoading: lostQuery.isLoading || (selectionLoading && !enabled),
           error: lostQuery.error,
           isEmpty: (lostQuery.data?.entries.length ?? 0) === 0,
           onRetry: () => lostQuery.refetch(),
@@ -98,7 +106,7 @@ export default function LostFoundTab({ profiles }: { profiles: string[] }) {
         caveat={listsQuery.data?.caveat}
       >
         {panelState({
-          isLoading: listsQuery.isLoading,
+          isLoading: listsQuery.isLoading || (selectionLoading && !enabled),
           error: listsQuery.error,
           isEmpty: (listsQuery.data?.films.length ?? 0) === 0,
           severity: 'quiet',

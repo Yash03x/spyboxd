@@ -46,6 +46,36 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
+/**
+ * Carry the API's own words to the panel that shows them.
+ *
+ * Every error surface in the product promises the reader "the message from
+ * the API" and then printed axios's `Request failed with status code 400`,
+ * which says nothing. The backend answers `{"detail": "..."}` on every
+ * refusal it authors — the 25-profile tracking cap, the 10 active-request
+ * cap, a private profile, a malformed username — and all of it was being
+ * dropped one layer below the panel. Rewriting `message` here fixes every
+ * caller at once, including the mutation outcome lines, rather than each
+ * catch block learning the response shape.
+ */
+api.interceptors.response.use(undefined, (error: unknown) => {
+  if (axios.isAxiosError(error)) {
+    const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail;
+    // FastAPI validation errors answer with a list of objects rather than a
+    // sentence. Those are for a developer, not a reader: leave the status
+    // message alone rather than printing `[object Object]`.
+    if (typeof detail === 'string' && detail.trim()) {
+      error.message = detail.trim();
+    } else if (!error.response) {
+      error.message =
+        error.code === 'ECONNABORTED'
+          ? 'The request took too long and was given up on.'
+          : 'The API could not be reached.';
+    }
+  }
+  return Promise.reject(error);
+});
+
 // Types for API responses
 export interface DataCoverage {
   mode: string;
@@ -1292,11 +1322,21 @@ export interface MemberArchiveResponse {
   liked_authors: MemberLikedAuthor[];
   comments: MemberCommentEntry[];
   lost_entries: LostEntryRecord[];
+  /** Counted in the database, not over the page above: `limit` bounds what
+   *  ships, never what is claimed to be held. */
   totals: {
     liked_reviews: number;
     liked_lists: number;
     comments: number;
     lost_entries: number;
+  };
+  /** Whether this response shipped fewer rows than are held, per surface, so
+   *  a panel can say "showing N of M" instead of implying it has everything. */
+  truncated: {
+    liked_reviews: boolean;
+    liked_lists: boolean;
+    comments: boolean;
+    lost_entries: boolean;
   };
 }
 

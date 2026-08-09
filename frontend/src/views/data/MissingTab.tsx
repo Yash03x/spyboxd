@@ -28,7 +28,15 @@ const FEATURE_LABEL: Record<string, string> = {
   recent_changes: 'Overview › What changed',
 };
 
-export default function MissingTab({ profiles }: { profiles: string[] }) {
+export default function MissingTab({
+  profiles,
+  selectionLoading = false,
+}: {
+  profiles: string[];
+  /** The profile list is still on the wire; an empty selection is not
+   *  yet a fact, so a disabled query must not report an absence. */
+  selectionLoading?: boolean;
+}) {
   const enabled = profiles.length > 0;
   const options = { enabled, staleTime: 60 * 1000, refetchOnWindowFocus: false };
 
@@ -62,7 +70,7 @@ export default function MissingTab({ profiles }: { profiles: string[] }) {
         caveat={countsQuery.data?.caveat}
       >
         {panelState({
-          isLoading: countsQuery.isLoading,
+          isLoading: countsQuery.isLoading || (selectionLoading && !enabled),
           error: countsQuery.error,
           isEmpty: (countsQuery.data?.profiles.length ?? 0) === 0,
           onRetry: () => countsQuery.refetch(),
@@ -111,7 +119,7 @@ export default function MissingTab({ profiles }: { profiles: string[] }) {
         caveat={privateQuery.data?.caveat}
       >
         {panelState({
-          isLoading: privateQuery.isLoading,
+          isLoading: privateQuery.isLoading || (selectionLoading && !enabled),
           error: privateQuery.error,
           isEmpty: (privateQuery.data?.profiles.length ?? 0) === 0,
           onRetry: () => privateQuery.refetch(),
@@ -147,7 +155,7 @@ export default function MissingTab({ profiles }: { profiles: string[] }) {
         caveat="A blocked view is not broken. It is a question this selection cannot answer yet, and the blocker beside it is the thing that would change that."
       >
         {panelState({
-          isLoading: coverageQuery.isLoading,
+          isLoading: coverageQuery.isLoading || (selectionLoading && !enabled),
           error: coverageQuery.error,
           isEmpty: (coverageQuery.data?.feature_readiness.length ?? 0) === 0,
           onRetry: () => coverageQuery.refetch(),
@@ -191,7 +199,7 @@ export default function MissingTab({ profiles }: { profiles: string[] }) {
         caveat={removedQuery.data?.caveat}
       >
         {panelState({
-          isLoading: removedQuery.isLoading,
+          isLoading: removedQuery.isLoading || (selectionLoading && !enabled),
           error: removedQuery.error,
           isEmpty: (removedQuery.data?.removed.length ?? 0) === 0,
           severity: 'quiet',

@@ -26,7 +26,12 @@ export default function TabRow({ section, active }: { section: SectionDef; activ
   return (
     <div
       role="tablist"
-      className="sticky top-[34px] z-40 mt-3 flex items-stretch overflow-x-auto border-b border-term-rule bg-term-bg px-[14px]"
+      // The status bar is one 34px row only from `md` up; below that it
+      // wraps onto a second line and is roughly 60px tall, so pinning the
+      // tabs at 34px slid them under it on a phone. Not sticky at all
+      // below `md`: the wrapped bar already eats enough of a small
+      // viewport without a second fixed strip under it.
+      className="z-40 mt-3 flex items-stretch overflow-x-auto border-b border-term-rule bg-term-bg px-[14px] md:sticky md:top-[34px]"
     >
       {section.tabs.map((tab) => {
         const isActive = tab.id === active.id;

@@ -2197,6 +2197,7 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
           },
         ],
         totals: { liked_reviews: 2, liked_lists: 0, comments: 0, lost_entries: 2 },
+        truncated: { liked_reviews: false, liked_lists: false, comments: false, lost_entries: false },
       });
     }
   }

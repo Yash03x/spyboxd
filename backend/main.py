@@ -106,7 +106,16 @@ def _remove_scraped_profile_directory(username: str) -> None:
 
 # Pydantic models for request/response
 class ProfileCreate(BaseModel):
-    username: str
+    """A placeholder for a Letterboxd account that will be filled by an upload.
+
+    The username is held to Letterboxd's own charset. Unvalidated, an admin
+    pasting "@name" or a profile URL created a row that can never sync and,
+    for the URL, can never be deleted through the API either -- the slashes
+    do not survive the path. A placeholder that cannot become a profile is
+    worse than a rejected form.
+    """
+
+    username: str = Field(pattern=r"^[A-Za-z0-9_]{2,15}$")
     bio: Optional[str] = None
     location: Optional[str] = None
     website: Optional[str] = None
