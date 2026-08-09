@@ -32,6 +32,21 @@ function echoReason(echo: RewatchEcho): { text: string; tone: string } {
   return { text: 'follows not imported', tone: 'var(--dim)' };
 }
 
+/**
+ * Same-day echoes have no earlier and later side, so the follow question the
+ * caption answers -- did the follower follow the person they followed --
+ * cannot be asked of them at all. The backend returns `follow_backed: null`
+ * for every one of them regardless of how complete the follow graph is, and
+ * captioning that as "follows not imported" told the reader their import was
+ * missing when it was not.
+ */
+function echoEvidence(echo: RewatchEcho): { text: string; tone: string } {
+  if (echo.timing === 'same_day') {
+    return { text: 'same day — no lead to follow', tone: 'var(--dim)' };
+  }
+  return echoReason(echo);
+}
+
 function echoTiming(echo: RewatchEcho): string {
   if (echo.timing === 'same_day') return 'Same day';
   return `${echo.day_gap} day${echo.day_gap === 1 ? '' : 's'} later`;
@@ -145,14 +160,18 @@ export default function EchoesTab({ profiles, gapDays }: { profiles: string[]; g
         }) ?? (
           <Posters
             items={echoes.slice(0, 10).map((echo) => {
-              const reason = echoReason(echo);
+              const reason = echoEvidence(echo);
               const leader = echo.participants.find((person) => person.timing_role !== 'follower');
               const follower = echo.participants.find((person) => person.timing_role === 'follower');
               return {
                 title: echo.movie.year ? `${echo.movie.title} (${echo.movie.year})` : echo.movie.title,
                 posterUrl: echo.movie.poster_url,
+                // Each side says what it actually was. The backend requires
+                // only ONE of the pair to be a rewatch, so captioning the
+                // earlier watcher as the rewatcher credited a first viewing
+                // as a revisit whenever the pattern ran the other way round.
                 sub: follower
-                  ? `@${leader?.username ?? '?'} rewatched, @${follower.username} followed`
+                  ? `@${leader?.username ?? '?'} ${leader?.watch_kind === 'rewatch' ? 'rewatched' : 'first watched'}, @${follower.username} ${follower.watch_kind === 'rewatch' ? 'rewatched' : 'watched'} after`
                   : echo.participants.map((person) => `@${person.username}`).join(' + '),
                 right: echoTiming(echo),
                 tone: echo.timing === 'same_day' ? 'var(--ok)' : 'var(--accent)',
