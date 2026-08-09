@@ -1,17 +1,17 @@
 # Core Dependencies
 fastapi>=0.139.2
-uvicorn[standard]>=0.23.0
+uvicorn[standard]>=0.51.0
 sqlalchemy>=2.0.0
-alembic>=1.13.0
+alembic>=1.18.5
 psycopg[binary]>=3.1.0
 python-multipart>=0.0.32
 
 # Auth — Clerk JWT verification
 PyJWT[crypto]>=2.8.0
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2
 
 # Data Processing
-pandas>=1.5.0
+pandas>=3.0.5
 python-dateutil>=2.8.0
-requests>=2.25.0
+requests>=2.34.2
 beautifulsoup4>=4.15.0
