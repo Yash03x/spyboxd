@@ -74,6 +74,10 @@ class Profile(Base):
     # upload under an unknown username can be recognized as an existing
     # profile and renamed in place instead of duplicated.
     letterboxd_person_id = Column(BigInteger, nullable=True)
+    # Their MyAnimeList account, where one is known. Having a Letterboxd
+    # profile implies nothing about having a MAL one, so null means "we do not
+    # know of one" rather than "they have none".
+    mal_username = Column(String(64), nullable=True, index=True)
     member_badge = Column(String(20), nullable=True)  # 'Patron' | 'Pro' | 'Crew'
     pronoun = Column(String(50), nullable=True)  # official-export profile.csv only
     # Every external link a member lists on their profile, as
@@ -1340,3 +1344,87 @@ class SystemMetrics(Base):
     
     # Additional metrics as JSON
     metrics = Column(JSON, nullable=True)
+
+
+class Anime(Base):
+    """The anime catalogue, keyed by MyAnimeList's own id.
+
+    Separate from `movies` on purpose: MAL is a different service with its own
+    identities and its own idea of a title, and forcing anime into a table
+    whose identity is a Letterboxd slug would make every join a guess.
+    """
+
+    __tablename__ = "anime"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Titles are romanised inconsistently and change; the id does not.
+    mal_id = Column(Integer, nullable=False, unique=True, index=True)
+    title = Column(String(500), nullable=False, index=True)
+    title_english = Column(String(500), nullable=True)
+    title_japanese = Column(String(500), nullable=True)
+    media_type = Column(String(32), nullable=True)
+    episodes = Column(Integer, nullable=True)
+    status = Column(String(32), nullable=True)
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    mean_score = Column(Float, nullable=True)
+    poster_url = Column(String(1000), nullable=True)
+    synopsis = Column(Text, nullable=True)
+    genres = Column(JSON, nullable=True)
+    studios = Column(JSON, nullable=True)
+    fetched_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    profile_entries = relationship(
+        "ProfileAnime", back_populates="anime", cascade="all, delete-orphan"
+    )
+
+
+class ProfileAnime(Base):
+    """One person's entry for one title: where they are with it, and when."""
+
+    __tablename__ = "profile_anime"
+
+    id = Column(Integer, primary_key=True, index=True)
+    profile_id = Column(
+        Integer, ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    anime_id = Column(
+        Integer, ForeignKey("anime.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # MAL's own vocabulary, unmapped: watching, completed, on_hold, dropped,
+    # plan_to_watch. The film side has no equivalent of "on hold", so
+    # translating would lose it.
+    status = Column(String(32), nullable=False)
+    # 1-10 as MAL stores it, never rescaled to the half-star film scale. MAL
+    # writes 0 for unscored; that arrives here as NULL, because a zero
+    # standing in for an absence is the mistake this product keeps catching.
+    score = Column(Integer, nullable=True)
+    episodes_watched = Column(Integer, nullable=True)
+    is_rewatching = Column(Boolean, nullable=False, default=False)
+    times_rewatched = Column(Integer, nullable=True)
+    started_date = Column(Date, nullable=True)
+    finished_date = Column(Date, nullable=True)
+    # The only timing signal the list API gives, and what an overlap is built
+    # from when a finished date is absent.
+    updated_at_source = Column(DateTime(timezone=True), nullable=True)
+    first_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    # Append-only, as everywhere else: an entry that stops appearing is marked,
+    # never deleted.
+    removed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    profile = relationship("Profile")
+    anime = relationship("Anime", back_populates="profile_entries")
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "anime_id", name="uq_profile_anime"),
+        Index("ix_profile_anime_finished", "anime_id", "finished_date"),
+    )
