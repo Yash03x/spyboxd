@@ -567,7 +567,14 @@ export const profileStats = {
   },
   // Deliberately overlaps our figures: `directors` agrees, `hours` and
   // `longest_streak` do not, so both comparison branches render.
-  letterboxd_reported: { hours: 2_130, directors: 640, longest_streak: 19 },
+  letterboxd_reported: {
+    hours: 2_130,
+    directors: 640,
+    longest_streak: 19,
+    // A key the label map does not know: the stats page's shape varies by
+    // account, and an unanticipated figure is still theirs.
+    highest_rated_year: 2018,
+  },
 };
 
 // The unwatched watchlist ranked by the circle. One recommendation has no
@@ -1359,7 +1366,12 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
         bio: 'Watching everything, ranking nothing.',
         join_date: null,
         first_logged_date: '2019-03-04',
-        external_links: [],
+        external_links: [
+          { label: 'letterboxd.com/alpha', url: 'https://letterboxd.com/alpha/' },
+          // No label: the importer falls the label back to the URL, and the
+          // panel must print something either way.
+          { url: 'https://alpha.example/blog' },
+        ],
         followers_count: 741,
         following_count: 268,
         caveat: 'Pronouns and location come from an official export only. Where a profile has not supplied one, the row is absent rather than filled with a guess — and Letterboxd publishes no join date on a public page at all.',
@@ -2154,9 +2166,37 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
           },
         ],
         liked_lists: [],
+        // One author resolved and one like that never resolved: the panel must
+        // rank the first and say the second was left out rather than pooled.
+        liked_authors: [{ username: 'carol', likes: 2, unresolved_likes: 1 }],
         comments: [],
-        lost_entries: [],
-        totals: { liked_reviews: 2, liked_lists: 0, comments: 0, lost_entries: 0 },
+        lost_entries: [
+          {
+            lost_kind: 'deleted',
+            entry_type: 'review',
+            title: 'A Film Letterboxd Forgot',
+            release_year: 1998,
+            source_url: null,
+            entry_date: '2019-04-02',
+            watched_date: '2019-04-01',
+            rating: 4,
+            body_text: 'The projector broke twice and it was still the best night of that year.',
+          },
+          // A deleted diary row carries no text; the panel must say so rather
+          // than render an empty cell that reads as text we failed to keep.
+          {
+            lost_kind: 'orphaned',
+            entry_type: 'diary',
+            title: 'An Orphaned Entry',
+            release_year: null,
+            source_url: null,
+            entry_date: '2020-01-05',
+            watched_date: null,
+            rating: null,
+            body_text: null,
+          },
+        ],
+        totals: { liked_reviews: 2, liked_lists: 0, comments: 0, lost_entries: 2 },
       });
     }
   }

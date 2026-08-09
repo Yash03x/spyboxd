@@ -34,6 +34,21 @@ import {
 
 const MONTH_INITIAL = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 
+/**
+ * Letterboxd's stats page names its own figures, and the key set varies by
+ * account. Anything not listed here renders with its underscores stripped
+ * rather than being hidden -- a figure we did not anticipate is still theirs,
+ * and dropping it would quietly lose data we went to a Patron-only page for.
+ */
+const REPORTED_STAT_LABELS: Record<string, string> = {
+  films: 'Films logged',
+  hours: 'Hours watched',
+  countries: 'Countries visited',
+  directors: 'Directors seen',
+  '2_film_days': 'Days with two or more films',
+  longest_streak: 'Longest streak',
+};
+
 function stars(rating: number | null | undefined): string {
   if (rating === null || rating === undefined) return '—';
   const full = Math.floor(rating);
@@ -789,7 +804,10 @@ export default function OnePersonTab({ subject }: { subject: string }) {
                 // is a few tenths, and a 0-5 axis would flatten it to nothing.
                 value: Math.round((own?.average_rating ?? 0) * 100),
                 display: own?.average_rating ? own.average_rating.toFixed(2) : '—',
-                hint: `${point.label}: average ${own?.average_rating?.toFixed(2) ?? '—'} over ${own?.rated_events ?? 0} rated events`,
+                // The year's shape, not just its average: the same payload
+                // carries how much of that year was a second viewing and how
+                // much of it they liked, and both were being thrown away.
+                hint: `${point.label}: average ${own?.average_rating?.toFixed(2) ?? '—'} over ${own?.rated_events ?? 0} rated events · ${own?.rewatch_count ?? 0} of ${own?.watch_events ?? 0} were rewatches · ${own?.liked_count ?? 0} liked`,
               };
             })}
             max={500}
@@ -1237,6 +1255,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
                 ['Editor', stats?.top_editors?.[0]],
                 ['Writer', stats?.top_writers?.[0]],
                 ['Producer', stats?.top_producers?.[0]],
+                ['Executive producer', stats?.top_executive_producers?.[0]],
                 ['Production design', stats?.top_production_designers?.[0]],
                 ['Costume design', stats?.top_costume_designers?.[0]],
                 ['Casting', stats?.top_casting?.[0]],
@@ -1248,6 +1267,216 @@ export default function OnePersonTab({ subject }: { subject: string }) {
                   cell(role, { size: '9.5px', tone: 'var(--muted)' }),
                   cell(person!.name, { font: 's', size: '10.5px', tone: 'var(--ink2)', wrap: true }),
                   cell(String(person!.count), { align: 'right', tone: 'var(--accent)' }),
+                ],
+              }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="WHERE THEY RATE HIGHEST"
+        isNew
+        src="profile_films.rating grouped by genre · decade · director"
+        blurb="Their most generous corner of the library, by their own stars rather than by how much they watch."
+        caveat={
+          stats?.highest_rated.genre
+            ? 'Averages run over rated films only, and a bucket needs enough of them to be worth naming — the count beside each average is the denominator, not the bucket size.'
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty:
+            !stats?.highest_rated.genre &&
+            !stats?.highest_rated.decade &&
+            !stats?.highest_rated.director,
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: 'Their highest-rated corners could not be read',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'Not enough ratings to name a favourite corner',
+            body: 'Every bucket needs a few rated films before its average says anything, and none has reached that yet.',
+          },
+        }) ?? (
+          <Rows
+            columns="88px minmax(0,1fr) 52px 48px"
+            head={['KIND', 'HIGHEST', ['AVG', 'right'], ['RATED', 'right']]}
+            rows={(
+              [
+                ['Genre', stats?.highest_rated.genre?.label, stats?.highest_rated.genre],
+                ['Decade', stats?.highest_rated.decade?.label, stats?.highest_rated.decade],
+                ['Director', stats?.highest_rated.director?.name, stats?.highest_rated.director],
+              ] as Array<
+                [string, string | undefined, { average_rating: number; rated_count: number } | null | undefined]
+              >
+            )
+              .filter(([, label, entry]) => Boolean(label) && Boolean(entry))
+              .map(([kind, label, entry]) => ({
+                cells: [
+                  cell(kind, { size: '9.5px', tone: 'var(--muted)' }),
+                  cell(label!, { font: 's', size: '10.5px', tone: 'var(--ink2)', wrap: true }),
+                  cell(entry!.average_rating.toFixed(2), {
+                    align: 'right',
+                    tone: 'var(--accent)',
+                  }),
+                  cell(String(entry!.rated_count), { align: 'right', size: '10px' }),
+                ],
+              }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="WHEN THEY WENT BACK"
+        isNew
+        src="watch_events · the same film, twice"
+        blurb="A film watched again, and what the second viewing did to the rating. The same person, the same film, two sittings — which is the only honest way to measure a mind changing."
+        stats={
+          stats && stats.return_journeys.revisited_films > 0
+            ? [
+                { big: stats.return_journeys.revisited_films, unit: 'WENT BACK TO' },
+                {
+                  big:
+                    stats.return_journeys.median_days_to_return === null
+                      ? '—'
+                      : count(stats.return_journeys.median_days_to_return, 'day').split(' ')[0],
+                  unit: 'MEDIAN DAYS BETWEEN',
+                  tone: 'var(--accent)',
+                },
+                {
+                  big:
+                    stats.return_journeys.average_change === null
+                      ? '—'
+                      : `${stats.return_journeys.average_change > 0 ? '+' : ''}${stats.return_journeys.average_change.toFixed(2)}`,
+                  unit: 'AVG RATING CHANGE',
+                  tone:
+                    (stats.return_journeys.average_change ?? 0) >= 0 ? 'var(--ok)' : 'var(--bad)',
+                },
+              ]
+            : undefined
+        }
+        caveat={
+          stats && stats.return_journeys.revisited_films > 0
+            ? `Only the ${count(stats.return_journeys.rated_twice, 'film')} rated on both viewings can move a number here; a rewatch nobody re-rated is counted as a return and nothing more.`
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty: (stats?.return_journeys.revisited_films ?? 0) === 0,
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: 'Return journeys could not be read',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'They have not gone back to anything yet',
+            body: 'A return needs two dated viewings of one film. Until then there is no second opinion to compare against.',
+          },
+        }) ?? (
+          <Rows
+            columns="minmax(0,1fr) 52px"
+            head={['ON THE SECOND VIEWING', ['FILMS', 'right']]}
+            rows={(
+              [
+                ['Rated it higher', stats?.return_journeys.rating_rose ?? 0, 'var(--ok)'],
+                ['Rated it lower', stats?.return_journeys.rating_fell ?? 0, 'var(--bad)'],
+                ['Landed on the same star', stats?.return_journeys.rating_held ?? 0, 'var(--ink2)'],
+              ] as Array<[string, number, string]>
+            ).map(([label, value, tone]) => ({
+              cells: [
+                cell(label, { font: 's', size: '10.5px', tone: 'var(--ink2)' }),
+                cell(String(value), { align: 'right', tone }),
+              ],
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="WHO DIRECTED WHAT THEY WATCH"
+        isNew
+        src="movie_enrichments.credits · director gender"
+        blurb="The gender split of the directors behind this library, counted from what TMDB records."
+        caveat={
+          stats
+            ? `Measured over the ${stats.director_gender.measured_films.toLocaleString()} films whose director TMDB records a gender for. A film where none is recorded is left out of the share rather than assigned to a side, so these three counts do not add up to the library.`
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty: (stats?.director_gender.measured_films ?? 0) === 0,
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: 'The director split could not be read',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'No director gender recorded yet',
+            body: 'TMDB enrichment has not reached enough of this library to measure a split, and guessing one from a name would be a fabrication.',
+            cta: { label: 'SEE THE MATCH RATE', href: sectionHref('films', 'gaps') },
+          },
+        }) ?? (
+          <Bars
+            items={(
+              [
+                ['Directed by men', stats?.director_gender.men ?? 0],
+                ['Directed by women', stats?.director_gender.women ?? 0],
+                ['Mixed directing teams', stats?.director_gender.mixed ?? 0],
+              ] as Array<[string, number]>
+            ).map(([name, weight]) => ({
+              name,
+              weight,
+              value: weight.toLocaleString(),
+              sub:
+                stats && stats.director_gender.measured_films > 0
+                  ? `${Math.round((weight / stats.director_gender.measured_films) * 100)}%`
+                  : undefined,
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="WHAT LETTERBOXD SAYS ABOUT THEM"
+        isNew
+        src="profiles.stats_snapshot"
+        blurb="Letterboxd's own stats page, verbatim. It counts things we cannot derive — hours in front of a screen, a longest streak — because it sees runtimes and a calendar we do not."
+        caveat="Their figures, not ours, and taken at the last read of that page. Where these disagree with the numbers elsewhere on this tab, both are honest: Letterboxd counts entries we may not hold, and counts them its own way."
+      >
+        {panelState({
+          isLoading: statsQuery.isLoading,
+          error: statsQuery.error,
+          isEmpty: !stats?.letterboxd_reported || Object.keys(stats.letterboxd_reported).length === 0,
+          severity: 'quiet',
+          onRetry: () => statsQuery.refetch(),
+          errorTitle: "Letterboxd's own figures could not be read",
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'That page has never been read for this profile',
+            body: 'The stats page is Patron-only, so it is absent for most accounts rather than empty. Nothing here is inferred when it is missing.',
+          },
+        }) ?? (
+          <Rows
+            columns="minmax(0,1fr) 92px"
+            head={['THEY REPORT', ['VALUE', 'right']]}
+            // The key set varies by account, so this reads whatever the page
+            // gave us rather than asking for a fixed shape and rendering
+            // blanks for the rest.
+            rows={Object.entries(stats?.letterboxd_reported ?? {})
+              .filter(([, value]) => value !== null && value !== '')
+              .map(([key, value]) => ({
+                cells: [
+                  cell(REPORTED_STAT_LABELS[key] ?? key.replace(/_/g, ' '), {
+                    font: 's',
+                    size: '10.5px',
+                    tone: 'var(--ink2)',
+                    wrap: true,
+                  }),
+                  cell(typeof value === 'number' ? value.toLocaleString() : String(value), {
+                    align: 'right',
+                    tone: 'var(--accent)',
+                  }),
                 ],
               }))}
           />
