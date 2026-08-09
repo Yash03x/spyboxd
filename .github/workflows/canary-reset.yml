@@ -160,3 +160,17 @@ jobs:
           if [[ -x deploy/production-ssh.sh ]]; then
             deploy/production-ssh.sh close || true
           fi
+
+  # A failure here has to reach somebody rather than sit in the Actions tab.
+  # `always()` so this still runs when the jobs above failed, and the ref
+  # guard keeps a fork's failing pull request from filing issues here.
+  alert_on_failure:
+    name: Alert if this run failed
+    needs: [canary_reset]
+    if: always() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/failure-alert.yml
+    with:
+      workflow: Canary Reset
