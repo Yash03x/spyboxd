@@ -34,9 +34,12 @@ function OverlapsSection() {
       hrefFor={selection.toggleHref}
       isLocked={selection.isLockedByMinimum}
     >
-      {/* Closeness only changes what Together, Echoes and When compute. The
-          How-sure tab reports coverage, which no window can alter. */}
-      {tab.id === 'sure' ? null : (
+      {/* Closeness changes what Together and When compute. How sure reports
+          coverage, which no window can alter — and Echoes measures a
+          fortnight either side by construction (its window is
+          `max(closeness, 14)`, and the picker's largest value is 7), so
+          offering the control there promised an effect it cannot have. */}
+      {tab.id === 'sure' || tab.id === 'echoes' ? null : (
         <ClosenessPicker
           value={gapDays}
           hrefFor={(value) => selection.paramHref('close', String(value))}

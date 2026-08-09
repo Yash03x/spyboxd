@@ -282,11 +282,20 @@ export default function OverviewTab() {
           errorTitle: 'Change history unavailable',
           errorBody: 'The rest of the tab is unaffected; this strip retries on demand.',
           onRetry: () => changesQuery.refetch(),
-          empty: {
-            title: 'No change detected yet',
-            body: 'Every tracked surface has come back identical to the read before it. New rows appear here the moment a refresh finds one.',
-            cta: { label: 'OPEN REFRESH LEDGER', href: sectionHref('data', 'refreshes') },
-          },
+          // With nothing monitored the query never ran, so "no change" would
+          // be a claim about syncs that were never asked for.
+          empty:
+            usernames.length === 0
+              ? {
+                  title: 'Nothing is being monitored yet',
+                  body: 'Change is measured against the profiles you follow here, and there are none, so nothing has been looked at.',
+                  cta: { label: 'CHOOSE WHO TO MONITOR', href: sectionHref('data', 'profiles') },
+                }
+              : {
+                  title: 'No change detected yet',
+                  body: 'Every tracked surface has come back identical to the read before it. New rows appear here the moment a refresh finds one.',
+                  cta: { label: 'OPEN REFRESH LEDGER', href: sectionHref('data', 'refreshes') },
+                },
         }) ?? (
           <Rows
             columns="minmax(0,1.6fr) 62px minmax(0,1.4fr)"
@@ -443,7 +452,13 @@ export default function OverviewTab() {
           onRetry: () => marathonsQuery.refetch(),
           errorTitle: 'Marathon days could not be loaded',
           errorBody: 'Every other panel on this tab is unaffected.',
-          empty: {
+          empty: usernames.length === 0
+            ? {
+                title: 'Nothing is being monitored yet',
+                body: 'A marathon is somebody watching several films in a day, and there is nobody here to have had one.',
+                cta: { label: 'CHOOSE WHO TO MONITOR', href: sectionHref('data', 'profiles') },
+              }
+            : {
             title: 'No marathon days yet',
             body: 'Nobody in the selection has three or more dated films on one day. Undated entries cannot be grouped into a day at all.',
           },

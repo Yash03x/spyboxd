@@ -399,6 +399,19 @@ export default function ProfilesTab({
       queryClient.invalidateQueries({ queryKey: ['follow-suggestions'] }),
       queryClient.invalidateQueries({ queryKey: ['follow-graph'] }),
       queryClient.invalidateQueries({ queryKey: ['current-user'] }),
+      // An import rewrites what every Data panel reports, not only the
+      // profile lists: the ledger, feed state, importer versions, the
+      // missing-surface counts and the lost-and-found inventory are all
+      // computed from the rows an upload just added.
+      queryClient.invalidateQueries({ queryKey: ['data-ledger'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-feeds'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-importers'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-counts'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-private'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-coverage'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-removed'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-lost'] }),
+      queryClient.invalidateQueries({ queryKey: ['data-lost-lists'] }),
     ]);
 
   // Mutation configs hold only what is true for EVERY caller (the surface
@@ -456,10 +469,16 @@ export default function ProfilesTab({
       });
       setQueueOutcome({
         ok: true,
+        // Approving a profile that is already synced fulfils on the spot —
+        // the backend tracks it and marks the request `fulfilled`. Promising
+        // "the next residential sync" for that case described work nobody
+        // was going to do.
         text:
           result.request.status === 'rejected'
             ? `@${result.request.requested_username} was rejected.`
-            : `@${result.request.requested_username} was accepted for the next residential sync.`,
+            : result.request.status === 'fulfilled'
+              ? `@${result.request.requested_username} was already synced — it is available now.`
+              : `@${result.request.requested_username} was accepted for the next residential sync.`,
       });
     },
     onError: (error: Error) =>
@@ -899,7 +918,9 @@ export default function ProfilesTab({
               ? 'No synced profiles match that search'
               : 'No synced profiles are available yet',
             body: debouncedCatalogSearch
-              ? 'The search runs over every synced profile, so a miss means the name is not here yet. Ask for it below.'
+              ? isAdmin
+                ? 'The search runs over every synced profile, so a miss means the name is not here yet. Ask for it below.'
+                : 'This list is the corner of the follow graph your own profile reaches, so a miss can mean the name is not here yet OR that nobody you follow is connected to them. Asking for them below works either way.'
               : 'Ask for a username below and it will be read on the next full refresh.',
           },
         }) ?? (

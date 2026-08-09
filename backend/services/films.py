@@ -514,7 +514,10 @@ def build_liked_vs_rated(db: Session, profiles: Sequence[Profile]) -> Dict[str, 
         "caveat": (
             "A high score is four stars or more. An unrated film has no score, so it lands in "
             "\"neither\" alongside films that were actually rated low — the two are not the same, "
-            "and People › Watched but never rated separates them."
+            "and People › Watched but never rated separates them. These are logs rather than "
+            "distinct films: a film six of the selection watched is counted six times, once per "
+            "opinion, which is the unit the question needs — the same film can be a heart for "
+            "one person and nothing for another."
         ),
     }
 
