@@ -31,7 +31,15 @@ export default function AvailabilityTab({
         title="WHERE A QUEUED FILM CAN BE WATCHED"
         src="movie_watch_providers × watchlist_items"
         blurb={`Films somebody in the selection has queued that a subscription service carries in ${region} right now.`}
-        caveat={availabilityQuery.data?.caveat}
+        caveat={
+          availabilityQuery.data
+            ? `${availabilityQuery.data.caveat}${
+                availabilityQuery.data.films.length > 10
+                  ? ` The ten most wanted are shown of ${availabilityQuery.data.films.length}.`
+                  : ''
+              }`
+            : undefined
+        }
       >
         {panelState({
           isLoading: availabilityQuery.isLoading,
@@ -65,6 +73,13 @@ export default function AvailabilityTab({
               rightCaption: film.checked_at
                 ? `read ${new Date(film.checked_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
                 : 'read date unknown',
+              // The freshness table one card down says a stale reading is
+              // "shown greyed, not hidden"; nothing was ever greyed. A row
+              // whose provider reading is over a fortnight old is dimmed, so
+              // the claim and the rendering agree.
+              dim: film.checked_at
+                ? Date.now() - new Date(film.checked_at).getTime() > 14 * 24 * 3600 * 1000
+                : true,
             }))}
           />
         )}

@@ -90,10 +90,17 @@ export default function PicksTab({
                   unit: 'NOBODY HAS SEEN',
                 },
                 {
+                  // Subscription only, matching what Tonight › Leaving soon
+                  // counts. The payload carries rent and buy offers too, and
+                  // counting those called a film you must pay for twice
+                  // "streaming" — while the other tab, on the same data,
+                  // disagreed.
                   big: candidates
-                    .filter((candidate) => candidate.movie.providers.length > 0)
+                    .filter((candidate) =>
+                      candidate.movie.providers.some((provider) => provider.type === 'flatrate'),
+                    )
                     .length.toLocaleString(),
-                  unit: `STREAMING IN ${region}`,
+                  unit: `ON A SUBSCRIPTION IN ${region}`,
                 },
               ]
             : undefined
@@ -138,7 +145,25 @@ export default function PicksTab({
             rows={candidates.map((candidate) => {
               const wanted = candidate.on_watchlist_by.length;
               const seen = candidate.watched_by.length;
-              const providers = candidate.movie.providers.map((provider) => provider.name);
+              // Subscription offers first and named as such; rent/buy are
+              // real answers to "where can we watch this" but they are not
+              // the same answer, and the panel used to merge them silently.
+              const streaming = candidate.movie.providers
+                .filter((provider) => provider.type === 'flatrate')
+                .map((provider) => provider.name);
+              const payToWatch = candidate.movie.providers
+                .filter((provider) => provider.type !== 'flatrate')
+                .map((provider) => provider.name);
+              const providers = streaming.length
+                ? streaming
+                : payToWatch.length
+                  ? [`${payToWatch.join(', ')} (rent or buy)`]
+                  : [];
+              // A film TMDB never matched has no provider row to be absent
+              // from, so "not carried" would be a checked negative we never
+              // checked.
+              const providersKnown = candidate.movie.tmdb_id !== null
+                && candidate.movie.tmdb_id !== undefined;
               return {
                 href: pickHref(candidate.movie.title),
                 cells: [
@@ -173,12 +198,19 @@ export default function PicksTab({
                   ),
                   // "Not carried in this region" -- never "not streamable
                   // anywhere", which the provider feed cannot tell us.
-                  cell(providers.length ? providers.join(', ') : `not carried in ${region}`, {
-                    font: 's',
-                    size: '10px',
-                    tone: providers.length ? 'var(--ink3)' : 'var(--dim)',
-                    wrap: true,
-                  }),
+                  cell(
+                    providers.length
+                      ? providers.join(', ')
+                      : providersKnown
+                        ? `not carried in ${region}`
+                        : 'never looked up',
+                    {
+                      font: 's',
+                      size: '10px',
+                      tone: providers.length ? 'var(--ink3)' : 'var(--dim)',
+                      wrap: true,
+                    },
+                  ),
                 ],
               };
             })}

@@ -49,6 +49,12 @@ def get_profile_follow_graph(
     username: str,
     direction: str = Query(default="both", pattern="^(following|followers|both)$"),
     include_removed: bool = Query(default=False),
+    # Removed edges only. Without it the unfollow panel had to ask for every
+    # edge and filter client-side, and the server interleaves removed edges
+    # with active ones -- so on an account with more than a page of follows,
+    # every unfollow could sit past the limit and the panel would swear none
+    # had happened.
+    only_removed: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -65,7 +71,9 @@ def get_profile_follow_graph(
         query = query.filter(ProfileFollowEdge.direction == "following")
     elif direction == "followers":
         query = query.filter(ProfileFollowEdge.direction == "follower")
-    if not include_removed:
+    if only_removed:
+        query = query.filter(ProfileFollowEdge.removed_at.isnot(None))
+    elif not include_removed:
         query = query.filter(ProfileFollowEdge.removed_at.is_(None))
 
     total = query.count()

@@ -14,6 +14,10 @@ export interface PosterDatum {
   tone?: string;
   posterUrl?: string | null;
   href?: string;
+  /** Draw the row faded: the fact behind it is stale rather than absent, and
+   *  a panel that says a stale row is "shown greyed, not hidden" has to grey
+   *  something. */
+  dim?: boolean;
 }
 
 /**
@@ -60,7 +64,7 @@ export default function Posters({ items }: { items: PosterDatum[] }) {
         <div
           key={`${item.title}-${index}`}
           className="grid items-center gap-[9px] border-b border-term-rule2 px-[10px] py-[5px] hover:bg-term-panelhd"
-          style={{ gridTemplateColumns: '34px minmax(0,1fr) auto' }}
+          style={{ gridTemplateColumns: '34px minmax(0,1fr) auto', opacity: item.dim ? 0.55 : 1 }}
         >
           <PosterSlot url={item.posterUrl} alt={item.title} />
           <span className="min-w-0">
