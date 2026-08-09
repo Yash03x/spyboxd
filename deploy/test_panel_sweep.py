@@ -14,6 +14,28 @@ from pathlib import Path
 import pytest
 
 
+BACKEND_ROOT = Path(__file__).resolve().parent.parent / "backend"
+
+
+def _prepare_service_imports() -> None:
+    """Make `import services` work the way the API's own process does.
+
+    `database.connection` resolves DATABASE_URL at import time, so importing
+    the package at all needs one to exist. These tests only read function
+    signatures and never open a connection, and SQLAlchemy builds its engine
+    lazily, so a placeholder is enough. `setdefault` so a real one -- CI's
+    Postgres service -- always wins.
+    """
+
+    import os
+
+    if str(BACKEND_ROOT) not in sys.path:
+        sys.path.insert(0, str(BACKEND_ROOT))
+    os.environ.setdefault(
+        "DATABASE_URL", "postgresql+psycopg://sweep:unused@127.0.0.1:1/never_connected"
+    )
+
+
 def _load_sweep():
     path = Path(__file__).resolve().parent / "panel_sweep.py"
     spec = importlib.util.spec_from_file_location("panel_sweep", path)
@@ -203,8 +225,8 @@ def test_the_real_service_package_has_no_undeclared_database_functions() -> None
     """The exclusion list is checked against the actual codebase here, so the
     sweep cannot first discover a gap on production."""
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
-    import services  # noqa: PLC0415 - deliberately imported the way production does
+    _prepare_service_imports()
+    import services  # noqa: PLC0415
 
     discovered = sweep_module.discover_session_functions(services)
     undeclared = [
@@ -276,7 +298,7 @@ def test_every_swept_builder_has_a_call_plan() -> None:
     """A builder whose signature the planner does not recognise would be
     counted as covered while never being called."""
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+    _prepare_service_imports()
     import services  # noqa: PLC0415
 
     discovered = sweep_module.discover_session_functions(services)
