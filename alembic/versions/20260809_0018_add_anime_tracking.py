@@ -84,6 +84,9 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    # The models declare index=True on the primary key, as every other table
+    # here does, and the autogenerate drift check holds the migration to it.
+    op.create_index("ix_anime_id", "anime", ["id"], unique=False)
     op.create_index("ix_anime_mal_id", "anime", ["mal_id"], unique=True)
     op.create_index("ix_anime_title", "anime", ["title"], unique=False)
 
@@ -137,6 +140,7 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("profile_id", "anime_id", name="uq_profile_anime"),
     )
+    op.create_index("ix_profile_anime_id", "profile_anime", ["id"], unique=False)
     op.create_index(
         "ix_profile_anime_profile_id", "profile_anime", ["profile_id"], unique=False
     )
@@ -157,9 +161,11 @@ def downgrade() -> None:
     op.drop_index("ix_profile_anime_finished", table_name="profile_anime")
     op.drop_index("ix_profile_anime_anime_id", table_name="profile_anime")
     op.drop_index("ix_profile_anime_profile_id", table_name="profile_anime")
+    op.drop_index("ix_profile_anime_id", table_name="profile_anime")
     op.drop_table("profile_anime")
     op.drop_index("ix_anime_title", table_name="anime")
     op.drop_index("ix_anime_mal_id", table_name="anime")
+    op.drop_index("ix_anime_id", table_name="anime")
     op.drop_table("anime")
     op.drop_index("ix_profiles_mal_username", table_name="profiles")
     op.drop_column("profiles", "mal_username")
