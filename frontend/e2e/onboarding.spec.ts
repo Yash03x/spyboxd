@@ -19,8 +19,15 @@ test('one tracked profile explains how to unlock pair features', async ({ page }
   // Overlap and star distance are both pair measures, so the panel that needs
   // two says so where the answer would have been rather than rendering an
   // empty grid the reader has to interpret.
-  await expect(page.getByRole('heading', { name: 'Two profiles are needed' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'CHOOSE WHO TO MONITOR' })).toBeVisible();
+  //
+  // Scoped to that panel: several empty states now legitimately offer the same
+  // next step, which is right for a reader and a strict-mode violation for an
+  // unscoped locator.
+  const pairPanel = page
+    .locator('.terminal-root section', { hasText: 'WHO WATCHES WITH WHOM' })
+    .first();
+  await expect(pairPanel.getByRole('heading', { name: 'Two profiles are needed' })).toBeVisible();
+  await expect(pairPanel.getByRole('link', { name: 'CHOOSE WHO TO MONITOR' })).toBeVisible();
 });
 
 test('a synced signup profile is identified and cannot be removed', async ({ page }) => {
