@@ -35,6 +35,7 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 from database.models import (
     LostEntry,
     MemberComment,
+    Movie,
     MemberContentLike,
     MovieList,
     MovieListItem,
@@ -593,21 +594,25 @@ def build_lost_list_films(db: Session, profiles: Sequence[Profile], *, limit: in
         return {"films": [], "count": 0, "caveat": "No profiles selected."}
 
     rows = (
-        db.query(MovieListItem, MovieList, Profile.username)
+        # The film is joined, not lazy-loaded. Reading `item.movie` per row
+        # issued one query per film in every deleted list — a 300-item list
+        # cost 300 round trips to render twelve posters.
+        db.query(MovieListItem, MovieList, Profile.username, Movie)
         .join(MovieList, MovieList.id == MovieListItem.movie_list_id)
         .join(Profile, Profile.id == MovieList.profile_id)
+        .outerjoin(Movie, Movie.id == MovieListItem.movie_id)
         .filter(MovieList.profile_id.in_(profile_ids), MovieList.removed_at.isnot(None))
         .order_by(MovieList.removed_at.desc(), MovieListItem.position)
         .all()
     )
 
     films = []
-    for item, movie_list, username in rows:
+    for item, movie_list, username, movie in rows:
         films.append(
             {
-                "title": item.movie.title if item.movie else "Unknown film",
-                "year": item.movie.release_year if item.movie else None,
-                "poster_url": item.movie.poster_url if item.movie else None,
+                "title": movie.title if movie else "Unknown film",
+                "year": movie.release_year if movie else None,
+                "poster_url": movie.poster_url if movie else None,
                 "list_name": movie_list.name,
                 "username": username,
                 "position": item.position,

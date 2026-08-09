@@ -25,13 +25,26 @@ export default function AvailabilityTab({
     refetchOnWindowFocus: false,
   });
 
+  // The selected region's staleness, as the freshness panel below reports it.
+  const regionIsStale = Boolean(
+    availabilityQuery.data?.regions.find((entry) => entry.region === region)?.stale,
+  );
+
   return (
     <>
       <Panel
         title="WHERE A QUEUED FILM CAN BE WATCHED"
         src="movie_watch_providers × watchlist_items"
         blurb={`Films somebody in the selection has queued that a subscription service carries in ${region} right now.`}
-        caveat={availabilityQuery.data?.caveat}
+        caveat={
+          availabilityQuery.data
+            ? `${availabilityQuery.data.caveat}${
+                availabilityQuery.data.films.length > 10
+                  ? ` The ten most wanted are shown of ${availabilityQuery.data.films.length}.`
+                  : ''
+              }`
+            : undefined
+        }
       >
         {panelState({
           isLoading: availabilityQuery.isLoading,
@@ -65,6 +78,12 @@ export default function AvailabilityTab({
               rightCaption: film.checked_at
                 ? `read ${new Date(film.checked_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
                 : 'read date unknown',
+              // The freshness table one card down says a stale reading is
+              // "shown greyed, not hidden"; nothing was ever greyed. The
+              // verdict comes from that same table's own row for this region
+              // rather than from a clock read during render -- the server has
+              // already decided, and it decides for every film here at once.
+              dim: regionIsStale,
             }))}
           />
         )}

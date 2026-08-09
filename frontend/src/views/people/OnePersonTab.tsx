@@ -206,8 +206,27 @@ export default function OnePersonTab({ subject }: { subject: string }) {
         star: rating.rating,
       }),
     );
-    return entries
+    // One row per film per day. The watch and rating streams are the same
+    // `ratings` rows served by the same repository call, so a diary-heavy
+    // profile saw every film twice -- once as "watch", once as "rating" --
+    // and a reviewed film three times. The richest label for a day wins:
+    // review says more than rating, rating says more than a bare watch.
+    const RANK: Record<string, number> = { review: 3, rewatch: 2, rating: 1, watch: 0 };
+    const best = new Map<string, Entry>();
+    entries
       .filter((entry) => entry.when)
+      .forEach((entry) => {
+        const key = `${entry.what.toLowerCase()}@${entry.when}`;
+        const held = best.get(key);
+        if (!held || (RANK[entry.kind] ?? 0) > (RANK[held.kind] ?? 0)) {
+          // Keep whichever row carries a star, so deduping never drops a
+          // rating the other row did not have.
+          best.set(key, { ...entry, star: entry.star ?? held?.star ?? null });
+        } else if (held.star === null && entry.star !== null) {
+          best.set(key, { ...held, star: entry.star });
+        }
+      });
+    return Array.from(best.values())
       .sort((a, b) => new Date(b.when!).getTime() - new Date(a.when!).getTime())
       .slice(0, 10);
   }, [analysis]);
@@ -411,14 +430,27 @@ export default function OnePersonTab({ subject }: { subject: string }) {
         {panelState({
           isLoading: statsQuery.isLoading,
           error: statsQuery.error,
-          isEmpty: (stats?.release_lag.measured_films ?? 0) === 0,
+          // The backend withholds the median below twenty measurable films,
+          // so a profile with one to nineteen had no stats row AND no empty
+          // state: the panel rendered as a title over nothing. Too few to
+          // measure is a state of its own, and it names the shortfall.
+          isEmpty:
+            (stats?.release_lag.measured_films ?? 0) === 0 ||
+            stats?.release_lag.median_lag_days === null ||
+            stats?.release_lag.median_lag_days === undefined,
           onRetry: () => statsQuery.refetch(),
           errorTitle: 'Release lag could not be computed',
           errorBody: 'Every other panel on this tab is unaffected.',
-          empty: {
-            title: 'Not enough dated films',
-            body: 'This needs both a release year and a watch date on the same film. Neither is guessed at.',
-          },
+          empty:
+            (stats?.release_lag.measured_films ?? 0) > 0
+              ? {
+                  title: 'Too few dated films to call it a habit',
+                  body: `Only ${count(stats?.release_lag.measured_films ?? 0, 'film')} carries both a release date and a watch date, and a median over that few would describe those films rather than the person.`,
+                }
+              : {
+                  title: 'Not enough dated films',
+                  body: 'This needs both a release year and a watch date on the same film. Neither is guessed at.',
+                },
         })}
       </Panel>
 
@@ -606,12 +638,21 @@ export default function OnePersonTab({ subject }: { subject: string }) {
           crowdQuery.data
             ? [
                 {
+                  // A delta that rounds to zero is neither harsher nor kinder,
+                  // and the sign and the colour disagreed about it: "−0.00"
+                  // printed in the kind tone on the tab's headline comparison.
                   big: crowdQuery.data.summary.group_delta !== null
-                    ? `${crowdQuery.data.summary.group_delta > 0 ? '+' : '−'}${Math.abs(crowdQuery.data.summary.group_delta).toFixed(2)}`
+                    ? Math.abs(crowdQuery.data.summary.group_delta) < 0.005
+                      ? 'level'
+                      : `${crowdQuery.data.summary.group_delta > 0 ? '+' : '−'}${Math.abs(crowdQuery.data.summary.group_delta).toFixed(2)}`
                     : '—',
                   unit: 'VS THE CIRCLE',
                   tone:
-                    (crowdQuery.data.summary.group_delta ?? 0) < 0 ? 'var(--bad)' : 'var(--ok)',
+                    Math.abs(crowdQuery.data.summary.group_delta ?? 0) < 0.005
+                      ? 'var(--ink2)'
+                      : (crowdQuery.data.summary.group_delta ?? 0) < 0
+                        ? 'var(--bad)'
+                        : 'var(--ok)',
                 },
                 { big: (crowdQuery.data.summary.lean ?? '—').toUpperCase(), unit: 'LEAN' },
                 {
@@ -738,7 +779,13 @@ export default function OnePersonTab({ subject }: { subject: string }) {
               name: bucket.label,
               weight: bucket.count,
               value: bucket.count.toLocaleString(),
-              sub: bucket.average_rating === null ? '—' : bucket.average_rating.toFixed(1),
+              // The same rated_count floor its three sibling panels apply: an
+              // average over one or two rated films is one opinion, not a
+              // lean, and this panel was printing it without the gate.
+              sub:
+                bucket.average_rating === null || bucket.rated_count < 3
+                  ? '—'
+                  : bucket.average_rating.toFixed(1),
             }))}
           />
         )}

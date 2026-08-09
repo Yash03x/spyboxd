@@ -18,7 +18,10 @@ test('the candidate count is qualified by watchlist overlap and availability', a
   await expect(panel).toContainText('RANKED CANDIDATES');
   await expect(panel).toContainText("ON EVERYONE'S WATCHLIST");
   await expect(panel).toContainText('NOBODY HAS SEEN');
-  await expect(panel).toContainText('STREAMING IN');
+  // Subscription only, matching what Tonight › Leaving soon counts: the
+  // payload also carries rent and buy offers, and calling those "streaming"
+  // made the two tabs disagree about the same film.
+  await expect(panel).toContainText('ON A SUBSCRIPTION IN');
   // And the count is the length of the table, not a larger set it was cut from.
   // The fixture's summary counts six candidates against two rendered, so
   // the truncation-aware branch must fire — the old copy claimed "never cut"

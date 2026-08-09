@@ -1239,6 +1239,9 @@ export const followGraphApi = {
     params: {
       direction?: FollowGraphDirection;
       includeRemoved?: boolean;
+      /** Only edges that have disappeared, so an unfollow cannot fall past
+       *  the page behind hundreds of active follows. */
+      onlyRemoved?: boolean;
       limit?: number;
       offset?: number;
     } = {},
@@ -1247,6 +1250,7 @@ export const followGraphApi = {
       params: {
         direction: params.direction ?? 'both',
         include_removed: params.includeRemoved ?? false,
+        only_removed: params.onlyRemoved ?? false,
         limit: params.limit ?? 100,
         offset: params.offset ?? 0,
       },

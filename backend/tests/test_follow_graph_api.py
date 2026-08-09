@@ -514,3 +514,27 @@ def test_suggestions_empty_for_user_with_no_tracked_profiles(database, client_fo
     # The denominator travels with the counts: they are taken across every
     # monitored profile, and a caller that supplied its own rendered "10 of 6".
     assert payload == {"suggestions": [], "monitored_profiles": 0}
+
+
+def test_only_removed_returns_unfollows_without_the_active_edges_around_them(
+    database, client_for
+):
+    """The unfollow panel asked for every edge and filtered client-side, but
+    the server orders by direction and position and never by removed_at -- so
+    on an account with more than a page of follows every unfollow could sit
+    past the limit and the panel swore none had happened."""
+
+    _seed_alpha_graph(database)
+    user = _legacy_user(database, tracked_profile_ids=(1,))
+    client = client_for(user)
+
+    payload = client.get(
+        "/api/profiles/alpha/follow-graph",
+        params={"direction": "both", "only_removed": "true"},
+    ).json()
+
+    assert payload["edges"], "the fixture holds a removed edge"
+    assert all(edge["removed_at"] is not None for edge in payload["edges"])
+    # And it is the same edge the include_removed page reports, not a subset
+    # that happened to fit.
+    assert payload["total"] == 1

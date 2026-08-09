@@ -58,7 +58,7 @@ export default function CircleTab({
     queryFn: () =>
       followGraphApi.getFollowGraph(subject, {
         direction: 'both',
-        includeRemoved: true,
+        onlyRemoved: true,
         limit: 200,
       }),
     enabled: Boolean(subject),

@@ -103,7 +103,15 @@ export default function LostFoundTab({
         title="FILMS FROM LISTS THAT NO LONGER EXIST"
         src="list_items × lists.removed_at"
         blurb="A list was deleted, but we still hold what was in it — often the most considered version of somebody's taste, thrown away in a tidy-up."
-        caveat={listsQuery.data?.caveat}
+        caveat={
+          listsQuery.data
+            ? `${listsQuery.data.caveat}${
+                listsQuery.data.count > 8
+                  ? ` Eight are shown of the ${listsQuery.data.count.toLocaleString()} this selection still holds.`
+                  : ''
+              }`
+            : undefined
+        }
       >
         {panelState({
           isLoading: listsQuery.isLoading || (selectionLoading && !enabled),

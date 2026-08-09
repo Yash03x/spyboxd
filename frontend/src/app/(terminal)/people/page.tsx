@@ -34,7 +34,12 @@ function PeopleSection() {
 
   const subjectHref = (username: string) => selection.paramHref('subject', username);
   const isPair = tab.id === 'two';
-  const singleSubject = tab.id === 'one' || tab.id === 'circle';
+  // Reach belongs here too: four of its six panels are about one person
+  // (their reviews, their likes, their card), and it was showing the
+  // multi-select bar instead -- so the subject those panels answered for was
+  // whatever ?subject a previous tab happened to leave in the URL, with no
+  // way to see or change it from this tab.
+  const singleSubject = tab.id === 'one' || tab.id === 'circle' || tab.id === 'reach';
 
   const controls = singleSubject ? (
     <SelectionBar
@@ -59,7 +64,7 @@ function PeopleSection() {
       {tab.id === 'circle' ? (
         <CircleTab subject={subject} profiles={selection.available} subjectHref={subjectHref} />
       ) : null}
-      {tab.id === 'reach' ? <ReachTab subject={subject} profiles={selection.selected} /> : null}
+      {tab.id === 'reach' ? <ReachTab subject={subject} profiles={selection.available} /> : null}
     </TerminalShell>
   );
 }

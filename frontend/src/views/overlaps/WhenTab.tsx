@@ -100,7 +100,7 @@ export default function WhenTab({ profiles, gapDays }: { profiles: string[]; gap
         blurb="Eight weeks, one square per day, darker where more overlaps landed."
         caveat={
           calendarQuery.data
-            ? `Eight weeks ending ${formatDay(calendarQuery.data.to)} — this pair's most recent overlap, not today. Undated diary entries cannot be placed on a grid at all, so a quiet week can mean a quiet week or a profile with no dates.`
+            ? `Eight weeks ending ${formatDay(calendarQuery.data.to)} — the selection's most recent watch, not today and not necessarily an overlap. Undated diary entries cannot be placed on a grid at all, so a quiet week can mean a quiet week or a profile with no dates.`
             : 'Undated diary entries cannot be placed on a grid at all, so a quiet week here can mean a quiet week or a profile with no dates.'
         }
       >
