@@ -28,8 +28,18 @@ export function useTerminalSelection(options: TerminalSelectionOptions = {}) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  // Only profiles that have actually been read. The analytics endpoints
+  // reject a selection containing anything else outright -- /api/spy-signals
+  // and the insights services 400 the whole request if one member is not
+  // `completed` -- so offering an unread profile here does not degrade a
+  // panel, it takes down every panel on the tab. An admin adding a
+  // placeholder was enough to do it: the new row is `pending`, carries the
+  // newest updated_at, sorts first, and lands in the default selection.
   const available = useMemo(
-    () => (profilesQuery.data ?? []).map((profile) => profile.username),
+    () =>
+      (profilesQuery.data ?? [])
+        .filter((profile) => profile.scraping_status === 'completed')
+        .map((profile) => profile.username),
     [profilesQuery.data],
   );
 

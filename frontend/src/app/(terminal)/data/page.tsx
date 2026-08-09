@@ -16,7 +16,13 @@ function DataSection() {
   const section = getSection('data');
   const searchParams = useSearchParams();
   const tab = getTab(section, searchParams.get('tab'));
-  const selection = useTerminalSelection({ minSelection: 1 });
+  // Every synced profile by default, not the usual six. This section's
+  // question is "where did all this come from" and its panels are titled as
+  // totalities -- EVERYONE WE HAVE SYNCED sat six rows long directly above a
+  // library panel counting twenty, two panels on one tab disagreeing about
+  // the roster. A comparison tab caps its default because comparing twenty
+  // people is unreadable; an inventory has no such excuse.
+  const selection = useTerminalSelection({ minSelection: 1, defaultCount: Number.MAX_SAFE_INTEGER });
 
   const controls = (
     <SelectionBar
@@ -32,9 +38,9 @@ function DataSection() {
       {tab.id === 'profiles' ? (
         <ProfilesTab profiles={selection.selected} selectionLoading={selection.isLoading} />
       ) : null}
-      {tab.id === 'refreshes' ? <RefreshesTab profiles={selection.selected} /> : null}
-      {tab.id === 'missing' ? <MissingTab profiles={selection.selected} /> : null}
-      {tab.id === 'lost' ? <LostFoundTab profiles={selection.selected} /> : null}
+      {tab.id === 'refreshes' ? <RefreshesTab profiles={selection.selected} selectionLoading={selection.isLoading} /> : null}
+      {tab.id === 'missing' ? <MissingTab profiles={selection.selected} selectionLoading={selection.isLoading} /> : null}
+      {tab.id === 'lost' ? <LostFoundTab profiles={selection.selected} selectionLoading={selection.isLoading} /> : null}
     </TerminalShell>
   );
 }

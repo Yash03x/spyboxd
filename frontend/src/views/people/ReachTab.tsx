@@ -192,7 +192,7 @@ export default function ReachTab({ subject, profiles }: { subject: string; profi
         title="WHAT THEY ENDORSED"
         src="member_content_likes"
         blurb="Reviews and lists they liked. A read of somebody's attention that does not require them to have watched anything."
-        caveat={`Export-only. ${likedReviews.length.toLocaleString()} liked reviews and ${likedLists.length.toLocaleString()} liked lists held for @${subject}.`}
+        caveat={`Export-only. ${(archiveQuery.data?.totals.liked_reviews ?? 0).toLocaleString()} liked reviews and ${(archiveQuery.data?.totals.liked_lists ?? 0).toLocaleString()} liked lists held for @${subject}${archiveQuery.data?.truncated.liked_reviews || archiveQuery.data?.truncated.liked_lists ? `, of which the ten most recent are shown` : ''}.`}
       >
         {panelState({
           isLoading: archiveQuery.isLoading,

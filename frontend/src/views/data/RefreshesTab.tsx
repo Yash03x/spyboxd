@@ -37,7 +37,15 @@ function duration(seconds: number | null): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-export default function RefreshesTab({ profiles }: { profiles: string[] }) {
+export default function RefreshesTab({
+  profiles,
+  selectionLoading = false,
+}: {
+  profiles: string[];
+  /** The profile list is still on the wire; an empty selection is not
+   *  yet a fact, so a disabled query must not report an absence. */
+  selectionLoading?: boolean;
+}) {
   const enabled = profiles.length > 0;
   const options = { enabled, staleTime: 60 * 1000, refetchOnWindowFocus: false };
 
@@ -72,7 +80,7 @@ export default function RefreshesTab({ profiles }: { profiles: string[] }) {
         caveat={ledgerQuery.data?.caveat}
       >
         {panelState({
-          isLoading: ledgerQuery.isLoading,
+          isLoading: ledgerQuery.isLoading || (selectionLoading && !enabled),
           error: ledgerQuery.error,
           isEmpty: (ledgerQuery.data?.surfaces.length ?? 0) === 0,
           onRetry: () => ledgerQuery.refetch(),
@@ -129,7 +137,7 @@ export default function RefreshesTab({ profiles }: { profiles: string[] }) {
         caveat={feedsQuery.data?.caveat}
       >
         {panelState({
-          isLoading: feedsQuery.isLoading,
+          isLoading: feedsQuery.isLoading || (selectionLoading && !enabled),
           error: feedsQuery.error,
           isEmpty: (feedsQuery.data?.feeds.length ?? 0) === 0,
           onRetry: () => feedsQuery.refetch(),
@@ -170,7 +178,7 @@ export default function RefreshesTab({ profiles }: { profiles: string[] }) {
         caveat={importersQuery.data?.caveat}
       >
         {panelState({
-          isLoading: importersQuery.isLoading,
+          isLoading: importersQuery.isLoading || (selectionLoading && !enabled),
           error: importersQuery.error,
           isEmpty: (importersQuery.data?.profiles.length ?? 0) === 0,
           onRetry: () => importersQuery.refetch(),

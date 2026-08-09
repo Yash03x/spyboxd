@@ -32,7 +32,7 @@ test('Overview renders the eight panels, each naming the table it reads', async 
     'THE LATEST CHANGES WE DETECTED',
     'WHO WATCHES WITH WHOM',
     'EVERYONE WE ARE WATCHING',
-    'THIS YEAR, MONTH BY MONTH',
+    'THE LAST TWELVE MONTHS',
     'HOW THE GROUP RATES',
     'MARATHON DAYS',
     'LEAVING SOON',

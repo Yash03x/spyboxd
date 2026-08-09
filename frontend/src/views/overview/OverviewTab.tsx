@@ -55,21 +55,44 @@ function relativeDays(iso: string | null | undefined): string {
 /** Plain-English summary of one detected change, plus where it is explained. */
 function describeChange(change: RecentChange): { what: string; where: string; href: string } {
   const film = change.movie?.title ?? change.list?.name ?? change.entity_type;
+  // Every arm below is a change type `record_profile_changes` actually
+  // writes. Two of the original arms -- `watch_added` and `rating_added` --
+  // were names nothing in the backend has ever emitted, so the everyday
+  // events (`diary_added`, `film_added`) fell through to the default and a
+  // newly logged film was captioned "diary added" and pointed at Data ›
+  // What's missing, a tab about scrape gaps.
   switch (change.change_type) {
-    case 'watch_added':
+    case 'diary_added':
       return { what: `${film} logged`, where: 'Overlaps › Together', href: sectionHref('overlaps', 'together') };
+    case 'diary_removed':
+      return { what: `${film} — diary entry gone`, where: 'Data › Lost & found', href: sectionHref('data', 'lost') };
+    case 'film_added':
+      return { what: `${film} first seen`, where: 'Films › The library', href: sectionHref('films', 'library') };
+    case 'film_removed':
+      return { what: `${film} no longer listed`, where: 'Data › Lost & found', href: sectionHref('data', 'lost') };
     case 'rating_changed':
       return {
         what: `${film} — rating changed`,
         where: 'People › One person',
         href: sectionHref('people', 'one'),
       };
-    case 'rating_added':
-      return { what: `${film} rated`, where: 'People › One person', href: sectionHref('people', 'one') };
+    case 'like_changed':
+      return { what: `${film} — like changed`, where: 'People › One person', href: sectionHref('people', 'one') };
     case 'review_added':
       return { what: `${film} reviewed`, where: 'People › Reach', href: sectionHref('people', 'reach') };
+    case 'review_updated':
+    case 'text_changed':
+      return { what: `${film} — review rewritten`, where: 'People › Reach', href: sectionHref('people', 'reach') };
+    case 'review_removed':
+      return { what: `${film} — review gone`, where: 'Data › Lost & found', href: sectionHref('data', 'lost') };
     case 'watchlist_added':
       return { what: `${film} queued`, where: 'Tonight › Picks', href: sectionHref('tonight', 'picks') };
+    case 'watchlist_removed':
+      return { what: `${film} left the watchlist`, where: 'Tonight › Picks', href: sectionHref('tonight', 'picks') };
+    case 'favorite_added':
+      return { what: `${film} made a favourite`, where: 'People › One person', href: sectionHref('people', 'one') };
+    case 'favorite_removed':
+      return { what: `${film} dropped as a favourite`, where: 'People › One person', href: sectionHref('people', 'one') };
     case 'follow_added':
     case 'follower_gained':
       return { what: `${film || 'A follow'} added`, where: 'People › The circle', href: sectionHref('people', 'circle') };
@@ -78,6 +101,10 @@ function describeChange(change: RecentChange): { what: string; where: string; hr
       return { what: `${film || 'A follow'} dropped`, where: 'People › The circle', href: sectionHref('people', 'circle') };
     case 'list_added':
     case 'list_updated':
+    case 'list_removed':
+    case 'list_item_added':
+    case 'list_item_removed':
+    case 'list_item_updated':
       return { what: `List "${film}" changed`, where: 'Tonight › Lists', href: sectionHref('tonight', 'lists') };
     default:
       return {
@@ -156,7 +183,12 @@ export default function OverviewTab() {
   // ---- 01 · the group in five numbers -------------------------------------
   const groupStats = stats
     ? [
-        { big: profiles.length.toLocaleString(), unit: 'PROFILES', tone: 'var(--accent)' },
+        // From the same snapshot as the other four. Reading the separate
+        // profiles query here put a confident 0 beside real film and
+        // rating totals whenever that slower query was still in flight or
+        // had failed -- and counted pending profiles the other four
+        // numbers exclude, so the row mixed denominators unlabelled.
+        { big: stats.total_profiles.toLocaleString(), unit: 'PROFILES', tone: 'var(--accent)' },
         { big: stats.total_movies_tracked.toLocaleString(), unit: 'FILMS' },
         {
           big: Object.values(distribution).reduce((sum, value) => sum + value, 0).toLocaleString(),
@@ -175,6 +207,11 @@ export default function OverviewTab() {
       value: entry.movies_watched,
       inner: entry.unique_movies ?? undefined,
       display: entry.movies_watched === 0 ? '—' : String(entry.movies_watched),
+      // The month in progress is drawn hatched, as it is everywhere else that
+      // renders this feed. Solid, five days of August stood next to twelve
+      // full months and read as the group's watching collapsing.
+      partial: entry.is_partial,
+      hint: `${entry.month}${entry.is_partial ? ', month to date' : ''}: ${count(entry.movies_watched, 'watch', 'watches')}`,
     };
   });
 
@@ -354,10 +391,10 @@ export default function OverviewTab() {
       </Panel>
 
       <Panel
-        title="THIS YEAR, MONTH BY MONTH"
+        title="THE LAST TWELVE MONTHS"
         src="watch_events.watched_date"
         blurb="Full bar is watches. The lighter block inside it is how many were films nobody in the group had logged before — the gap between the two is rewatching and catching up."
-        caveat="Months with no bar are the future or a month with no dated entries, not a collapse in watching."
+        caveat="A month with no bar had no dated entry at all. The window ends with the month in progress, drawn hatched because it is not finished, not a collapse in watching."
       >
         {panelState({
           isLoading: analyticsQuery.isLoading,
@@ -417,7 +454,9 @@ export default function OverviewTab() {
             rows={(marathonsQuery.data?.marathons ?? []).map((day) => ({
               cells: [
                 cell(
-                  new Date(day.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+                  // Local, not UTC: `new Date('2026-07-15')` is UTC midnight,
+                  // which prints as the 14th anywhere west of Greenwich.
+                  formatDay(day.date),
                   { size: '10.5px', tone: 'var(--ink3)' },
                 ),
                 cell(`@${day.username} · ${day.titles.slice(0, 3).join(', ')}`, {

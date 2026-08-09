@@ -8,6 +8,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from auth import ClerkUser, get_current_user
@@ -135,6 +136,34 @@ def get_member_archive(
         .all()
     )
 
+    # The real holdings, counted in the database rather than over the page
+    # returned above. `limit` bounds what is shipped; it must not bound what
+    # the response claims is held.
+    like_totals = dict(
+        db.query(MemberContentLike.content_type, func.count(MemberContentLike.id))
+        .filter(
+            MemberContentLike.profile_id == profile.id,
+            MemberContentLike.removed_at.is_(None),
+        )
+        .group_by(MemberContentLike.content_type)
+        .all()
+    )
+    comment_total = (
+        db.query(func.count(MemberComment.id))
+        .filter(
+            MemberComment.profile_id == profile.id,
+            MemberComment.removed_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+    lost_total = (
+        db.query(func.count(LostEntry.id))
+        .filter(LostEntry.profile_id == profile.id)
+        .scalar()
+        or 0
+    )
+
     # Every slug in the subject's own library, so "liked but never seen" can be
     # decided against all of it. The frontend used to check the like against
     # the ten most recent watches — the only title list it had — and called
@@ -209,11 +238,27 @@ def get_member_archive(
             }
             for entry in lost
         ],
+        # Counted in the database, not over the page above. These are stated
+        # to the reader as what is held for this member, and they were being
+        # derived from rows that had already been through `limit` -- so a
+        # member with 300 liked reviews reported 100, and because one `limit`
+        # covers both like kinds, a burst of liked reviews could push the
+        # liked-list count to zero and the panel would say none were held.
         "totals": {
-            "liked_reviews": sum(1 for like in likes if like.content_type == "review"),
-            "liked_lists": sum(1 for like in likes if like.content_type == "list"),
-            "comments": len(comments),
-            "lost_entries": len(lost),
+            "liked_reviews": like_totals.get("review", 0),
+            "liked_lists": like_totals.get("list", 0),
+            "comments": comment_total,
+            "lost_entries": lost_total,
+        },
+        "truncated": {
+            "liked_reviews": like_totals.get("review", 0) > sum(
+                1 for like in likes if like.content_type == "review"
+            ),
+            "liked_lists": like_totals.get("list", 0) > sum(
+                1 for like in likes if like.content_type == "list"
+            ),
+            "comments": comment_total > len(comments),
+            "lost_entries": lost_total > len(lost),
         },
     }
 
