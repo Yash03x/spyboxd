@@ -81,6 +81,13 @@ jobs:
       - name: Run backend test suite
         run: python -m pytest backend/tests --ignore=backend/tests/test_additive_migrations.py
 
+      # Runs here rather than beside the other deploy tests because it imports
+      # the real `services` package to prove no database-touching function is
+      # unswept -- so a coverage gap fails a pull request instead of first
+      # showing up against production.
+      - name: Prove the panel sweep still covers every builder
+        run: python -m pytest deploy/test_panel_sweep.py -v
+
       - name: Check model and migration parity
         run: python -m alembic check
 

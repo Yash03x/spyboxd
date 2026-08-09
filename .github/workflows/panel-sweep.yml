@@ -1,0 +1,159 @@
+name: Panel Sweep
+
+# Call every panel builder against the real production database and prove it
+# still answers, correctly and quickly.
+#
+# The four existing layers all stop short of this: pytest runs the builders on
+# SQLite fixtures, Playwright runs the panels on mocked responses, and both
+# canaries check privacy and identity rather than data. Every defect this
+# project has actually shipped to production lived in that gap -- Postgres-only
+# SQL, a query that is instant on a fixture and twelve seconds on the real
+# table, a column whose real size took the API down.
+#
+# Read-only: the sweep opens a READ ONLY transaction, calls only `build_`
+# functions, and rolls back without ever committing. It runs on the VPS in the
+# API's own virtualenv, importing exactly what the service unit imports.
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spyboxd-production-panel-sweep
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  panel-sweep:
+    name: Prove every panel against real data
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      vars.PRODUCTION_PANEL_SWEEP_ENABLED == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://spyboxd.com
+    env:
+      SWEEP_SCRIPT_SHA: ${{ github.sha }}
+
+    steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Check out the exact sweep helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SWEEP_SCRIPT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Runs before any credential is loaded, and includes the check that no
+      # database-touching function is unclassified -- so a coverage gap is
+      # caught here rather than discovered against production.
+      - name: Test the sweep's own safety and completeness rules
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pytest
+          python3 -m pytest -q deploy/test_panel_sweep.py
+
+      - name: Establish one pinned IPv4 production SSH connection
+        env:
+          SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: deploy/production-ssh.sh open
+
+      - name: Call every panel builder against production data
+        id: sweep
+        run: |
+          set -Eeuo pipefail
+          [[ "${SWEEP_SCRIPT_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          timeout --signal=TERM --kill-after=2m 20m \
+            deploy/production-ssh.sh run sh -s -- "${SWEEP_SCRIPT_SHA}" \
+            <<'REMOTE' | tee "${RUNNER_TEMP}/panel-sweep.json"
+          set -eu
+          sweep_script_sha="$1"
+          case "${sweep_script_sha}" in
+            *[!0-9a-f]*|'') echo 'Invalid panel-sweep script SHA.' >&2; exit 64 ;;
+          esac
+          [ "${#sweep_script_sha}" -eq 40 ] || exit 64
+
+          repository_git() {
+            git --git-dir=/opt/spyboxd/repository "$@"
+          }
+          repository_git rev-parse --is-bare-repository >/dev/null
+          timeout --signal=TERM --kill-after=15s 2m \
+            git --git-dir=/opt/spyboxd/repository fetch \
+              --quiet --force --prune origin \
+              '+refs/heads/main:refs/remotes/origin/main'
+          resolved_script_sha="$(
+            repository_git rev-parse --verify "${sweep_script_sha}^{commit}"
+          )"
+          [ "${resolved_script_sha}" = "${sweep_script_sha}" ]
+          repository_git merge-base --is-ancestor \
+            "${sweep_script_sha}" refs/remotes/origin/main
+
+          sweep_runner="$(mktemp /tmp/spyboxd-panel-sweep.XXXXXX)"
+          cleanup_runner() {
+            rm -f -- "${sweep_runner}"
+          }
+          trap cleanup_runner EXIT HUP INT TERM
+          repository_git show \
+            "${sweep_script_sha}:deploy/panel_sweep.py" \
+            >"${sweep_runner}"
+          chmod 0700 "${sweep_runner}"
+
+          current_link=/opt/spyboxd/current
+          python_path="${current_link}/.venv/bin/python"
+          application_root="${current_link}/backend"
+          database_env_file=/etc/spyboxd/api.env
+          [ -L "${current_link}" ]
+          [ -x "${python_path}" ]
+          [ -d "${application_root}" ]
+          [ -f "${database_env_file}" ] && [ ! -L "${database_env_file}" ] \
+            && [ -r "${database_env_file}" ]
+
+          # The sweep reads DATABASE_URL out of the file itself and takes
+          # nothing else from it -- sourcing api.env here would hand a
+          # read-only checker every secret the API holds.
+          "${python_path}" "${sweep_runner}" --json \
+            --application-root "${application_root}" \
+            --database-env-file "${database_env_file}"
+          REMOTE
+
+      # Runs on failure too: a sweep that found a broken builder is exactly the
+      # run whose report is worth reading.
+      - name: Summarize the sweep
+        if: always() && steps.sweep.outcome != 'skipped'
+        env:
+          SWEEP_REPORT: ${{ runner.temp }}/panel-sweep.json
+        run: |
+          set -Eeuo pipefail
+          python3 deploy/summarize_panel_sweep.py "${SWEEP_REPORT}" \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Close production SSH and securely remove local key material
+        if: always()
+        run: |
+          if [[ -x deploy/production-ssh.sh ]]; then
+            deploy/production-ssh.sh close
+          fi
+
+  alert_on_failure:
+    name: Alert if this run failed
+    needs: [panel-sweep]
+    if: always() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/failure-alert.yml
+    with:
+      workflow: Panel Sweep
