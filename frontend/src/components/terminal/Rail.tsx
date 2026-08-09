@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import React from 'react';
 import { useUser } from '@clerk/nextjs';
 import {
@@ -29,11 +30,22 @@ function initialsFor(name: string | null | undefined): string {
   return trimmed.slice(0, 2).toUpperCase();
 }
 
-function RailItem({ section, active }: { section: SectionDef; active: boolean }) {
+function RailItem({
+  section,
+  active,
+  query,
+}: {
+  section: SectionDef;
+  active: boolean;
+  /** The current selection, carried across the jump. The tab row already
+   *  preserves it; the rail dropped it, so moving from Overlaps to Films
+   *  silently recomputed over a different group of people. */
+  query: string;
+}) {
   const Icon = ICONS[section.icon];
   return (
     <Link
-      href={section.legacyPath ?? `/${section.id}`}
+      href={section.legacyPath ?? `/${section.id}${query}`}
       title={`${section.ordinal} · ${section.name}`}
       aria-label={`${section.ordinal} ${section.name}`}
       aria-current={active ? 'page' : undefined}
@@ -59,6 +71,16 @@ function RailItem({ section, active }: { section: SectionDef; active: boolean })
  */
 export default function Rail({ active }: { active: SectionId }) {
   const { user } = useUser();
+  const searchParams = useSearchParams();
+  // Carry the profile selection between sections. `tab` is deliberately
+  // dropped: it means something different in every section, and a stale one
+  // just resolves to the section's first tab anyway.
+  const carried = React.useMemo(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('tab');
+    const query = params.toString();
+    return query ? `?${query}` : '';
+  }, [searchParams]);
   const initials = initialsFor(
     (user?.username as string | undefined) ?? user?.firstName ?? user?.primaryEmailAddress?.emailAddress,
   );
@@ -73,7 +95,12 @@ export default function Rail({ active }: { active: SectionId }) {
       </span>
 
       {SECTIONS.map((section) => (
-        <RailItem key={section.id} section={section} active={section.id === active} />
+        <RailItem
+          key={section.id}
+          section={section}
+          active={section.id === active}
+          query={carried}
+        />
       ))}
 
       <span className="hidden flex-1 md:block" />

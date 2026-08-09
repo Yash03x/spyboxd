@@ -79,6 +79,9 @@ function followCaveat(graph: CoWatchFollowGraphSummary | undefined): string {
 export default function EchoesTab({ profiles, gapDays }: { profiles: string[]; gapDays: number }) {
   // Echoes need a wider window than a co-watch: somebody acting on a
   // recommendation takes a fortnight, not a day.
+  // A fortnight either side, always. The picker's largest closeness is 7, so
+  // this expression never moved; the tab states the window it uses rather
+  // than implying the control above changes it.
   const echoWindow = Math.max(gapDays, 14);
 
   const echoesQuery = useQuery({

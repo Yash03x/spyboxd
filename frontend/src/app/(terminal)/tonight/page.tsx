@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 
@@ -30,9 +31,10 @@ function RegionPicker({
         {regions.map((region) => {
           const active = region === value;
           return (
-            <a
+            <Link
               key={region}
               href={hrefFor(region)}
+              scroll={false}
               aria-current={active ? 'true' : undefined}
               className="rounded-[3px] border px-2 py-[3px] text-t10 no-underline hover:no-underline"
               style={{
@@ -44,7 +46,7 @@ function RegionPicker({
               }}
             >
               {region}
-            </a>
+            </Link>
           );
         })}
       </div>

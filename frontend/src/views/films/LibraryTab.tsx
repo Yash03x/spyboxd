@@ -16,6 +16,17 @@ const NEEDS_ENRICHMENT = {
   cta: { label: 'SEE THE MATCH RATE', href: sectionHref('films', 'gaps') },
 };
 
+/**
+ * Filmography runs and worked-through series need a director or a collection
+ * with more than one film in it — enrichment can be complete and these still
+ * come back empty, so blaming the cache sent the reader to a match-rate page
+ * that would tell them everything was fine.
+ */
+const NEEDS_A_REPEAT = {
+  title: 'Nobody here has been watched twice',
+  body: 'This counts a director or a series only once the selection has seen more than one of their films. A library of one-offs fills every other panel on this tab and leaves this one empty.',
+};
+
 export default function LibraryTab({ profiles }: { profiles: string[] }) {
   const enabled = profiles.length > 0;
   const options = { enabled, staleTime: 5 * 60 * 1000, refetchOnWindowFocus: false };
@@ -174,7 +185,7 @@ export default function LibraryTab({ profiles }: { profiles: string[] }) {
           onRetry: () => filmographyQuery.refetch(),
           errorTitle: 'Filmographies could not be read',
           errorBody: 'Every other panel on this tab is unaffected.',
-          empty: NEEDS_ENRICHMENT,
+          empty: NEEDS_A_REPEAT,
         }) ?? (
           <Rows
             columns="minmax(0,1.1fr) 52px 56px minmax(0,1.2fr)"
@@ -212,7 +223,7 @@ export default function LibraryTab({ profiles }: { profiles: string[] }) {
           onRetry: () => collectionsQuery.refetch(),
           errorTitle: 'Series could not be read',
           errorBody: 'Every other panel on this tab is unaffected.',
-          empty: NEEDS_ENRICHMENT,
+          empty: NEEDS_A_REPEAT,
         }) ?? (
           <Rows
             columns="minmax(0,1fr) 60px 66px"

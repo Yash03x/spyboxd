@@ -127,8 +127,14 @@ export default function PicksTab({
           onRetry: () => shortlistQuery.refetch(),
           empty: ready
             ? {
-                title: 'No group picks match these filters',
-                body: 'Nothing on the selected queues is unwatched by everybody in the room. Try another region or a different set of people.',
+                title: 'Nothing on the selected watchlists yet',
+                // This mode ranks whatever is queued -- it never filters to
+                // films nobody has seen, and the region only decides where a
+                // film can be watched, not whether it is listed. Saying
+                // otherwise sent people to change a control that could not
+                // help.
+                body: 'This ranks films somebody in the room has queued, seen or not. Nobody in the selection has a watchlist entry we hold, so there is nothing to rank.',
+                cta: { label: 'CHECK WATCHLIST COVERAGE', href: sectionHref('data', 'missing') },
               }
             : needsTwo,
         }) ?? (

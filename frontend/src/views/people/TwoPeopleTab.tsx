@@ -410,7 +410,7 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
       <Panel
         title="COMMON LOVES"
         src="ratings both high"
-        blurb="Films they both rated at the top of their scale. The shortest possible answer to what these two have in common."
+        blurb="Films they both rated 3.5 or better and landed close on. Agreeing that something was poor is agreement, not a shared love, and it belongs in the panel below."
       >
         {panelState({
           isLoading: dossierQuery.isLoading,
@@ -427,7 +427,15 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
             : NEED_TWO,
         }) ?? (
           <Posters
-            items={(dossier?.agreements ?? []).slice(0, 6).map((comparison) => ({
+            // "At the top of their scale" has to mean it. The backend sorts
+            // purely by the gap, so two 2.0s (gap zero) outranked a 4.5 and a
+            // 5.0 -- agreement rendered as love, in green.
+            items={(dossier?.agreements ?? [])
+              .filter((comparison) =>
+                comparison.observations.every((entry) => (entry.rating ?? 0) >= 3.5),
+              )
+              .slice(0, 6)
+              .map((comparison) => ({
               title: comparison.movie.year
                 ? `${comparison.movie.title} (${comparison.movie.year})`
                 : comparison.movie.title,

@@ -192,7 +192,7 @@ export default function PublicDashboard() {
 
       <Panel
         title="ANONYMOUS OVERLAP TOTALS"
-        src="watch_events × watch_events"
+        src="ratings × ratings"
         blurb="How much overlap exists in the dataset. Names, profile pairs, titles, ratings and watch dates stay inside the signed-in workspace."
         wide
       >
@@ -236,7 +236,7 @@ export default function PublicDashboard() {
         />
         <div className="flex flex-wrap items-center gap-3 border-t border-term-rule2 px-[10px] py-[9px]">
           <Link
-            href={isSignedIn ? '/overview' : '/sign-in?redirect_url=%2Fdata%3Ftab%3Dprofiles'}
+            href={isSignedIn ? '/data?tab=profiles' : '/sign-in?redirect_url=%2Fdata%3Ftab%3Dprofiles'}
             className="rounded-[3px] border border-term-accent bg-term-accent px-3 py-[5px] text-t105 font-bold text-term-onaccent no-underline hover:no-underline"
           >
             {isSignedIn ? 'Choose monitored profiles' : 'Sign in for private tools'}
