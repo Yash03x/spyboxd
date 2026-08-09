@@ -88,10 +88,10 @@ export const SECTIONS: SectionDef[] = [
     blurb:
       'Merges Analysis, Compare and Network. Three doors into the same subject become one destination with four tabs.',
     tabs: [
-      { id: 'one', label: 'ONE PERSON', panels: 29 },
+      { id: 'one', label: 'ONE PERSON', panels: 33 },
       { id: 'two', label: 'TWO PEOPLE', panels: 11 },
       { id: 'circle', label: 'THE CIRCLE', panels: 7 },
-      { id: 'reach', label: 'REACH', panels: 6 },
+      { id: 'reach', label: 'REACH', panels: 8 },
     ],
   },
   {

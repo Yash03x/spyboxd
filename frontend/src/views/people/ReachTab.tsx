@@ -10,6 +10,7 @@ import Posters from '../../components/terminal/bodies/Posters';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { BarsSkeleton, panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
+import { count } from '../../components/terminal/plural';
 import { memberArchiveApi, peopleApi, profileApi, profileStatsApi } from '../../services/api';
 
 /** The film a liked review is about, where the short link says so. */
@@ -81,6 +82,8 @@ export default function ReachTab({ subject, profiles }: { subject: string; profi
     [archiveQuery.data],
   );
   const likedLists = archiveQuery.data?.liked_lists ?? [];
+  const likedAuthors = archiveQuery.data?.liked_authors ?? [];
+  const lostEntries = archiveQuery.data?.lost_entries ?? [];
   const card = cardQuery.data;
 
   // Films they liked a review of and have no watch record for. "No watch
@@ -235,6 +238,105 @@ export default function ReachTab({ subject, profiles }: { subject: string; profi
       </Panel>
 
       <Panel
+        title="WHAT LETTERBOXD NO LONGER HAS"
+        isNew
+        src="lost_entries.body_text"
+        blurb="Their own entries that exist in an export and no longer exist on Letterboxd — the diary rows and reviews the platform cannot show them any more, with the text intact."
+        caveat={
+          lostEntries.length
+            ? `Export-only, and held exactly as the export gave it. Data › Lost & found counts these across everybody; this is the ${count(Math.min(lostEntries.length, 8), 'entry')} shown of ${count(lostEntries.length, 'held')} for @${subject}.`
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: archiveQuery.isLoading,
+          error: archiveQuery.error,
+          isEmpty: lostEntries.length === 0,
+          severity: 'quiet',
+          onRetry: () => archiveQuery.refetch(),
+          errorTitle: 'The archive could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'Nothing of theirs has been lost',
+            body: 'Either every entry in their export still exists on Letterboxd, or no export has been supplied — the two are different, and Data › Lost & found says which.',
+            cta: { label: 'HOW TO SUPPLY AN EXPORT', href: sectionHref('data', 'profiles') },
+          },
+        }) ?? (
+          <Rows
+            columns="52px minmax(0,1fr) 74px minmax(0,1.4fr)"
+            head={['KIND', 'WHAT', ['WHEN', 'right'], 'WHAT IT SAID']}
+            rows={lostEntries.slice(0, 8).map((entry) => ({
+              cells: [
+                cell(entry.entry_type, { size: '9.5px', tone: 'var(--muted)' }),
+                cell(
+                  entry.title
+                    ? entry.release_year
+                      ? `${entry.title} (${entry.release_year})`
+                      : entry.title
+                    : '—',
+                  { font: 's', size: '10.5px', tone: 'var(--ink2)', wrap: true },
+                ),
+                cell(
+                  entry.watched_date || entry.entry_date
+                    ? localDate((entry.watched_date || entry.entry_date) as string).toLocaleDateString(
+                        'en-GB',
+                        { month: 'short', year: 'numeric' },
+                      )
+                    : '—',
+                  { align: 'right', size: '10px', tone: 'var(--muted)' },
+                ),
+                // A deleted diary row carries no text; saying so beats an
+                // empty cell that reads as text we failed to keep.
+                cell(entry.body_text || 'no text in the entry', {
+                  font: 's',
+                  size: '10px',
+                  tone: entry.body_text ? 'var(--ink3)' : 'var(--dim)',
+                  wrap: true,
+                }),
+              ],
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="WHOSE WRITING THEY LIKE"
+        isNew
+        src="member_content_likes.target_username"
+        blurb="The same likes as the panel above, counted by who wrote the thing. Reading one person repeatedly is a stronger signal than any single like."
+        caveat={
+          likedAuthors.length
+            ? likedAuthors[0].unresolved_likes
+              ? `${count(likedAuthors[0].unresolved_likes, 'like')} could not be traced to an author and are left out entirely rather than pooled under "unknown", so these counts run below the totals above.`
+              : 'Every like held for this profile resolved to an author.'
+            : undefined
+        }
+      >
+        {panelState({
+          isLoading: archiveQuery.isLoading,
+          error: archiveQuery.error,
+          isEmpty: likedAuthors.length === 0,
+          severity: 'quiet',
+          onRetry: () => archiveQuery.refetch(),
+          errorTitle: 'The archive could not be loaded',
+          errorBody: 'Every other panel on this tab is unaffected.',
+          empty: {
+            title: 'No liked writing traced to an author yet',
+            body: 'Likes come from an official export, and each one needs its author resolved before it can be counted here.',
+            cta: { label: 'HOW TO SUPPLY AN EXPORT', href: sectionHref('data', 'profiles') },
+          },
+        }) ?? (
+          <Bars
+            items={likedAuthors.map((author) => ({
+              name: `@${author.username}`,
+              weight: author.likes,
+              value: count(author.likes, 'like'),
+            }))}
+          />
+        )}
+      </Panel>
+
+      <Panel
         title="LIKED BUT NEVER SEEN"
         isNew
         src="member_content_likes × profile_films"
@@ -291,6 +393,19 @@ export default function ReachTab({ subject, profiles }: { subject: string; profi
                 ['Location', card?.location],
                 ['First logged', card?.first_logged_date],
                 ['Bio', card?.bio],
+                // Their own links, off their own profile header. The card was
+                // fetching these and rendering the five rows above it. The
+                // label falls back to the URL at import, so one is always
+                // there to print.
+                [
+                  'Links',
+                  card?.external_links?.length
+                    ? card.external_links
+                        .map((link) => link.label || link.url)
+                        .filter(Boolean)
+                        .join(' · ')
+                    : null,
+                ],
               ] as Array<[string, string | null | undefined]>
             )
               // A field the profile never supplied is absent, not an empty row

@@ -1273,10 +1273,23 @@ export interface LostEntryRecord {
   body_text: string | null;
 }
 
+/**
+ * Authors ranked by how often this member liked their writing. Likes whose
+ * author could not be resolved are excluded rather than bucketed under an
+ * "unknown" author; `unresolved_likes` is how many, so a short list reads as
+ * partial resolution rather than as a short history.
+ */
+export interface MemberLikedAuthor {
+  username: string;
+  likes: number;
+  unresolved_likes: number;
+}
+
 export interface MemberArchiveResponse {
   username: string;
   liked_reviews: MemberContentLikeEntry[];
   liked_lists: MemberContentLikeEntry[];
+  liked_authors: MemberLikedAuthor[];
   comments: MemberCommentEntry[];
   lost_entries: LostEntryRecord[];
   totals: {

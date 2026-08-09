@@ -61,12 +61,20 @@ export default function ListsTab({ profiles }: { profiles: string[] }) {
           },
         }) ?? (
           <Rows
-            columns="minmax(0,1.3fr) 70px minmax(0,0.7fr)"
-            head={['LIST', ['FILMS', 'right'], 'OWNER']}
+            columns="minmax(0,1.3fr) 70px 62px minmax(0,0.7fr)"
+            // ORDER, because a ranked list is a different object from a bag of
+            // films: its first entry is an argument, and working through it in
+            // any other order misreads the owner.
+            head={['LIST', ['FILMS', 'right'], ['ORDER', 'right'], 'OWNER']}
             rows={(listsQuery.data?.lists ?? []).slice(0, 8).map((list) => ({
               cells: [
                 cell(list.name, { font: 's', size: '11px', tone: 'var(--ink)', wrap: true }),
                 cell(list.movie_count.toLocaleString(), { align: 'right', tone: 'var(--ink)' }),
+                cell(list.is_ranked ? 'ranked' : 'unordered', {
+                  align: 'right',
+                  size: '10px',
+                  tone: list.is_ranked ? 'var(--accent)' : 'var(--dim)',
+                }),
                 cell(`@${list.owner}`, { size: '10px', tone: 'var(--muted)' }),
               ],
             }))}
