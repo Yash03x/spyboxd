@@ -46,8 +46,12 @@ jobs:
       url: https://spyboxd.com
     env:
       BACKFILL_SCRIPT_SHA: ${{ github.sha }}
-      BACKFILL_LIMIT: ${{ inputs.limit }}
-      BACKFILL_DRY_RUN: ${{ inputs.dry_run }}
+      # 0 means "everything remaining", never the empty string: arguments are
+      # re-split by the remote shell, so an empty one disappears and shifts
+      # every argument after it. `set -eu` caught that as "3: parameter not
+      # set" rather than silently running with the wrong flags.
+      BACKFILL_LIMIT: ${{ inputs.limit || '0' }}
+      BACKFILL_DRY_RUN: ${{ inputs.dry_run || 'false' }}
 
     steps:
       - name: Monitor runner file and network activity
@@ -91,7 +95,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "${BACKFILL_SCRIPT_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${BACKFILL_LIMIT}" =~ ^[0-9]*$ ]]
+          # Non-empty by construction, for the reason given above.
+          [[ "${BACKFILL_LIMIT}" =~ ^[0-9]+$ ]]
           [[ "${BACKFILL_DRY_RUN}" =~ ^(true|false)$ ]]
           timeout --signal=TERM --kill-after=2m 40m \
             deploy/production-ssh.sh run sh -s -- \
@@ -105,7 +110,7 @@ jobs:
           esac
           [ "${#backfill_script_sha}" -eq 40 ] || exit 64
           case "${backfill_limit}" in
-            *[!0-9]*) echo 'Invalid limit.' >&2; exit 64 ;;
+            *[!0-9]*|'') echo 'Invalid limit.' >&2; exit 64 ;;
           esac
 
           repository_git() {
@@ -136,8 +141,11 @@ jobs:
           [ "${active_release}" = "/opt/spyboxd/releases/${backfill_script_sha}" ]
 
           set -- "${runner}"
-          [ -n "${backfill_limit}" ] && set -- "$@" --limit "${backfill_limit}"
+          [ "${backfill_limit}" = "0" ] || set -- "$@" --limit "${backfill_limit}"
           [ "${backfill_dry_run}" = "true" ] && set -- "$@" --dry-run
+          # `set -e` would end the script on the false branch of the test
+          # above, which reads as a clean exit having done nothing.
+          true
 
           cd "${current_link}"
           "${python_path}" "$@"
