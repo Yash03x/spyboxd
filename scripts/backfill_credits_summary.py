@@ -42,7 +42,7 @@ if _ENV_FILE and not os.getenv("DATABASE_URL"):
 
 from database.connection import SessionLocal  # noqa: E402
 from database.models import MovieEnrichment  # noqa: E402
-from services.tmdb_enrichment import summarize_credits  # noqa: E402
+from services.tmdb_enrichment import collection_name, summarize_credits  # noqa: E402
 
 
 def _measure(value: Any) -> int:
@@ -66,9 +66,21 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        query = db.query(MovieEnrichment.movie_id, MovieEnrichment.credits)
+        # The three detail values come out of raw_payload by JSON path here,
+        # which is the expensive read this backfill exists to stop the panels
+        # doing. Paying it once, in a paced batch job, is the whole point.
+        query = db.query(
+            MovieEnrichment.movie_id,
+            MovieEnrichment.credits,
+            MovieEnrichment.raw_payload["details"]["production_companies"],
+            MovieEnrichment.raw_payload["details"]["spoken_languages"],
+            MovieEnrichment.raw_payload["details"]["belongs_to_collection"],
+        )
         if not arguments.refresh:
-            query = query.filter(MovieEnrichment.credits_summary.is_(None))
+            query = query.filter(
+                (MovieEnrichment.credits_summary.is_(None))
+                | (MovieEnrichment.production_companies.is_(None))
+            )
         query = query.order_by(MovieEnrichment.movie_id)
         if arguments.limit:
             query = query.limit(arguments.limit)
@@ -79,14 +91,29 @@ def main() -> int:
             return 0
 
         before = after = written = 0
-        for index, (movie_id, credits) in enumerate(rows, start=1):
+        for index, (movie_id, credits, companies, languages, collection) in enumerate(
+            rows, start=1
+        ):
             summary = summarize_credits(credits)
             before += _measure(credits)
             after += _measure(summary)
             if not arguments.dry_run:
                 db.query(MovieEnrichment).filter(
                     MovieEnrichment.movie_id == movie_id
-                ).update({"credits_summary": summary}, synchronize_session=False)
+                ).update(
+                    {
+                        "credits_summary": summary,
+                        # Empty lists rather than NULL: the row has been
+                        # visited, and NULL is what the reader's fallback keys
+                        # off. Leaving it null for a film TMDB lists no
+                        # companies for would make every later page load fetch
+                        # the payload again to learn the same nothing.
+                        "production_companies": companies if isinstance(companies, list) else [],
+                        "spoken_languages": languages if isinstance(languages, list) else [],
+                        "collection_name": collection_name(collection),
+                    },
+                    synchronize_session=False,
+                )
                 written += 1
                 if index % arguments.batch_size == 0:
                     db.commit()

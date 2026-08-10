@@ -256,17 +256,13 @@ def _actor_values(credits: Any) -> List[_Value]:
 def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
     """Bulk-load one profile's library in a single query.
 
-    Only the columns the statistics need are selected. ``raw_payload`` holds
-    the entire TMDB response including watch providers -- tens of megabytes
-    across a large library -- so the two fragments needed from it are extracted
-    by JSON path in the database instead of shipping the whole document.
+    Only the columns the statistics need are selected, and none of them is
+    ``raw_payload``. That column holds the entire TMDB response including watch
+    providers -- 39MB behind a single large library -- and reading any part of
+    it, even by JSON path, makes Postgres detoast the whole thing. The three
+    values the panel wants from it therefore live in columns of their own,
+    filled by the enrichment writer and the backfill script.
     """
-
-    production_companies = MovieEnrichment.raw_payload["details"]["production_companies"]
-    spoken_languages = MovieEnrichment.raw_payload["details"]["spoken_languages"]
-    # TMDB names the franchise a film belongs to; 1,143 of the 4,554 enriched
-    # films carry one and nothing had ever read it.
-    belongs_to_collection = MovieEnrichment.raw_payload["details"]["belongs_to_collection"]
     rows = (
         db.query(
             ProfileFilm.rating,
@@ -289,9 +285,9 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
             # and are fetched below.
             MovieEnrichment.credits_summary,
             MovieEnrichment.production_countries,
-            production_companies.label("production_companies"),
-            spoken_languages.label("spoken_languages"),
-            belongs_to_collection.label("belongs_to_collection"),
+            MovieEnrichment.production_companies,
+            MovieEnrichment.spoken_languages,
+            MovieEnrichment.collection_name,
         )
         .join(Movie, Movie.id == ProfileFilm.movie_id)
         .outerjoin(MovieEnrichment, MovieEnrichment.movie_id == Movie.id)
@@ -302,21 +298,33 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
         .all()
     )
 
-    # Films the backfill has not summarised yet still have to render their
-    # crew, so the full document is fetched for exactly those. The set shrinks
-    # to nothing once `scripts/backfill_credits_summary.py` has run, and a
-    # deploy that lands before the backfill is therefore correct, just no
-    # faster than before for the rows still missing.
-    unsummarised = [
-        int(row.movie_id) for row in rows if row.credits_summary is None and row.enrichment_movie_id
+    # Films the backfill has not reached yet still have to render, so the
+    # originals are fetched for exactly those. The set shrinks to nothing once
+    # `scripts/backfill_credits_summary.py` has run, which is what makes a
+    # deploy landing before the backfill correct -- just no faster than before
+    # for the rows still missing.
+    unfilled = [
+        int(row.movie_id)
+        for row in rows
+        if row.enrichment_movie_id
+        and (row.credits_summary is None or row.production_companies is None)
     ]
-    fallback_credits: Dict[int, Any] = {}
-    if unsummarised:
-        fallback_credits = {
-            int(movie_id): payload
-            for movie_id, payload in db.query(
-                MovieEnrichment.movie_id, MovieEnrichment.credits
-            ).filter(MovieEnrichment.movie_id.in_(unsummarised))
+    fallback: Dict[int, Any] = {}
+    if unfilled:
+        fallback = {
+            int(movie_id): {
+                "credits": credits,
+                "production_companies": companies,
+                "spoken_languages": languages,
+                "collection": collection,
+            }
+            for movie_id, credits, companies, languages, collection in db.query(
+                MovieEnrichment.movie_id,
+                MovieEnrichment.credits,
+                MovieEnrichment.raw_payload["details"]["production_companies"],
+                MovieEnrichment.raw_payload["details"]["spoken_languages"],
+                MovieEnrichment.raw_payload["details"]["belongs_to_collection"],
+            ).filter(MovieEnrichment.movie_id.in_(unfilled))
         }
 
     films: List[_FilmRow] = []
@@ -325,10 +333,18 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
         release_year = row.release_year
         if not release_year and row.release_date is not None:
             release_year = row.release_date.year
+        original = fallback.get(int(row.movie_id)) or {}
         credits = row.credits_summary
         if not isinstance(credits, Mapping):
-            credits = fallback_credits.get(int(row.movie_id))
+            credits = original.get("credits")
         credits = credits if isinstance(credits, Mapping) else {}
+        companies = row.production_companies
+        if companies is None:
+            companies = original.get("production_companies")
+        languages = row.spoken_languages
+        if languages is None:
+            languages = original.get("spoken_languages")
+        collection = row.collection_name or _collection_name(original.get("collection"))
         films.append(
             _FilmRow(
                 movie_id=int(row.movie_id),
@@ -347,7 +363,7 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
                 ),
                 genres=_plain_values(_as_string_list(row.genres)),
                 countries=_country_values(row.production_countries),
-                languages=_language_values(row.original_language, row.spoken_languages),
+                languages=_language_values(row.original_language, languages),
                 directors=_director_values(credits),
                 director_genders=_director_genders(credits),
                 composers=_crew_values(credits, BELOW_THE_LINE_JOBS["composer"]),
@@ -356,12 +372,12 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
                 ),
                 editors=_crew_values(credits, BELOW_THE_LINE_JOBS["editor"]),
                 actors=_actor_values(credits),
-                studios=_plain_values(_as_string_list(row.production_companies)),
+                studios=_plain_values(_as_string_list(companies)),
                 extra_crew={
                     key: _crew_values(credits, job)
                     for key, job in EXTRA_CREW_JOBS.items()
                 },
-                collection=_collection_name(row.belongs_to_collection),
+                collection=collection,
             )
         )
     return films

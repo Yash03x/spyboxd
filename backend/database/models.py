@@ -1252,6 +1252,14 @@ class MovieEnrichment(Base):
     # is distinct from a film whose credits are genuinely empty.
     credits_summary = Column(_json_type(), nullable=True)
     production_countries = Column(_json_type(), nullable=False, server_default=sql_text("'[]'"))
+    # Three values the panels read out of `raw_payload`, promoted to columns of
+    # their own. Extracting them by JSON path still made Postgres detoast the
+    # whole payload -- 39MB behind one profile's library -- which was 65% of
+    # the film query once `credits` stopped being the bottleneck. Nullable, so
+    # NULL means "not extracted yet" and readers fall back to the payload.
+    production_companies = Column(_json_type(), nullable=True)
+    spoken_languages = Column(_json_type(), nullable=True)
+    collection_name = Column(String(300), nullable=True)
     poster_path = Column(String(500), nullable=True)
     backdrop_path = Column(String(500), nullable=True)
     raw_payload = Column(_json_type(), nullable=False, server_default=sql_text("'{}'"))
