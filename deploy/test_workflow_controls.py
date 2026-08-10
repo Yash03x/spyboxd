@@ -356,6 +356,7 @@ class FailureAlertTests(unittest.TestCase):
         ".github/workflows/postgres-restore-drill.yml",
         ".github/workflows/canary-reset.yml",
         ".github/workflows/panel-sweep.yml",
+        ".github/workflows/credits-summary-backfill.yml",
     )
 
     # Touches production but deliberately does not file an issue, with the
