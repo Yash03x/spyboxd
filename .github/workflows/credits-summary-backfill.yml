@@ -66,6 +66,14 @@ jobs:
       # thing about to rewrite every row still agrees with the thing that
       # writes new ones -- before any credential is loaded.
       - name: Prove the summary still matches the document it replaces
+        env:
+          # Importing the services package resolves DATABASE_URL at import
+          # time. These tests compare two in-memory dictionaries and never open
+          # a connection, and SQLAlchemy builds its engine lazily, so a
+          # placeholder is enough -- and pointing it at a closed port means a
+          # test that did try to connect would fail loudly rather than reach
+          # anything real.
+          DATABASE_URL: postgresql+psycopg://unused:unused@127.0.0.1:1/never_connected
         run: |
           set -Eeuo pipefail
           python3 -m pip install --quiet --disable-pip-version-check \
