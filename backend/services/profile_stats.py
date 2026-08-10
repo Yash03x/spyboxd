@@ -231,6 +231,14 @@ def _director_genders(credits: Any) -> List[int]:
 
 
 def _actor_values(credits: Any) -> List[_Value]:
+    """Top-billed cast.
+
+    Unchanged by the credits summary on purpose: the summary carries each
+    entry's `order`, so the rule applied here is the same one that was applied
+    to the full TMDB document. Billing order skips values, so selecting by
+    position instead would bill a different set.
+    """
+
     cast = credits.get("cast") if isinstance(credits, Mapping) else None
     if not isinstance(cast, list):
         return []
@@ -274,7 +282,12 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
             MovieEnrichment.original_language,
             MovieEnrichment.release_date,
             MovieEnrichment.genres,
-            MovieEnrichment.credits,
+            # The summary, not the document. `credits` averages 22KB a film and
+            # the panel reads names, job titles and director genders out of it;
+            # over a large library that was 89% of this query's cost and 36MB
+            # on the wire. Rows the backfill has not reached yet come back NULL
+            # and are fetched below.
+            MovieEnrichment.credits_summary,
             MovieEnrichment.production_countries,
             production_companies.label("production_companies"),
             spoken_languages.label("spoken_languages"),
@@ -289,13 +302,33 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
         .all()
     )
 
+    # Films the backfill has not summarised yet still have to render their
+    # crew, so the full document is fetched for exactly those. The set shrinks
+    # to nothing once `scripts/backfill_credits_summary.py` has run, and a
+    # deploy that lands before the backfill is therefore correct, just no
+    # faster than before for the rows still missing.
+    unsummarised = [
+        int(row.movie_id) for row in rows if row.credits_summary is None and row.enrichment_movie_id
+    ]
+    fallback_credits: Dict[int, Any] = {}
+    if unsummarised:
+        fallback_credits = {
+            int(movie_id): payload
+            for movie_id, payload in db.query(
+                MovieEnrichment.movie_id, MovieEnrichment.credits
+            ).filter(MovieEnrichment.movie_id.in_(unsummarised))
+        }
+
     films: List[_FilmRow] = []
     for row in rows:
         enriched = row.enrichment_movie_id is not None
         release_year = row.release_year
         if not release_year and row.release_date is not None:
             release_year = row.release_date.year
-        credits = row.credits if isinstance(row.credits, Mapping) else {}
+        credits = row.credits_summary
+        if not isinstance(credits, Mapping):
+            credits = fallback_credits.get(int(row.movie_id))
+        credits = credits if isinstance(credits, Mapping) else {}
         films.append(
             _FilmRow(
                 movie_id=int(row.movie_id),
@@ -325,7 +358,7 @@ def _film_rows(db: Session, profile_id: int) -> List[_FilmRow]:
                 actors=_actor_values(credits),
                 studios=_plain_values(_as_string_list(row.production_companies)),
                 extra_crew={
-                    key: _crew_values(row.credits, job)
+                    key: _crew_values(credits, job)
                     for key, job in EXTRA_CREW_JOBS.items()
                 },
                 collection=_collection_name(row.belongs_to_collection),
