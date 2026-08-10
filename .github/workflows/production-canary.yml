@@ -138,6 +138,13 @@ jobs:
               )
           PY
               printf 'exact_release=false\n' >>"${GITHUB_OUTPUT}"
+              # Distinct from every other reason alignment can fail: this one
+              # is a deploy in flight, which resolves itself in minutes. The
+              # authenticated phase still must not run -- it would be proving
+              # isolation against a release nobody asked about -- but declining
+              # to run is not a failure, and paging for it teaches people that
+              # canary alerts are noise.
+              printf 'release_pending=true\n' >>"${GITHUB_OUTPUT}"
               echo 'Production is temporarily behind current main while its exact CI or deployment is active.'
               ;;
             *)
@@ -157,8 +164,23 @@ jobs:
             echo 'The workflow stages those non-password identity values only for a single run. Clerk, database, password, and session secrets remain on the VPS.'
           } >>"${GITHUB_STEP_SUMMARY}"
 
+      - name: Note that a deploy in flight defers authenticated isolation
+        if: >-
+          env.AUTH_CANARY_REQUIRED == 'true' &&
+          steps.release_alignment.outputs.release_pending == 'true'
+        run: |
+          {
+            echo '### Authenticated isolation deferred'
+            echo
+            echo 'Production is mid-deploy, so there is no settled release to prove isolation against.'
+            echo 'The next scheduled run covers it. This is the guard working, not a failure.'
+          } >>"${GITHUB_STEP_SUMMARY}"
+
       - name: Require exact release alignment for authenticated isolation
-        if: env.AUTH_CANARY_REQUIRED == 'true' && steps.release_alignment.outputs.exact_release != 'true'
+        if: >-
+          env.AUTH_CANARY_REQUIRED == 'true' &&
+          steps.release_alignment.outputs.exact_release != 'true' &&
+          steps.release_alignment.outputs.release_pending != 'true'
         run: |
           echo 'Authenticated isolation is fail-closed until the exact main release is deployed.' >&2
           exit 1
