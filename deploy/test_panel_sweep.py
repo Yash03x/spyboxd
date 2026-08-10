@@ -293,34 +293,9 @@ def test_postgres_is_asked_for_a_read_only_transaction_and_sqlite_is_not() -> No
     assert sqlite.statements == []
 
 
-def test_only_the_database_url_is_taken_from_the_api_environment(tmp_path) -> None:
-    """api.env holds every production secret. A read-only checker has business
-    with exactly one line of it."""
-
-    env_file = tmp_path / "api.env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "CLERK_SECRET_KEY=sk_live_do_not_read_me",
-                "export DATABASE_URL=\"postgresql+psycopg://user:p=ss@w0rd@db:5432/spyboxd\"",
-                "TMDB_API_KEY='another secret'",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    url = sweep_module.read_database_url(str(env_file))
-
-    # Split once: a password routinely contains '=' and '@'.
-    assert url == "postgresql+psycopg://user:p=ss@w0rd@db:5432/spyboxd"
-
-
-def test_an_environment_file_without_a_database_url_stops_rather_than_guesses(tmp_path) -> None:
-    env_file = tmp_path / "api.env"
-    env_file.write_text("CLERK_SECRET_KEY=sk_live\n", encoding="utf-8")
-
-    with pytest.raises(SystemExit, match="has no DATABASE_URL"):
-        sweep_module.read_database_url(str(env_file))
+# The environment-file reader moved to backend/env_file.py so the panel sweep
+# and the credits backfill share one implementation; its tests moved with it,
+# to backend/tests/test_env_file.py.
 
 
 def test_every_swept_builder_has_a_call_plan() -> None:

@@ -412,36 +412,6 @@ def report(sweep: Sweep, *, as_json: bool) -> None:
             )
 
 
-def read_database_url(env_file: str) -> str:
-    """Take only DATABASE_URL out of the API's environment file.
-
-    Parsed here rather than in the calling shell for two reasons: the sweep
-    needs one value out of a file full of production secrets, and sourcing the
-    file would hand it all of them; and a `sed` inside a heredoc inside YAML is
-    three quoting layers deep, which is where the last one of these went wrong.
-
-    A value may be quoted, may be `export`ed, and may itself contain '=' -- a
-    password routinely does -- so it is split once and unwrapped, not matched.
-    """
-
-    from pathlib import Path
-
-    url: Optional[str] = None
-    for raw_line in Path(env_file).read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        key, separator, value = line.partition("=")
-        if separator and key.strip() == "DATABASE_URL":
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            url = value
-    if not url:
-        raise SystemExit(f"{env_file} has no DATABASE_URL")
-    return url
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
@@ -461,6 +431,10 @@ def main() -> int:
     if arguments.application_root not in sys.path:
         sys.path.insert(0, arguments.application_root)
     if arguments.database_env_file:
+        # Imported after the application root is on the path and before
+        # `database.connection`, which resolves DATABASE_URL at import time.
+        from env_file import read_database_url
+
         os.environ["DATABASE_URL"] = read_database_url(arguments.database_env_file)
 
     from database.connection import SessionLocal

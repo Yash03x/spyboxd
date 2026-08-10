@@ -20,15 +20,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 load_dotenv(REPO_ROOT / ".env")
+
+# On the VPS there is no repo-level .env: DATABASE_URL lives in the API's own
+# environment file, and only that one key is taken from it. Resolved before
+# importing `database.connection`, which reads it at import time.
+_ENV_FILE = os.getenv("SPYBOXD_DATABASE_ENV_FILE")
+if _ENV_FILE and not os.getenv("DATABASE_URL"):
+    from env_file import read_database_url  # noqa: E402
+
+    os.environ["DATABASE_URL"] = read_database_url(_ENV_FILE)
 
 from database.connection import SessionLocal  # noqa: E402
 from database.models import MovieEnrichment  # noqa: E402
