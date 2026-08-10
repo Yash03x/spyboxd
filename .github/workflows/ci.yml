@@ -564,6 +564,8 @@ jobs:
   deploy_production:
     name: Deploy / Exact-SHA release
     needs: release_bundle
+    outputs:
+      superseded: ${{ steps.staleness.outputs.superseded }}
     concurrency:
       group: spyboxd-production-deploy
       queue: max
@@ -589,6 +591,7 @@ jobs:
           egress-policy: audit
 
       - name: Reject a stale deployable CI result before loading SSH credentials
+        id: staleness
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -609,6 +612,10 @@ jobs:
           )"
           if [[ "${current_main_sha}" != "${RELEASE_SHA}" ]]; then
             echo "Skipping stale CI artifact because main now points to ${current_main_sha}." >&2
+            # Recorded before exiting so the alert can tell this apart from a
+            # deploy that broke. Declining to ship a superseded artifact is the
+            # guard working; the commit that replaced it brings its own deploy.
+            printf 'superseded=true\n' >>"${GITHUB_OUTPUT}"
             exit 75
           fi
 
@@ -1715,7 +1722,20 @@ jobs:
   alert_on_failure:
     name: Alert if this run failed
     needs: [backend, frontend, e2e, compose, release_gate, release_bundle, deploy_production]
-    if: always() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/main'
+    # A deploy that declined to ship a superseded artifact is not a failure
+    # worth waking anybody for: main moved on, and the commit that moved it
+    # carries its own deploy. Alerting on it taught nobody anything except to
+    # ignore the alerts.
+    if: >-
+      always() && contains(needs.*.result, 'failure') &&
+      github.ref == 'refs/heads/main' &&
+      !(needs.deploy_production.outputs.superseded == 'true' &&
+        needs.backend.result == 'success' &&
+        needs.frontend.result == 'success' &&
+        needs.e2e.result == 'success' &&
+        needs.compose.result == 'success' &&
+        needs.release_gate.result == 'success' &&
+        needs.release_bundle.result == 'success')
     permissions:
       contents: read
       issues: write

@@ -96,10 +96,18 @@ jobs:
               printf 'exact_release=true\n' >>"${GITHUB_OUTPUT}"
               ;;
             ahead)
-              (( ahead_by == 1 )) || {
-                echo 'Production is more than one commit behind current main.' >&2
-                exit 1
-              }
+              # No ceiling on the distance, deliberately. It used to be one
+              # commit, which failed the moment several merges landed close
+              # together -- seven dependency updates in a row put production
+              # legitimately six behind while its deploys queued, and every one
+              # of those queued deploys was going to arrive.
+              #
+              # The distance was never the safety property. "Production is
+              # behind and nothing is doing anything about it" is, and that is
+              # what the active-run check below actually tests. Production's
+              # revision is already proven an ancestor of main above, so a
+              # long distance with a live deploy queue is a slow queue, not a
+              # broken release.
               ci_runs="${RUNNER_TEMP}/spyboxd-active-ci.json"
               gh api \
                 --header 'X-GitHub-Api-Version: 2022-11-28' \
@@ -126,15 +134,20 @@ jobs:
                   except ValueError:
                       continue
                   age_seconds = (now - created).total_seconds()
+                  # Any recent active run on main, not only one for the current
+                  # head. During a burst of merges the run in flight is often
+                  # for an intermediate commit, and it is still evidence the
+                  # pipeline is moving -- which is the whole question here.
+                  # Deployment is serialised, so whatever is running now is
+                  # followed by the rest of the queue.
                   if (
-                      run.get("head_sha") == current_main_sha
-                      and run.get("status") in active_statuses
+                      run.get("status") in active_statuses
                       and -300 <= age_seconds <= 1800
                   ):
                       active.append(run)
           if not active:
               raise SystemExit(
-                  "production is behind main and no current production CI started within 30 minutes"
+                  "production is behind main and no production CI started within 30 minutes"
               )
           PY
               printf 'exact_release=false\n' >>"${GITHUB_OUTPUT}"
