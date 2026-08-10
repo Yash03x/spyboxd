@@ -1246,6 +1246,11 @@ class MovieEnrichment(Base):
     genres = Column(_json_type(), nullable=False, server_default=sql_text("'[]'"))
     keywords = Column(_json_type(), nullable=False, server_default=sql_text("'[]'"))
     credits = Column(_json_type(), nullable=False, server_default=sql_text("'{}'"))
+    # Names, job titles and director genders extracted from `credits`, which is
+    # everything the panels read out of a document averaging 22KB. Nullable on
+    # purpose: NULL means "not summarised yet", which readers fall back on, and
+    # is distinct from a film whose credits are genuinely empty.
+    credits_summary = Column(_json_type(), nullable=True)
     production_countries = Column(_json_type(), nullable=False, server_default=sql_text("'[]'"))
     poster_path = Column(String(500), nullable=True)
     backdrop_path = Column(String(500), nullable=True)

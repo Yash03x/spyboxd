@@ -155,6 +155,48 @@ def _certification_for_region(details: Mapping[str, Any], region: str) -> Option
     return None
 
 
+# Cast kept in the summary, by billing order. The panels read the top five and
+# insights reads the top eight; eight is the larger, so eight is what is kept.
+SUMMARY_CAST_LIMIT = 8
+
+
+def summarize_credits(credits: Any) -> Dict[str, Any]:
+    """The three facts the panels read out of a TMDB credits document.
+
+    A full credits payload averages 22KB — a hundred-plus crew entries and
+    forty cast, each carrying `profile_path`, `credit_id`, `popularity` and
+    `known_for_department`. Every panel that touches it reads names, job
+    titles, and the gender of directors. Loading one profile's library shipped
+    36MB of JSON to use about a sixth of it, which is what made the stats panel
+    take seven seconds in production.
+
+    Crew is kept whole rather than filtered to the job titles used today: a
+    whitelist would silently return nothing the first time a panel asked for a
+    job nobody had listed, and the fields are what cost, not the rows.
+    """
+
+    payload = _as_dict(credits)
+    crew = [
+        {"name": member.get("name"), "job": member.get("job"), "gender": member.get("gender")}
+        for member in _as_list(payload.get("crew"))
+        if isinstance(member, Mapping) and member.get("name")
+    ]
+    # `order` is carried, not dropped. TMDB's order values skip -- a film can
+    # bill 0,1,2,3,5 -- so "the first five entries" and "order below five" are
+    # different sets, and a reader that had to fall back on position would
+    # quietly bill a sixth actor. Keeping the number lets every caller apply
+    # the same rule it applied to the full document.
+    cast = [
+        {"name": member.get("name"), "order": order}
+        for index, member in enumerate(_as_list(payload.get("cast")))
+        if isinstance(member, Mapping)
+        and member.get("name")
+        and (order := member.get("order") if isinstance(member.get("order"), int) else index)
+        < SUMMARY_CAST_LIMIT
+    ]
+    return {"crew": crew, "cast": cast}
+
+
 def build_enrichment_values(details: Mapping[str, Any]) -> Dict[str, Any]:
     """Map a TMDB detail response to typed MovieEnrichment fields."""
     keywords_payload = _as_dict(details.get("keywords"))
@@ -178,6 +220,10 @@ def build_enrichment_values(details: Mapping[str, Any]) -> Dict[str, Any]:
         "genres": _as_list(details.get("genres")),
         "keywords": keywords,
         "credits": credits,
+        # Written alongside the full document, not instead of it: the whole
+        # payload stays the record of what TMDB said, and this is the part the
+        # panels read without paying for the rest.
+        "credits_summary": summarize_credits(credits),
         "production_countries": _as_list(details.get("production_countries")),
         "poster_path": str(details.get("poster_path") or "").strip() or None,
         "backdrop_path": str(details.get("backdrop_path") or "").strip() or None,
