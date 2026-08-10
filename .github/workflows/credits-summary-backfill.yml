@@ -1,0 +1,154 @@
+name: Credits Summary Backfill
+
+# Fill movie_enrichments.credits_summary on production from the credits already
+# stored there.
+#
+# Purely local work on the VPS: no network call, no TMDB request, every input a
+# column the database already holds. It is separate from the migration on
+# purpose -- adding the column takes milliseconds, rewriting every enrichment
+# row does not, and this database is live. Readers fall back to the full
+# credits document for rows this has not reached, so production is correct
+# before, during and after; it is just no faster for those rows.
+#
+# Resumable and idempotent: only NULL summaries are selected, so a second run
+# continues rather than repeats, and an interrupted run loses only its final
+# uncommitted batch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Maximum rows to process (blank for all remaining).
+        required: false
+        type: string
+      dry_run:
+        description: Report what would be written without writing it.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spyboxd-production-credits-backfill
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Summarise stored credits on the VPS
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: https://spyboxd.com
+    env:
+      BACKFILL_SCRIPT_SHA: ${{ github.sha }}
+      BACKFILL_LIMIT: ${{ inputs.limit }}
+      BACKFILL_DRY_RUN: ${{ inputs.dry_run }}
+
+    steps:
+      - name: Monitor runner file and network activity
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Check out the exact backfill helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BACKFILL_SCRIPT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The summariser is shared with the enrichment writer, so this proves the
+      # thing about to rewrite every row still agrees with the thing that
+      # writes new ones -- before any credential is loaded.
+      - name: Prove the summary still matches the document it replaces
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check \
+            --require-hashes -r requirements-dev.lock
+          python3 -m pytest -q backend/tests/test_credits_summary.py
+
+      - name: Establish one pinned IPv4 production SSH connection
+        env:
+          SSH_FINGERPRINT: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: deploy/production-ssh.sh open
+
+      - name: Summarise stored credits
+        run: |
+          set -Eeuo pipefail
+          [[ "${BACKFILL_SCRIPT_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${BACKFILL_LIMIT}" =~ ^[0-9]*$ ]]
+          [[ "${BACKFILL_DRY_RUN}" =~ ^(true|false)$ ]]
+          timeout --signal=TERM --kill-after=2m 40m \
+            deploy/production-ssh.sh run sh -s -- \
+            "${BACKFILL_SCRIPT_SHA}" "${BACKFILL_LIMIT}" "${BACKFILL_DRY_RUN}" <<'REMOTE'
+          set -eu
+          backfill_script_sha="$1"
+          backfill_limit="$2"
+          backfill_dry_run="$3"
+          case "${backfill_script_sha}" in
+            *[!0-9a-f]*|'') echo 'Invalid backfill script SHA.' >&2; exit 64 ;;
+          esac
+          [ "${#backfill_script_sha}" -eq 40 ] || exit 64
+          case "${backfill_limit}" in
+            *[!0-9]*) echo 'Invalid limit.' >&2; exit 64 ;;
+          esac
+
+          repository_git() {
+            git --git-dir=/opt/spyboxd/repository "$@"
+          }
+          repository_git rev-parse --is-bare-repository >/dev/null
+          timeout --signal=TERM --kill-after=15s 2m \
+            git --git-dir=/opt/spyboxd/repository fetch \
+              --quiet --force --prune origin \
+              '+refs/heads/main:refs/remotes/origin/main'
+          resolved_script_sha="$(
+            repository_git rev-parse --verify "${backfill_script_sha}^{commit}"
+          )"
+          [ "${resolved_script_sha}" = "${backfill_script_sha}" ]
+          repository_git merge-base --is-ancestor \
+            "${backfill_script_sha}" refs/remotes/origin/main
+
+          current_link=/opt/spyboxd/current
+          python_path="${current_link}/.venv/bin/python"
+          runner="${current_link}/scripts/backfill_credits_summary.py"
+          [ -L "${current_link}" ]
+          [ -x "${python_path}" ]
+          # Run the deployed copy rather than an extracted one: the script
+          # imports the application's own summariser, and the two must be the
+          # same revision or the rewrite disagrees with the writer.
+          [ -f "${runner}" ]
+          active_release="$(readlink -f -- "${current_link}")"
+          [ "${active_release}" = "/opt/spyboxd/releases/${backfill_script_sha}" ]
+
+          set -- "${runner}"
+          [ -n "${backfill_limit}" ] && set -- "$@" --limit "${backfill_limit}"
+          [ "${backfill_dry_run}" = "true" ] && set -- "$@" --dry-run
+
+          cd "${current_link}"
+          "${python_path}" "$@"
+          REMOTE
+
+      - name: Close production SSH and securely remove local key material
+        if: always()
+        run: |
+          if [[ -x deploy/production-ssh.sh ]]; then
+            deploy/production-ssh.sh close
+          fi
+
+  alert_on_failure:
+    name: Alert if this run failed
+    needs: [backfill]
+    if: always() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/failure-alert.yml
+    with:
+      workflow: Credits Summary Backfill
