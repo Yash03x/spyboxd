@@ -197,6 +197,18 @@ def summarize_credits(credits: Any) -> Dict[str, Any]:
     return {"crew": crew, "cast": cast}
 
 
+def collection_name(payload: Any) -> Optional[str]:
+    """The franchise TMDB places a film in, if any.
+
+    Most films belong to none, which is why this is nullable rather than a
+    bucket: a standalone film is not a one-film franchise.
+    """
+
+    if not isinstance(payload, Mapping):
+        return None
+    return str(payload.get("name") or "").strip() or None
+
+
 def build_enrichment_values(details: Mapping[str, Any]) -> Dict[str, Any]:
     """Map a TMDB detail response to typed MovieEnrichment fields."""
     keywords_payload = _as_dict(details.get("keywords"))
@@ -225,6 +237,11 @@ def build_enrichment_values(details: Mapping[str, Any]) -> Dict[str, Any]:
         # panels read without paying for the rest.
         "credits_summary": summarize_credits(credits),
         "production_countries": _as_list(details.get("production_countries")),
+        # Promoted out of raw_payload. Reading them back by JSON path made
+        # Postgres detoast the whole payload, which was 65% of the film query.
+        "production_companies": _as_list(details.get("production_companies")),
+        "spoken_languages": _as_list(details.get("spoken_languages")),
+        "collection_name": collection_name(details.get("belongs_to_collection")),
         "poster_path": str(details.get("poster_path") or "").strip() or None,
         "backdrop_path": str(details.get("backdrop_path") or "").strip() or None,
     }
