@@ -131,8 +131,11 @@ jobs:
           current_link=/opt/spyboxd/current
           python_path="${current_link}/.venv/bin/python"
           runner="${current_link}/scripts/backfill_credits_summary.py"
+          database_env_file=/etc/spyboxd/api.env
           [ -L "${current_link}" ]
           [ -x "${python_path}" ]
+          [ -f "${database_env_file}" ] && [ ! -L "${database_env_file}" ] \
+            && [ -r "${database_env_file}" ]
           # Run the deployed copy rather than an extracted one: the script
           # imports the application's own summariser, and the two must be the
           # same revision or the rewrite disagrees with the writer.
@@ -148,7 +151,7 @@ jobs:
           true
 
           cd "${current_link}"
-          "${python_path}" "$@"
+          SPYBOXD_DATABASE_ENV_FILE="${database_env_file}" "${python_path}" "$@"
           REMOTE
 
       - name: Close production SSH and securely remove local key material
