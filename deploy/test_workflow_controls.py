@@ -433,15 +433,39 @@ class FailureAlertTests(unittest.TestCase):
     def test_only_a_real_failure_raises_an_alert(self) -> None:
         for relative_path in self.GUARDED:
             contents = read_repo_file(relative_path)
+            condition = contents.split("\n  alert_on_failure:", 1)[1].split("uses:", 1)[0]
             # A cancelled run is somebody pressing the button and a skipped one
             # is a guard working; alerting on either trains people to ignore
             # these. And a fork's failing pull request must not file issues.
-            self.assertIn(
-                "if: always() && contains(needs.*.result, 'failure') "
-                "&& github.ref == 'refs/heads/main'",
-                contents,
-                relative_path,
-            )
+            #
+            # Asserted as three properties rather than one literal string: the
+            # conditions have earned exceptions -- a deploy that declined a
+            # superseded artifact is not a failure -- and pinning the exact
+            # text made adding one look like removing the guard.
+            for required in (
+                "always()",
+                "contains(needs.*.result, 'failure')",
+                "github.ref == 'refs/heads/main'",
+            ):
+                self.assertIn(required, condition, f"{relative_path}: {required}")
+
+    def test_a_superseded_deploy_does_not_alert_while_a_broken_one_still_does(self) -> None:
+        """Merging several changes quickly makes earlier artifacts stale.
+
+        The deploy job refuses to ship one, which is the guard working, and it
+        used to file an issue for it. The exemption is narrow on purpose: it
+        applies only when every other job passed, so a deploy that was both
+        superseded and broken still alerts.
+        """
+
+        contents = read_repo_file(".github/workflows/ci.yml")
+        condition = contents.split("\n  alert_on_failure:", 1)[1].split("uses:", 1)[0]
+
+        self.assertIn("needs.deploy_production.outputs.superseded == 'true'", condition)
+        self.assertIn("printf 'superseded=true\\n' >>\"${GITHUB_OUTPUT}\"", contents)
+        # Every other job must be required green for the exemption to apply.
+        for job in ("backend", "frontend", "e2e", "compose", "release_gate", "release_bundle"):
+            self.assertIn(f"needs.{job}.result == 'success'", condition, job)
 
     def test_the_alert_is_called_rather_than_triggered_by_workflow_run(self) -> None:
         """`workflow_run` runs in the base repository's context and is the
