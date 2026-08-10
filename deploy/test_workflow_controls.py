@@ -510,3 +510,42 @@ class RestoreDrillProvisioningTests(unittest.TestCase):
 
     def test_it_refuses_to_run_as_anybody_but_root(self) -> None:
         self.assertIn('[ "$(id -u)" -eq 0 ]', read_repo_file(self.SCRIPT))
+
+
+class CanaryReleaseGraceTests(unittest.TestCase):
+    """A deploy in flight must not page anybody.
+
+    The alignment guard already recognised "production is mid-deploy" as
+    benign and set exact_release=false for it. The authenticated phase then
+    treated that same benign state as a hard failure, so every fast merge
+    filed a "Production Canary is failing" issue that resolved itself minutes
+    later. An alert that fires on a self-healing condition is how people learn
+    to ignore alerts.
+    """
+
+    WORKFLOW = ".github/workflows/production-canary.yml"
+
+    def test_a_deploy_in_flight_is_reported_separately_from_misalignment(self) -> None:
+        contents = read_repo_file(self.WORKFLOW)
+
+        # The grace path marks itself, rather than being indistinguishable
+        # from every other reason alignment can fail.
+        self.assertIn("printf 'release_pending=true\\n' >>\"${GITHUB_OUTPUT}\"", contents)
+
+    def test_the_hard_failure_excludes_the_deploy_in_flight_case(self) -> None:
+        contents = read_repo_file(self.WORKFLOW)
+        block = contents.split("- name: Require exact release alignment", 1)
+        self.assertEqual(len(block), 2, "the fail-closed step is gone")
+        condition = block[1].split("run:", 1)[0]
+
+        self.assertIn("exact_release != 'true'", condition)
+        self.assertIn("release_pending != 'true'", condition)
+
+    def test_the_authenticated_phase_still_refuses_to_run_mid_deploy(self) -> None:
+        """Deferring is not the same as blessing: isolation must never be
+        proved against a release nobody asked about."""
+
+        contents = read_repo_file(self.WORKFLOW)
+        gate = contents.split("\n  authenticated_canary:", 1)[1].split("runs-on", 1)[0]
+
+        self.assertIn("outputs.exact_release == 'true'", gate)
