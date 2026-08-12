@@ -21,7 +21,13 @@ const AdminScopeContext = createContext<AdminScopeContextValue | null>(null);
 
 function readStoredScope(): AdminScope {
   if (typeof window === 'undefined') return 'global';
-  return window.localStorage.getItem(SCOPE_STORAGE_KEY) === 'tracked' ? 'tracked' : 'global';
+  try {
+    return window.localStorage.getItem(SCOPE_STORAGE_KEY) === 'tracked' ? 'tracked' : 'global';
+  } catch {
+    // Storage can be denied even when `window.localStorage` exists. Scope is a
+    // convenience, so a browser privacy setting must not take down the app.
+    return 'global';
+  }
 }
 
 export function AdminScopeProvider({ children }: { children: React.ReactNode }) {

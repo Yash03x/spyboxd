@@ -29,6 +29,8 @@ from bs4 import BeautifulSoup
 import re
 from dataclasses import dataclass, asdict
 
+from services.profile_username import is_valid_profile_username
+
 
 class ScrapeValidationError(RuntimeError):
     """Raised when a full scrape cannot prove a dataset was fetched completely."""
@@ -2004,16 +2006,9 @@ class EnhancedLetterboxdScraper:
 
 
 def validate_username(username: str) -> bool:
-    """Validate that the username is reasonable."""
-    if not username:
-        return False
-    
-    # Basic validation - letterboxd usernames are alphanumeric with some special chars
-    import re
-    if not re.match(r'^[a-zA-Z0-9_-]+$', username):
-        return False
-        
-    return True
+    """Validate against the same identity contract used by auth and ingestion."""
+
+    return is_valid_profile_username(username)
 
 
 def main():
@@ -2057,7 +2052,7 @@ Features:
     # Validate username
     if not validate_username(args.username):
         print("Error: Please provide a valid Letterboxd username")
-        print("Username should contain only letters, numbers, underscores, and hyphens")
+        print("Username must be 2-15 characters using letters, numbers, or underscores")
         print("Example: python letterboxd_scraper.py username")
         sys.exit(1)
     

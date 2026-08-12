@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional, Sequence
 
@@ -19,9 +18,9 @@ from database.models import (
     Rating,
     UserTrackedProfile,
 )
+from services.profile_username import canonical_profile_username
 
 
-PROFILE_USERNAME = re.compile(r"[A-Za-z0-9_]{2,15}")
 REQUEST_STATUSES = {"pending", "approved", "rejected", "fulfilled"}
 ADMIN_DECISIONS = {"approved", "rejected"}
 
@@ -35,12 +34,13 @@ def _positive_limit(name: str, default: int) -> int:
 
 
 def normalize_profile_username(raw_username: str) -> tuple[str, str]:
-    username = (raw_username or "").strip().lstrip("@")
-    if not PROFILE_USERNAME.fullmatch(username):
+    try:
+        username = canonical_profile_username(raw_username, allow_at_prefix=True)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Enter a valid Letterboxd username.",
-        )
+        ) from exc
     return username, username.casefold()
 
 
@@ -287,6 +287,27 @@ def track_profile_by_id(
     """Idempotently monitor one selectable catalog profile for this user."""
 
     app_user = ensure_app_user(db, clerk_user)
+    if not clerk_user.is_admin:
+        # Numeric IDs are sequential and therefore cannot serve as proof that a
+        # caller knows a profile. Keep this route inside the same follow-graph
+        # discovery boundary as the catalog that supplies these IDs. A profile
+        # already tracked by the caller remains idempotently selectable even if
+        # a later follow-graph refresh removes the connecting edge.
+        is_already_tracked = (
+            db.query(UserTrackedProfile.id)
+            .filter(
+                UserTrackedProfile.user_id == app_user.id,
+                UserTrackedProfile.profile_id == profile_id,
+            )
+            .first()
+            is not None
+        )
+        if (
+            not is_already_tracked
+            and profile_id not in _connected_profile_ids(db, app_user)
+        ):
+            raise HTTPException(status_code=404, detail="Selectable profile not found")
+
     profile = (
         db.query(Profile)
         .filter(

@@ -44,6 +44,7 @@ export function useTerminalSelection(options: TerminalSelectionOptions = {}) {
   );
 
   const selection = useUrlProfileSelection(available, {
+    isReady: profilesQuery.isFetched,
     minSelection,
     maxSelection: options.maxSelection,
     defaultCount: options.defaultCount ?? Math.min(available.length, 6),

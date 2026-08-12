@@ -33,12 +33,13 @@ from database.models import Movie, Profile, ProfileFavoriteMovie, ProfileFilm, W
 from database.repository import (
     ProfileRepository, RatingRepository, ReviewRepository, AnalyticsRepository
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from services.data_coverage import (
     extract_data_coverage,
 )
 from services.ingestion import unified_data_loader
 from services.profile_loader import load_profile_data, validate_import_bundle
+from services.profile_username import canonical_profile_username
 from services.profile_access import (
     accessible_profiles,
     authorize_profile_usernames,
@@ -115,10 +116,15 @@ class ProfileCreate(BaseModel):
     worse than a rejected form.
     """
 
-    username: str = Field(pattern=r"^[A-Za-z0-9_]{2,15}$")
+    username: str
     bio: Optional[str] = None
     location: Optional[str] = None
     website: Optional[str] = None
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        return canonical_profile_username(value)
 
 class ProfileUpdate(BaseModel):
     bio: Optional[str] = None
@@ -129,6 +135,11 @@ class ProfileUpdate(BaseModel):
 
 class ProfileRename(BaseModel):
     new_username: str
+
+    @field_validator("new_username")
+    @classmethod
+    def validate_new_username(cls, value: str) -> str:
+        return canonical_profile_username(value)
 
 
 class PublicSystemStats(BaseModel):
@@ -487,11 +498,18 @@ def extract_zip_file(uploaded_file, temp_dir):
     if not safe_filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP archives are supported")
 
-    zip_path = os.path.join(temp_dir, safe_filename)
+    # One request can contain several archives with the same client filename.
+    # Isolate both the stored ZIP and its extraction tree so a later bundle can
+    # never inherit files from an earlier one.
+    upload_root = tempfile.mkdtemp(prefix="upload-", dir=temp_dir)
+    zip_path = os.path.join(upload_root, safe_filename)
     with open(zip_path, "wb") as f:
         shutil.copyfileobj(uploaded_file.file, f)
 
-    extract_dir = os.path.join(temp_dir, os.path.splitext(safe_filename)[0] or "archive")
+    extract_dir = os.path.join(
+        upload_root,
+        os.path.splitext(safe_filename)[0] or "archive",
+    )
     os.makedirs(extract_dir, exist_ok=True)
     extract_root = os.path.realpath(extract_dir)
     max_members = int(os.getenv("UPLOAD_MAX_ARCHIVE_MEMBERS", "50000"))
@@ -1067,9 +1085,7 @@ async def rename_profile(
     under the new username — otherwise the upload would create a duplicate.
     Shares the ingestion-token trust model with /upload/.
     """
-    new_username = payload.new_username.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", new_username):
-        raise HTTPException(status_code=422, detail="Invalid Letterboxd username")
+    new_username = payload.new_username
 
     profile_repo = ProfileRepository(db)
     profile = profile_repo.get_profile_by_username(username)

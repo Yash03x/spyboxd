@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 interface UrlProfileSelectionOptions {
+  isReady: boolean;
   minSelection: number;
   maxSelection?: number;
   defaultCount: number;
@@ -45,12 +46,32 @@ export function useUrlProfileSelection(
     return availableProfiles.slice(0, options.defaultCount);
   }, [availableProfiles, options.defaultCount, options.maxSelection, options.minSelection, urlProfilesKey]);
 
+  // Query-key changes (most importantly the admin scope lens) render before
+  // this hook's synchronization effect runs. Reconcile during render as well,
+  // so a child query can never receive names from the previous scope in that
+  // intervening commit. While the new profile catalog is loading, an empty
+  // selection is safer than querying the old scope.
+  const reconciledAppliedProfiles = useMemo(() => {
+    if (!options.isReady) return [];
+    const available = new Set(availableProfiles);
+    const valid = appliedProfiles.filter((profile) => available.has(profile));
+    const bounded = options.maxSelection ? valid.slice(0, options.maxSelection) : valid;
+    return bounded.length >= options.minSelection ? bounded : normalizedProfiles;
+  }, [
+    appliedProfiles,
+    availableProfiles,
+    normalizedProfiles,
+    options.isReady,
+    options.maxSelection,
+    options.minSelection,
+  ]);
+
   useEffect(() => {
-    if (availableProfiles.length < options.minSelection) return;
+    if (!options.isReady) return;
     setDraftProfiles((current) => sameProfiles(current, normalizedProfiles) ? current : normalizedProfiles);
     setAppliedProfiles((current) => sameProfiles(current, normalizedProfiles) ? current : normalizedProfiles);
     setIsInitialized(true);
-  }, [availableProfiles.length, normalizedProfiles, options.minSelection]);
+  }, [normalizedProfiles, options.isReady]);
 
   const replaceParams = useCallback((
     profiles: string[],
@@ -79,7 +100,7 @@ export function useUrlProfileSelection(
   }, [availableProfiles, options.maxSelection, options.minSelection, replaceParams]);
 
   return {
-    appliedProfiles,
+    appliedProfiles: reconciledAppliedProfiles,
     applyProfiles,
     draftProfiles,
     isInitialized,

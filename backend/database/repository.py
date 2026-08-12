@@ -25,6 +25,8 @@ from .models import (
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
 
+from services.profile_username import canonical_profile_username
+
 
 def _format_month_bucket(year: int, month: int) -> str:
     return f"{int(year):04d}-{int(month):02d}"
@@ -667,6 +669,7 @@ class ProfileRepository:
         cleared. App users whose account mirrors the old username follow it.
         Returns whether a feed state row was repointed.
         """
+        new_username = canonical_profile_username(new_username)
         old_username = profile.username
         profile.username = new_username
 

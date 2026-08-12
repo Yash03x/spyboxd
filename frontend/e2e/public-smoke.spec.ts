@@ -38,6 +38,15 @@ async function expectInsideViewport(page: Page, locator: Locator) {
   }).toBe(true);
 }
 
+async function expectHorizontallyInsideViewport(page: Page, locator: Locator) {
+  await expect.poll(async () => {
+    const viewport = page.viewportSize();
+    const box = await locator.boundingBox();
+    if (!viewport || !box) return false;
+    return box.x >= 0 && box.x + box.width <= viewport.width;
+  }).toBe(true);
+}
+
 test.beforeEach(async ({ page }) => {
   const errors: string[] = [];
   runtimeErrors.set(page, errors);
@@ -117,6 +126,68 @@ test('signed-in public homepage remains aggregate-only', async ({ page }) => {
   await signOut.click();
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole('link', { name: 'Sign in to monitor profiles' })).toBeVisible();
+});
+
+test('signed-in public header fits a 390px phone and keeps its controls usable', async ({
+  page,
+}, testInfo) => {
+  test.skip(!testInfo.project.name.startsWith('mobile-'), 'Mobile regression');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+
+  const dashboard = page.getByRole('link', { name: 'Open My Dashboard' });
+  const signOut = page.getByRole('button', { name: 'Sign out', exact: true });
+  const userMenu = page.getByRole('button', { name: 'Open user menu' });
+  const theme = page.getByRole('button', { name: /^(?:LIGHT|DARK)$/ });
+
+  for (const control of [dashboard, signOut, userMenu, theme]) {
+    await expect(control).toBeVisible();
+    await expectHorizontallyInsideViewport(page, control);
+  }
+  await expect(signOut).toBeEnabled();
+
+  const pageWidth = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(pageWidth.scroll).toBeLessThanOrEqual(pageWidth.client);
+
+  const initialTheme = await page.locator('html').getAttribute('data-theme');
+  await theme.click();
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', initialTheme ?? 'dark');
+
+  await dashboard.click();
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
+});
+
+test('anonymous public header fits a 390px phone and keeps its controls usable', async ({
+  page,
+}, testInfo) => {
+  test.skip(!testInfo.project.name.startsWith('mobile-'), 'Mobile regression');
+  await page.context().clearCookies();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+
+  const home = page.getByRole('link', { name: 'Spyboxd public dashboard' });
+  const createAccount = page.getByRole('link', { name: 'Create account' });
+  const signIn = page.getByRole('link', { name: 'Sign in to monitor profiles' });
+  const theme = page.getByRole('button', { name: /^(?:LIGHT|DARK)$/ });
+
+  for (const control of [home, createAccount, signIn, theme]) {
+    await expect(control).toBeVisible();
+    await expectHorizontallyInsideViewport(page, control);
+  }
+
+  const pageWidth = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(pageWidth.scroll).toBeLessThanOrEqual(pageWidth.client);
+
+  const initialTheme = await page.locator('html').getAttribute('data-theme');
+  await theme.click();
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', initialTheme ?? 'dark');
 });
 
 test('watching activity identifies month-to-date events and excludes them from the completed-month average', async ({ page }) => {
@@ -317,4 +388,37 @@ test('Tonight keeps its selection in the viewport and never paints a broken post
     }).length,
   );
   expect(brokenImages).toBe(0);
+});
+
+test('Tonight offers Worldwide and every supported availability country', async ({ page }) => {
+  const countries = ['AT', 'AU', 'CA', 'DE', 'GB', 'IN', 'US', 'ZA'];
+  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/api\/watch-provider-regions$/, (route) => (
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        default_region: 'ALL',
+        worldwide_region: 'ALL',
+        regions: countries.map((code) => ({ code, movie_count: 1 })),
+      }),
+    })
+  ));
+
+  await page.goto('/tonight?tab=picks');
+
+  const country = page.getByLabel('Availability country');
+  await expect(country).toHaveValue('ALL');
+  await expect(country.locator('option')).toHaveCount(countries.length + 1);
+  await expect(country.locator('option').first()).toHaveText(
+    'Worldwide (any supported availability country)',
+  );
+  await expect(country.locator('option[value="US"]')).toHaveCount(1);
+  await expect(country.locator('option[value="ZA"]')).toHaveCount(1);
+
+  await country.selectOption('ZA');
+  await expect(page).toHaveURL(/region=ZA/);
+  await expect(country).toHaveValue('ZA');
+  await expect(
+    page.getByText('ON A SUBSCRIPTION IN ZA', { exact: true }),
+  ).toBeVisible();
 });
