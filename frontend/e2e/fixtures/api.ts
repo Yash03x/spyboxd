@@ -1164,6 +1164,20 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   }
   if (path === '/profiles' && method === 'GET') return json(route, { profiles: state.profiles });
   if (path === '/profiles/tracked' && method === 'GET') return json(route, { profiles: state.profiles });
+  const profileSnapshotMatch = path.match(/^\/public\/profile\/([^/]+)$/);
+  if (profileSnapshotMatch && method === 'GET') {
+    const username = decodeURIComponent(profileSnapshotMatch[1]);
+    const profile = state.profiles.find(
+      (candidate) => candidate.username.toLocaleLowerCase() === username.toLocaleLowerCase(),
+    );
+    if (!profile) return route.fulfill({ status: 404, body: '' });
+    return json(route, {
+      ...profile,
+      bio: 'Fixture profile bio.',
+      location: 'Berlin',
+      website: null,
+    });
+  }
   const analysisMatch = path.match(/^\/profiles\/([^/]+)\/analysis$/);
   if (analysisMatch && method === 'GET') {
     return json(route, {
