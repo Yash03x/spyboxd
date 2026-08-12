@@ -77,7 +77,11 @@ export default function SelectionBar({
           );
         })}
       </div>
-      {children ? <div className="ml-auto flex items-center gap-3">{children}</div> : null}
+      {children ? (
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-3">
+          {children}
+        </div>
+      ) : null}
     </div>
   );
 }
