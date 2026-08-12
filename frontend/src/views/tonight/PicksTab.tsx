@@ -9,16 +9,100 @@ import Posters from '../../components/terminal/bodies/Posters';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
-import { insightsApi, tonightApi } from '../../services/api';
+import {
+  insightsApi,
+  tonightApi,
+  type WatchTogetherCandidate,
+  type WatchTogetherMode,
+} from '../../services/api';
+
+export type TonightPickMode = Exclude<WatchTogetherMode, 'list_mission'>;
+
+const MODE_COPY: Record<
+  TonightPickMode,
+  { blurb: string; empty: { title: string; body: string } }
+> = {
+  watchlist_overlap: {
+    blurb:
+      'Ranked by fit across whoever is in the room. Want is how many have it queued; seen is how many have already watched it and are being asked to rewatch.',
+    empty: {
+      title: 'Nothing on the selected watchlists yet',
+      body: 'This ranks films somebody in the room has queued, seen or not. Nobody in the selection has a watchlist entry we hold, so there is nothing to rank.',
+    },
+  },
+  unseen_pick: {
+    blurb:
+      'Only films nobody in the room has watched. Selected watchlists supply intent; ratings from other accessible profiles can supply evidence that the film is worth the risk.',
+    empty: {
+      title: 'No unseen group pick found',
+      body: 'Nothing backed by the selected watchlists or accessible rating evidence is still unseen by everybody in the room.',
+    },
+  },
+  collective_blind_spots: {
+    blurb:
+      'One person in the room liked it or rated it at least four stars, and everybody else selected has yet to see it. A personal favourite becomes a group recommendation.',
+    empty: {
+      title: 'No one-person favourite to pass around',
+      body: 'No film is liked or rated at least four stars by exactly one person in the room while remaining unseen by everybody else selected.',
+    },
+  },
+};
+
+function decisionStats(
+  mode: TonightPickMode,
+  candidates: WatchTogetherCandidate[],
+  profileCount: number,
+) {
+  if (mode === 'unseen_pick') {
+    return [
+      {
+        big: candidates.filter((candidate) => candidate.on_watchlist_by.length > 0).length.toLocaleString(),
+        unit: 'ON A SELECTED WATCHLIST',
+      },
+      {
+        big: candidates.filter((candidate) => candidate.watched_by.length === 0).length.toLocaleString(),
+        unit: 'UNSEEN BY THE ROOM',
+      },
+    ];
+  }
+  if (mode === 'collective_blind_spots') {
+    return [
+      {
+        big: candidates.filter((candidate) => candidate.blind_spot_source).length.toLocaleString(),
+        unit: 'BACKED BY ONE PERSON',
+      },
+      {
+        big: candidates
+          .filter((candidate) => candidate.unseen_by.length === profileCount - 1)
+          .length.toLocaleString(),
+        unit: 'NEW TO EVERYONE ELSE',
+      },
+    ];
+  }
+  return [
+    {
+      big: candidates
+        .filter((candidate) => candidate.on_watchlist_by.length === profileCount)
+        .length.toLocaleString(),
+      unit: "ON EVERYONE'S WATCHLIST",
+    },
+    {
+      big: candidates.filter((candidate) => candidate.watched_by.length === 0).length.toLocaleString(),
+      unit: 'NOBODY HAS SEEN',
+    },
+  ];
+}
 
 export default function PicksTab({
   profiles,
   region,
+  mode,
   pick,
   pickHref,
 }: {
   profiles: string[];
   region: string;
+  mode: TonightPickMode;
   /** Which shortlist row the explanation panel is unpacking. */
   pick: string | null;
   pickHref: (title: string) => string;
@@ -26,9 +110,9 @@ export default function PicksTab({
   const ready = profiles.length >= 2;
 
   const shortlistQuery = useQuery({
-    queryKey: ['watch-together', profiles, region],
+    queryKey: ['watch-together', profiles, region, mode],
     queryFn: () =>
-      insightsApi.getWatchTogether(profiles, { mode: 'watchlist_overlap', region }),
+      insightsApi.getWatchTogether(profiles, { mode, region }),
     enabled: ready,
     staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
@@ -44,6 +128,7 @@ export default function PicksTab({
 
   const candidates = shortlistQuery.data?.recommendations ?? [];
   const summary = shortlistQuery.data?.summary;
+  const modeCopy = MODE_COPY[mode];
   // The explanation unpacks whichever row was chosen, defaulting to the top.
   // Heading it "why this ranked first" for a row the reader clicked was the
   // old panel's one dishonest sentence.
@@ -64,7 +149,7 @@ export default function PicksTab({
         title="TONIGHT'S SHORTLIST"
         src="watchlist_items × profile_films × ratings"
         wide
-        blurb="Ranked by fit across whoever is in the room. Want is how many have it queued; seen is how many have already watched it and are being asked to rewatch."
+        blurb={modeCopy.blurb}
         // Counted from the rows actually rendered rather than from the
         // server's summary. A header claiming more candidates than the table
         // below it holds is the one thing this panel must never do, and
@@ -77,18 +162,7 @@ export default function PicksTab({
                   unit: 'RANKED CANDIDATES',
                   tone: 'var(--accent)',
                 },
-                {
-                  big: candidates
-                    .filter((candidate) => candidate.on_watchlist_by.length === profiles.length)
-                    .length.toLocaleString(),
-                  unit: "ON EVERYONE'S WATCHLIST",
-                },
-                {
-                  big: candidates
-                    .filter((candidate) => candidate.watched_by.length === 0)
-                    .length.toLocaleString(),
-                  unit: 'NOBODY HAS SEEN',
-                },
+                ...decisionStats(mode, candidates, profiles.length),
                 {
                   // Subscription only, matching what Tonight › Leaving soon
                   // counts. The payload carries rent and buy offers too, and
@@ -127,14 +201,8 @@ export default function PicksTab({
           onRetry: () => shortlistQuery.refetch(),
           empty: ready
             ? {
-                title: 'Nothing on the selected watchlists yet',
-                // This mode ranks whatever is queued -- it never filters to
-                // films nobody has seen, and the region only decides where a
-                // film can be watched, not whether it is listed. Saying
-                // otherwise sent people to change a control that could not
-                // help.
-                body: 'This ranks films somebody in the room has queued, seen or not. Nobody in the selection has a watchlist entry we hold, so there is nothing to rank.',
-                cta: { label: 'CHECK WATCHLIST COVERAGE', href: sectionHref('data', 'missing') },
+                ...modeCopy.empty,
+                cta: { label: 'CHECK INPUT COVERAGE', href: sectionHref('data', 'missing') },
               }
             : needsTwo,
         }) ?? (

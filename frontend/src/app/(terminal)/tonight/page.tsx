@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 
@@ -11,7 +12,69 @@ import { useTerminalSelection } from '../../../hooks/useTerminalSelection';
 import { insightsApi } from '../../../services/api';
 import AvailabilityTab from '../../../views/tonight/AvailabilityTab';
 import ListsTab from '../../../views/tonight/ListsTab';
-import PicksTab from '../../../views/tonight/PicksTab';
+import PicksTab, { type TonightPickMode } from '../../../views/tonight/PicksTab';
+
+const PICK_MODES: ReadonlyArray<{
+  value: TonightPickMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'watchlist_overlap',
+    label: 'WATCHLIST FIT',
+    description: 'Rank everything queued by somebody in the room.',
+  },
+  {
+    value: 'unseen_pick',
+    label: 'UNSEEN BY ALL',
+    description: 'Only show films nobody selected has watched.',
+  },
+  {
+    value: 'collective_blind_spots',
+    label: 'ONE PERSON LOVES',
+    description: 'Start from a film one person loved and everyone else has yet to see.',
+  },
+];
+
+const PICK_MODE_VALUES = new Set<TonightPickMode>(PICK_MODES.map((option) => option.value));
+
+function PickModePicker({
+  value,
+  hrefFor,
+}: {
+  value: TonightPickMode;
+  hrefFor: (mode: TonightPickMode) => string;
+}) {
+  return (
+    <div role="group" aria-label="Pick decision" className="flex flex-wrap items-center gap-2">
+      <span className="text-t9 tracking-tab text-term-muted2">DECISION</span>
+      <div className="flex flex-wrap items-center gap-1">
+        {PICK_MODES.map((option) => {
+          const active = option.value === value;
+          return (
+            <Link
+              key={option.value}
+              href={hrefFor(option.value)}
+              scroll={false}
+              aria-current={active ? 'true' : undefined}
+              title={option.description}
+              className="rounded-[3px] border px-2 py-[3px] text-t10 no-underline hover:no-underline"
+              style={{
+                borderColor: active ? 'var(--accent)' : 'var(--rule)',
+                background: active
+                  ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
+                  : 'transparent',
+                color: active ? 'var(--accent)' : 'var(--muted)',
+              }}
+            >
+              {option.label}
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function RegionPicker({
   value,
@@ -74,6 +137,10 @@ function TonightSection() {
     ...(validRequestedRegion ? [requestedRegion!] : []),
     ...available,
   ]));
+  const requestedMode = searchParams.get('mode')?.trim() as TonightPickMode | undefined;
+  const mode = requestedMode && PICK_MODE_VALUES.has(requestedMode)
+    ? requestedMode
+    : 'watchlist_overlap';
 
   const controls = (
     <SelectionBar
@@ -82,6 +149,12 @@ function TonightSection() {
       hrefFor={selection.toggleHref}
       isLocked={selection.isLockedByMinimum}
     >
+      {tab.id === 'picks' ? (
+        <PickModePicker
+          value={mode}
+          hrefFor={(next) => selection.paramHref('mode', next)}
+        />
+      ) : null}
       <RegionPicker
         value={region}
         regions={regionOptions}
@@ -97,6 +170,7 @@ function TonightSection() {
         <PicksTab
           profiles={selection.selected}
           region={region}
+          mode={mode}
           pick={searchParams.get('pick')}
           pickHref={(title) => selection.paramHref('pick', title)}
         />
