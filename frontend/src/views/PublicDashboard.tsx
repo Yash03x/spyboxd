@@ -257,7 +257,10 @@ function PublicHeader({ isSignedIn }: { isSignedIn: boolean | undefined }) {
         <span className="grid h-[22px] w-[22px] place-items-center rounded-[3px] bg-term-accent text-[11px] font-extrabold text-term-onaccent">
           S
         </span>
-        <span className="font-bold tracking-crumb text-term-accent">SPYBOXD</span>
+        {/* Phone-width controls need this space more than a repeated wordmark
+            does. The S remains the visible home affordance, and the link's
+            accessible name still carries the full product name. */}
+        <span className="hidden font-bold tracking-crumb text-term-accent sm:inline">SPYBOXD</span>
         <span className="hidden text-term-dim2 sm:inline">›</span>
         <span className="hidden text-term-ink3 sm:inline">PUBLIC TOTALS</span>
       </Link>
@@ -284,15 +287,19 @@ function PublicHeader({ isSignedIn }: { isSignedIn: boolean | undefined }) {
           <>
             <Link
               href="/sign-up"
+              aria-label="Create account"
               className="rounded-[3px] border border-term-accent bg-term-accent px-2 py-[3px] font-bold text-term-onaccent no-underline hover:no-underline"
             >
-              Create account
+              <span className="sm:hidden">Join</span>
+              <span className="hidden sm:inline">Create account</span>
             </Link>
             <Link
               href="/sign-in?redirect_url=%2Fdata%3Ftab%3Dprofiles"
+              aria-label="Sign in to monitor profiles"
               className="rounded-[3px] border border-term-rule px-2 py-[3px] text-term-ink3 no-underline hover:border-term-accent hover:text-term-accent hover:no-underline"
             >
-              Sign in to monitor profiles
+              <span className="sm:hidden">Sign in</span>
+              <span className="hidden sm:inline">Sign in to monitor profiles</span>
             </Link>
           </>
         )}

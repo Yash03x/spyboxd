@@ -7,14 +7,28 @@ from unittest import TestCase
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.database.models import AppUser, Profile, ProfileFeedState
+from backend.auth import ClerkUser
+from backend.database.models import (
+    AppUser,
+    Profile,
+    ProfileAccessRequest,
+    ProfileFeedState,
+    UserTrackedProfile,
+)
 from backend.database.repository import ProfileRepository
+from backend.services.profile_access import provision_app_user_identity
 
 
 class ProfileRenameTests(TestCase):
     def setUp(self):
         self.engine = create_engine("sqlite:///:memory:")
-        for table in (Profile.__table__, ProfileFeedState.__table__, AppUser.__table__):
+        for table in (
+            Profile.__table__,
+            ProfileFeedState.__table__,
+            AppUser.__table__,
+            UserTrackedProfile.__table__,
+            ProfileAccessRequest.__table__,
+        ):
             table.create(self.engine, checkfirst=True)
         self.db = sessionmaker(bind=self.engine)()
 
@@ -85,3 +99,32 @@ class ProfileRenameTests(TestCase):
 
         self.assertFalse(repo.rename_profile(bare, "still_lonely"))
         self.assertEqual(bare.username, "still_lonely")
+
+    def test_accepted_rename_keeps_the_mirrored_app_user_provisionable(self):
+        repo = ProfileRepository(self.db)
+
+        repo.rename_profile(self.profile, "filmfan_7")
+        identity = provision_app_user_identity(
+            self.db,
+            ClerkUser(
+                user_id="user_1",
+                session_id="session_1",
+                letterboxd_username="filmfan_7",
+            ),
+        )
+
+        self.assertEqual(
+            identity,
+            {
+                "letterboxd_username": "filmfan_7",
+                "primary_profile_status": "tracked",
+            },
+        )
+
+    def test_rename_rejects_a_username_that_auth_cannot_provision(self):
+        repo = ProfileRepository(self.db)
+
+        with self.assertRaisesRegex(ValueError, "2-15 characters"):
+            repo.rename_profile(self.profile, "film-fan")
+
+        self.assertEqual(self.profile.username, "gowri_sriya")

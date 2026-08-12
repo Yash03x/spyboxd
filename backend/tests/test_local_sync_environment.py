@@ -3,12 +3,30 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from dotenv import dotenv_values
 
-from scripts.local_full_sync import load_local_environment
+from scripts.local_full_sync import load_local_environment, validate_username
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    "username,expected",
+    [
+        ("filmfan_7", True),
+        ("ab", True),
+        ("a", False),
+        ("film-fan", False),
+        ("1234567890123456", False),
+    ],
+)
+def test_residential_sync_uses_the_storable_username_contract(
+    username: str,
+    expected: bool,
+) -> None:
+    assert validate_username(username) is expected
 
 
 def test_local_sync_loads_ignored_root_environment(

@@ -20,6 +20,7 @@ from services.import_contracts import (
     movie_identity_from_row,
     parse_boolean,
 )
+from services.profile_username import canonical_profile_username
 
 
 FULL_SCRAPE_REQUIRED_DATASETS = {
@@ -405,6 +406,12 @@ def load_profile_data(profile_path: str, username: str) -> LoadedProfileData:
         )
         if profile_username:
             effective_username = profile_username
+
+    # This value becomes both profiles.username and, during a detected rename,
+    # app_users.letterboxd_username.  Validate it before fingerprinting or any
+    # database mutation so ingestion cannot persist an identity that auth will
+    # reject on the next request.
+    effective_username = canonical_profile_username(effective_username)
 
     source_kind = str(scrape_manifest.get("source_kind") or _detect_source_kind(source_files))
     source_fingerprint = bundle_fingerprint(effective_username, source_files.values())

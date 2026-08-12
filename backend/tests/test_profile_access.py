@@ -242,7 +242,7 @@ def test_primary_identity_fulfillment_is_not_blocked_by_optional_tracking_limit(
     user = _user(letterboxd_username="Primary")
 
     assert provision_app_user_identity(database, user)["primary_profile_status"] == "pending"
-    track_profile_by_id(database, user, optional.id)
+    track_or_request_profile(database, user, optional.username)
 
     primary = _profile(2, "Primary")
     database.add(primary)
@@ -376,7 +376,7 @@ def test_primary_profile_cannot_be_untracked(database):
     database.commit()
     user = _user(letterboxd_username="Alpha")
     provision_app_user_identity(database, user)
-    track_profile_by_id(database, user, beta.id)
+    track_or_request_profile(database, user, beta.username)
 
     with pytest.raises(HTTPException) as raised:
         untrack_profile(database, user, "alpha")
@@ -747,7 +747,7 @@ def test_omitted_dashboard_scope_defaults_non_admin_to_tracked_profiles(database
     )
     database.commit()
     user = _legacy_user(database)
-    track_profile_by_id(database, user, alpha.id)
+    track_or_request_profile(database, user, alpha.username)
 
     result = asyncio.run(
         backend_main.get_consolidated_dashboard_analytics(
@@ -1425,6 +1425,33 @@ def test_a_non_admin_only_browses_their_own_corner_of_the_follow_graph(database)
 
     assert [entry["username"] for entry in catalog["profiles"]] == ["Connected"]
     assert catalog["total"] == 1
+
+
+def test_numeric_tracking_route_cannot_bypass_the_catalog_scope(database):
+    connected = _profile(1, "Connected")
+    stranger = _profile(2, "Stranger")
+    database.add_all([connected, stranger])
+    database.add(_edge(1, connected.id, "viewer"))
+    database.commit()
+    user = _legacy_user(database)
+    _link_handle(database, "user_one", "viewer")
+
+    assert [
+        entry["username"] for entry in list_profile_catalog(database, user)["profiles"]
+    ] == ["Connected"]
+
+    backend_main.app.dependency_overrides[backend_main.get_db] = lambda: database
+    backend_main.app.dependency_overrides[backend_main.get_current_user] = lambda: user
+    try:
+        response = TestClient(backend_main.app).post(
+            f"/profiles/{stranger.id}/tracking"
+        )
+    finally:
+        backend_main.app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Selectable profile not found"}
+    assert database.query(UserTrackedProfile).count() == 0
 
 
 def test_an_admin_still_sees_the_whole_library(database):

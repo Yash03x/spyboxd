@@ -81,7 +81,9 @@ def sync_profile(
     timeout_seconds: int = 180,
 ) -> dict:
     if not validate_username(username):
-        raise ValueError("Invalid username. Use only letters, numbers, underscores, and hyphens.")
+        raise ValueError(
+            "Invalid username. Use 2-15 letters, numbers, or underscores."
+        )
 
     if not upload_token and not bearer_token:
         raise ValueError("Provide either an upload token or a bearer token.")

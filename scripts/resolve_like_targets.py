@@ -40,12 +40,19 @@ from database.models import MemberContentLike, Profile  # noqa: E402
 TARGET = re.compile(
     r"^https://letterboxd\.com/([A-Za-z0-9_]+)/(?:(film|list)/([a-z0-9][a-z0-9-]*))?"
 )
+# Official exports use an HTTPS boxd.it URL with one base62-like token. Check
+# that exact shape before making a request: imported archive data is still
+# untrusted even though this resolver is an operator-run maintenance command.
+SHORT_LINK = re.compile(r"^https://boxd\.it/[A-Za-z0-9]+$")
 # Paths that are Letterboxd's own, not a member's.
 RESERVED = {"films", "film", "lists", "list", "members", "settings", "search", "journal"}
 
 
 def resolve(url: str, fetch) -> tuple[str | None, str | None]:
     """Return (author, film slug). Either may be None; neither is guessed."""
+
+    if not SHORT_LINK.fullmatch(url):
+        return None, None
 
     response = fetch(url)
     location = response.headers.get("location") or response.headers.get("Location") or ""

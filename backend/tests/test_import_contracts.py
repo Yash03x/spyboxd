@@ -152,6 +152,21 @@ class MovieIdentityContractTests(unittest.TestCase):
 
 
 class ProfileLoaderContractTests(unittest.TestCase):
+    def test_loader_rejects_an_identity_auth_cannot_provision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pd.DataFrame([{"Username": "film-fan"}]).to_csv(
+                root / "profile.csv",
+                index=False,
+            )
+            pd.DataFrame(columns=["Name", "Year", "Rating"]).to_csv(
+                root / "ratings.csv",
+                index=False,
+            )
+
+            with self.assertRaisesRegex(ValueError, "2-15 characters"):
+                load_profile_data(str(root), "archive-name")
+
     def _write_full_bundle(self, root: Path) -> None:
         pd.DataFrame(
             [{"Username": "viewer", "Display_Name": "Viewer", "Date Joined": "2020-01-02"}]

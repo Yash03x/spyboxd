@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { installApiMocks } from './fixtures/api';
+import { installApiMocks, profiles } from './fixtures/api';
 
 test('backend admin truth exposes management and the residential sync queue', async ({ page }) => {
   await installApiMocks(page, { isAdmin: true });
@@ -110,6 +110,63 @@ test('an admin can switch between personal monitoring and the preserved global d
   await expect(monitored).toBeVisible();
   await page.getByRole('button', { name: 'Global admin' }).click();
   await expect(managed).toBeVisible();
+});
+
+test('switching to a one-profile monitored scope drops the old global selection', async ({ page }) => {
+  await installApiMocks(page, { isAdmin: true });
+  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/?$/, (route) => (
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ profiles }),
+    })
+  ));
+  await page.route(/^http:\/\/(?:127\.0\.0\.1|localhost):8000\/profiles\/tracked$/, (route) => (
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ profiles: profiles.slice(0, 1) }),
+    })
+  ));
+
+  const signalSelections: string[][] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/spy-signals') {
+      signalSelections.push(url.searchParams.getAll('profiles'));
+    }
+  });
+
+  await page.goto('/overlaps', { waitUntil: 'networkidle' });
+  expect(signalSelections.at(-1)).toEqual(profiles.slice(0, 6).map((profile) => profile.username));
+  const requestsBeforeSwitch = signalSelections.length;
+
+  await page.getByRole('button', { name: 'Monitored', exact: true }).click();
+
+  await expect(page.getByText('· MONITORED', { exact: false })).toBeVisible();
+  await expect(page.getByText('@alpha', { exact: true })).toBeVisible();
+  await expect(page.getByText('@bravo', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Two profiles are needed', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Shared Fixture Film', { exact: true })).toHaveCount(0);
+  expect(signalSelections.slice(requestsBeforeSwitch)).toEqual([]);
+});
+
+test('the private workspace still loads when browser storage is denied', async ({ page }) => {
+  await installApiMocks(page, { isAdmin: true });
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = function getItem() {
+      throw new DOMException('Storage blocked', 'SecurityError');
+    };
+  });
+
+  await page.goto('/overview');
+
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Global admin' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('This section could not render', { exact: true })).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
 });
 
 test('the admin scope toggle appears on every analytics page and persists across pages', async ({ page }) => {

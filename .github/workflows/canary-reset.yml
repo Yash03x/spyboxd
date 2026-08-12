@@ -28,6 +28,7 @@ jobs:
       # Shares the auth canary's group so a reset can never race a live
       # guardian run against the same rows.
       group: spyboxd-production-auth-canary
+      queue: max
       cancel-in-progress: false
     environment:
       name: production

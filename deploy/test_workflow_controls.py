@@ -104,6 +104,21 @@ class WorkflowControlsTests(unittest.TestCase):
         self.assertIn('environment["TMDB_ENRICHMENT_BATCH_SIZE"] = "10"', workflow)
         self.assertIn("--kill-after=15s 8m", workflow)
 
+    def test_database_backed_health_routes_keep_the_api_rate_limit(self) -> None:
+        nginx = read_repo_file("deploy/nginx/spyboxd.conf")
+
+        for route in ("/ready", "/health/rss"):
+            with self.subTest(route=route):
+                location = re.search(
+                    rf"(?ms)^    location = {re.escape(route)} \{{\n(.*?)^    \}}",
+                    nginx,
+                )
+                self.assertIsNotNone(location, f"missing exact Nginx location for {route}")
+                self.assertIn(
+                    "limit_req zone=spyboxd_api_per_ip burst=60 nodelay;",
+                    location.group(1),
+                )
+
     def test_privileged_jobs_start_with_pinned_harden_runner(self) -> None:
         ci = read_repo_file(".github/workflows/ci.yml")
         release_bundle = ci.split("\n  release_bundle:\n", maxsplit=1)[1]
@@ -321,9 +336,14 @@ class AuthCanaryDiagnosticsTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", workflow)
         self.assertNotIn("schedule:", workflow)
         self.assertIn("default: false", workflow)
-        # Same concurrency group as the auth canary, so a reset can never race
-        # a live guardian run against the same rows.
-        self.assertIn("group: spyboxd-production-auth-canary", workflow)
+        # Same queued concurrency group as the auth canary, so a reset can
+        # neither race a live guardian nor be replaced while waiting behind it.
+        reset_concurrency = workflow.split("\n    concurrency:\n", maxsplit=1)[1].split(
+            "\n    environment:", maxsplit=1
+        )[0]
+        self.assertIn("group: spyboxd-production-auth-canary", reset_concurrency)
+        self.assertIn("queue: max", reset_concurrency)
+        self.assertIn("cancel-in-progress: false", reset_concurrency)
         for block in re.findall(r"sh -s --.*?<<'REMOTE'(.*?)\n\s*REMOTE", workflow, re.S):
             for line in block.splitlines():
                 if not line.strip().startswith("#"):
