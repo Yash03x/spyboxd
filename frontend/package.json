@@ -6,13 +6,13 @@
     "node": ">=24 <25"
   },
   "dependencies": {
-    "@clerk/nextjs": "^7.6.4",
+    "@clerk/nextjs": "^7.7.1",
     "@heroicons/react": "^2.2.0",
     "@tanstack/react-query": "^5.101.4",
     "axios": "^1.19.0",
     "chart.js": "^4.5.1",
-    "lucide-react": "^1.28.0",
-    "next": "^16.2.12",
+    "lucide-react": "^1.31.0",
+    "next": "^16.3.0",
     "react": "^19.2.8",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.8"
@@ -38,20 +38,20 @@
     ]
   },
   "devDependencies": {
-    "@clerk/testing": "2.2.16",
+    "@clerk/testing": "2.2.19",
     "@playwright/test": "^1.62.1",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "autoprefixer": "^10.5.4",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.2.12",
-    "postcss": "8.5.25",
+    "eslint-config-next": "^16.3.0",
+    "postcss": "8.5.26",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3"
   },
   "overrides": {
-    "postcss": "8.5.25",
+    "postcss": "8.5.26",
     "sharp": "0.35.3",
     "nanoid": "3.3.17"
   }
