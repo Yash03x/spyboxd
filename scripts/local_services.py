@@ -20,7 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ("api", "web", "rss")
+SERVICES = ("api", "web", "rss", "anime")
 PREFIX = "com.spyboxd.local"
 
 
@@ -30,6 +30,7 @@ def service_definitions(root: Path, node: Path, logs: Path) -> dict[str, dict]:
         "api": [str(python), "-m", "uvicorn", "main:app", "--app-dir", "backend", "--host", "127.0.0.1", "--port", "8000"],
         "web": [str(node), "--require", "./scripts/runtime-proof.cjs", "./node_modules/next/dist/bin/next", "start", "--hostname", "localhost", "--port", "3000"],
         "rss": [str(python), "-m", "rss_worker"],
+        "anime": [str(python), "-m", "personal_anime_worker"],
     }
     return {
         name: {

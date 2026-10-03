@@ -11,7 +11,7 @@ spec.loader.exec_module(launcher)
 
 def test_services_are_loopback_only_durable_and_have_no_credentials():
     definitions = launcher.service_definitions(Path("/space in/repo"), Path("/private/node"), Path("/private/logs"))
-    assert set(definitions) == {"api", "web", "rss"}
+    assert set(definitions) == {"api", "web", "rss", "anime"}
     for name, definition in definitions.items():
         assert definition["KeepAlive"] is True
         assert definition["RunAtLoad"] is True
@@ -19,7 +19,7 @@ def test_services_are_loopback_only_durable_and_have_no_credentials():
         assert definition["Umask"] == 0o077
         assert not any("TOKEN" in key or "SECRET" in key for key in definition["EnvironmentVariables"])
         assert plistlib.loads(plistlib.dumps(definition)) == definition
-        if name != "rss":
+        if name in {"web", "api"}:
             assert ("localhost" if name == "web" else "127.0.0.1") in definition["ProgramArguments"]
         assert "sh" not in definition["ProgramArguments"]
     assert definitions["rss"]["ProgramArguments"][-1] == "rss_worker"

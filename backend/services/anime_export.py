@@ -174,6 +174,11 @@ def parse_export(content: bytes) -> dict:
 
 def import_snapshot(db: Session, owner: AppUser, content: bytes, filename: str) -> tuple[PersonalAnimeImport, bool]:
     parsed = parse_export(content)  # Validate the entire export before any write.
+    return save_snapshot(db, owner, parsed, filename)
+
+
+def save_snapshot(db: Session, owner: AppUser, parsed: dict, filename: str, *, commit=True) -> tuple[PersonalAnimeImport, bool]:
+    """Publish a fully validated snapshot, shared by XML intake and MAL sync."""
     # Serialize imports for one account. Concurrent duplicates cannot race a
     # different account into the same private workspace.
     db.query(AppUser).filter(AppUser.id == owner.id).with_for_update().one()
@@ -182,16 +187,18 @@ def import_snapshot(db: Session, owner: AppUser, content: bytes, filename: str) 
         raise AnimeImportError("This workspace already belongs to another MAL account. Use the same account's export.")
     existing = db.query(PersonalAnimeImport).filter_by(user_id=owner.id, source_hash=parsed["source_hash"]).first()
     if existing:
-        db.rollback()
+        if commit:
+            db.rollback()
         return existing, False
     snapshot = PersonalAnimeImport(
-        user_id=owner.id, source_hash=parsed.pop("source_hash"),
+        user_id=owner.id, source_hash=parsed["source_hash"],
         filename=re.split(r"[/\\]", filename)[-1][:255] or "animelist.xml",
-        mal_username=parsed["username"], mal_user_id=parsed["mal_user_id"], payload=parsed,
+        mal_username=parsed["username"], mal_user_id=parsed["mal_user_id"],
+        payload={key: value for key, value in parsed.items() if key != "source_hash"},
     )
     db.add(snapshot)
     try:
-        db.commit()
+        db.commit() if commit else db.flush()
     except IntegrityError:
         db.rollback()
         raise AnimeImportError("An import conflicted with another request. Refresh and try again.") from None
@@ -201,6 +208,62 @@ def import_snapshot(db: Session, owner: AppUser, content: bytes, filename: str) 
 
 def latest_snapshot(db: Session, owner_id: int):
     return db.query(PersonalAnimeImport).filter_by(user_id=owner_id).order_by(PersonalAnimeImport.id.desc()).first()
+
+
+def snapshot_identity(snapshot: PersonalAnimeImport):
+    return {"id": snapshot.id, "imported_at": snapshot.imported_at.isoformat(),
+            "titles": len(snapshot.payload["entries"]),
+            "source": snapshot.payload.get("source", "MAL XML export"),
+            "fetched_at": snapshot.payload.get("fetched_at")}
+
+
+COMPARISON_FIELDS = ("status", "score", "episodes_watched", "start_raw", "finish_raw",
+                     "is_rewatching", "priority", "times_watched_raw", "title", "media_type", "episodes")
+
+
+def _comparison_value(row, field):
+    if field in {"start_raw", "finish_raw"} and row.get(field.replace("_raw", "_precision")) == "missing":
+        return None  # XML's 0000-00-00 and the API's absent date mean the same thing.
+    return row.get(field)
+
+
+def compare_snapshots(db: Session, owner_id: int, before_id: int, after_id: int):
+    """Compare list states, never infer a watch event or use current metadata."""
+    snapshots = {row.id: row for row in db.query(PersonalAnimeImport).filter(
+        PersonalAnimeImport.user_id == owner_id, PersonalAnimeImport.id.in_([before_id, after_id])).all()}
+    if before_id not in snapshots or after_id not in snapshots:
+        return None  # Identical response for missing and other-owner IDs.
+    if before_id >= after_id:
+        raise AnimeImportError("Choose an earlier snapshot and a different, later snapshot.")
+    before, after = snapshots[before_id], snapshots[after_id]
+    if before.mal_user_id != after.mal_user_id:
+        raise AnimeImportError("Only snapshots of the same MAL account can be compared.")
+    old = {row["mal_id"]: row for row in before.payload["entries"]}
+    new = {row["mal_id"]: row for row in after.payload["entries"]}
+    changes, unchanged = [], 0
+    counts = {"added": 0, "removed": 0, "changed": 0}
+    for mal_id in sorted(old.keys() | new.keys()):
+        left, right = old.get(mal_id), new.get(mal_id)
+        kind = "added" if left is None else "removed" if right is None else "changed"
+        fields = [key for key in COMPARISON_FIELDS
+                  if _comparison_value(left, key) != _comparison_value(right, key)
+                  and not (key == "priority" and "UNKNOWN" in (left.get(key), right.get(key)))
+                  and not (key == "times_watched_raw" and None in (left.get(key), right.get(key)))] if left and right else []
+        if left and right and not fields:
+            unchanged += 1
+            continue
+        counts[kind] += 1
+        changes.append({"mal_id": mal_id, "title": (right or left)["title"], "kind": kind,
+                        "fields": fields, "before": left, "after": right})
+    return {"before": snapshot_identity(before), "after": snapshot_identity(after),
+            "counts": {**counts, "unchanged": unchanged}, "changes": changes,
+            "episode_balance_delta": sum(row["episodes_watched"] for row in new.values()) - sum(row["episodes_watched"] for row in old.values()),
+            "limitations": [
+                "These are differences between saved list states, not a diary of when changes happened.",
+                "Episode balance includes additions, removals and corrections; it is not episodes watched during the interval.",
+                "Import time does not establish XML export freshness. Catalogue enrichment is excluded from this comparison.",
+                "MAL API snapshots cannot provide XML-only priority or raw times-watched fields; unavailable fields remain unknown.",
+            ]}
 
 
 def summarize(entries: list[dict], *, today: date | None = None) -> dict:
@@ -264,16 +327,19 @@ def snapshot_response(db: Session, owner_id: int, *, snapshot_id: int | None = N
     return {
         "snapshot": {"id": snapshot.id, "username": snapshot.mal_username, "filename": snapshot.filename,
                      "imported_at": snapshot.imported_at.isoformat(), "sha256": snapshot.source_hash,
-                     "exported_at": None, "private": True},
+                     "exported_at": None, "private": True,
+                     "source": snapshot.payload.get("source", "MAL XML export"),
+                     "fetched_at": snapshot.payload.get("fetched_at")},
         "entries": entries, "summary": summarize(entries, today=today),
-        "history": [{"id": row.id, "imported_at": row.imported_at.isoformat(),
-                     "titles": len(row.payload["entries"])} for row in history],
+        "history": [snapshot_identity(row) for row in history],
         "limitations": [
-            "This is an uploaded snapshot, not a live MAL connection. Its generation time is not recorded in the XML; import time is not source freshness.",
+            ("This immutable snapshot was fetched from the public MAL API. Check sync status for the latest successful check; it is not a watch-event diary."
+             if snapshot.payload.get("source") == "MAL API" else
+             "This is an uploaded snapshot. Its generation time is not recorded in the XML; import time is not source freshness."),
             "One row is one MAL title, including separate seasons and specials, not a unique franchise or an episode-watch event.",
             "Scores use MAL's 1–10 scale. Zero means unscored and is excluded from rating averages.",
             "Only complete, non-future start and finish dates enter the timeline. Completed titles without finish dates still count in totals.",
-            "Episodes are summed as exported, without adding assumed rewatches. No runtime, episode diary, genre, studio or community-score data is present.",
+            "Episode progress is summed as recorded, without adding assumed rewatches. Personal snapshots contain no episode-watch diary; runtimes, genres, studios and community scores are separate catalogue enrichment, not personal viewing history.",
             "Elapsed days span the recorded start and finish, including breaks; they are not watch time, binge speed or a viewing streak.",
             "Comments, tags and other private notes are not imported. This dataset is not shared with monitored-profile or group statistics.",
         ],

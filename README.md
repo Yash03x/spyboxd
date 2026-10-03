@@ -208,7 +208,7 @@ remain inspectable but never become guessed dates. Progress inconsistencies are
 flagged without clamping source values. Future-date checks use the browser's IANA
 time zone (UTC for API callers that omit it).
 
-This is snapshot analysis, **not automatic live MAL sync**. Import time is not the
+This is immutable snapshot analysis with optional **read-only MAL sync**. Import time is not the
 export generation time. One row is a MAL title, not a franchise or episode event.
 Timelines exclude missing finish dates; elapsed start-to-finish days are not
 viewing hours or binge speed. The XML has no genres, studios, runtimes or community
@@ -238,13 +238,37 @@ IDs and spaced at least 3.1 seconds apart, below its temporarily reduced rate
 limit. The job stops on provider errors, persists completed batches, excludes
 ambiguous MAL-ID mappings, and retains prior good metadata. A database advisory
 lock prevents concurrent backfills. Cache age is seven days; unavailable titles
-stay visibly missing. This job does **not** perform automatic MAL list sync.
-Community scores are AniList's 100-point average divided by ten, **not MAL's
-community scores**. Runtime estimates multiply recorded episode progress by
+stay visibly missing. This metadata job does **not** refresh the personal list.
+Fill missing exact-ID matches from the official MAL API with
+`.venv/bin/python scripts/enrich_anime.py --provider mal --missing-only --force`.
+It requires `MAL_CLIENT_ID`, sends only public title IDs, and retains existing known metadata.
+Community scores retain their provider identity: AniList's 100-point average is
+divided by ten; official MAL averages already use 1–10. Runtime estimates multiply recorded episode progress by
 provider episode duration, exclude inconsistent progress, and do not infer
 rewatches, playback speed, or missing episodes.
 
-Apply additive migrations through `20261003_0022` with the normal backup-first Alembic
+**My Changes** compares any two of the latest 20 private snapshots: additions,
+removals, scores, progress, statuses, and dates, with before/after evidence,
+filters, complete matching CSV export, and links to each historical entry.
+These differences are not a watch diary. Episode balance includes corrections
+and removals, not just viewing. Unknown fields are not guessed.
+
+For automatic public-list updates, create an application at
+[MAL API settings](https://myanimelist.net/apiconfig) and put only `MAL_CLIENT_ID`
+in the ignored root `.env`. No client secret or user password is needed.
+Import an XML export first to select the account, then enable **MAL synchronization**
+in the private Anime section. The `anime` LaunchAgent checks enabled accounts
+every six hours while the Mac is awake and online. Manual checks have a ten-minute
+cooldown. After changing the environment, restart the API and anime worker.
+`.venv/bin/python scripts/local_services.py install --only anime` installs the worker;
+`status --only anime` checks it. A private/missing list, invalid page, duplicate ID,
+interrupted pagination, or provider error preserves the last good snapshot.
+Concurrent imports win over an in-flight sync; pausing revokes that sync's lease.
+No-change checks advance last-success time without creating duplicate snapshots.
+MAL list sync does not update Letterboxd sources. XML-only priority and raw
+times-watched fields are unknown in API snapshots, not copied as fresh facts.
+
+Apply additive migrations through `20261003_0023` with the normal backup-first Alembic
 workflow before starting the updated API. Targeted checks are
 `pytest backend/tests/test_anime_export.py`, `npm run test:unit`, and
 `CI=1 npm run test:e2e -- anime.spec.ts` from their respective project directories.

@@ -1155,6 +1155,7 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
 
   if (path === '/api/me') return json(route, state.currentUser);
   if (path === '/api/anime') return json(route, animeFixture);
+  if (path === '/api/anime/sync') return json(route, { configured: false, enabled: false, interval_hours: 6, running: false, username: 'anime_fixture', last_attempt_at: null, last_success_at: null, next_sync_at: null, last_error: null });
   if (path === '/api/anime/import') return json(route, { ...animeFixture, created: true, message: 'Anime export imported privately.' });
   if (path === '/api/research') return json(route, researchFixture(url));
   if (path === '/api/recommendation-evaluation') return json(route, evaluationFixture(url.searchParams.getAll('profiles')));
