@@ -7,11 +7,12 @@ psycopg[binary]>=3.1.0
 python-multipart>=0.0.32
 
 # Auth — Clerk JWT verification
-PyJWT[crypto]>=2.13.0
+PyJWT[crypto]>=2.15.0
 python-dotenv>=1.2.2
 
 # Data Processing
 pandas>=3.0.5
 python-dateutil>=2.8.0
 requests>=2.34.2
+urllib3>=2.8.0
 beautifulsoup4>=4.15.0

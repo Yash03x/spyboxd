@@ -32,6 +32,7 @@ function OverlapsSection() {
       profiles={selection.available}
       selected={selection.selected}
       hrefFor={selection.toggleHref}
+      groupHrefFor={selection.urlFor}
       isLocked={selection.isLockedByMinimum}
     >
       {/* Closeness changes what Together and When compute. How sure reports

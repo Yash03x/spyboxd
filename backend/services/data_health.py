@@ -12,7 +12,7 @@ a silently truncated total.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import func
@@ -221,7 +221,11 @@ def build_feeds(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
     )
 
     entries = []
+    overdue_before = datetime.now(timezone.utc) - timedelta(minutes=5)
     for state in states:
+        next_poll = state.next_poll_at
+        if next_poll is not None and next_poll.tzinfo is None:
+            next_poll = next_poll.replace(tzinfo=timezone.utc)
         if state.consecutive_failures:
             why = (
                 f"{state.consecutive_failures} consecutive failure"
@@ -233,8 +237,14 @@ def build_feeds(db: Session, profiles: Sequence[Profile]) -> Dict[str, Any]:
         elif state.requires_full_sync:
             why = state.reconciliation_reason or "The feed disagreed with our snapshot — a full refresh is queued"
             tone = "warn"
+        elif next_poll is None:
+            why = "No next poll scheduled — check the RSS worker"
+            tone = "warn"
+        elif next_poll < overdue_before:
+            why = "Poll overdue by more than five minutes — check whether the RSS worker is running"
+            tone = "warn"
         else:
-            why = "Nothing wrong — normal schedule"
+            why = "No recorded feed error — poll scheduled"
             tone = "ok"
 
         entries.append(

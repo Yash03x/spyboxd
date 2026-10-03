@@ -53,7 +53,7 @@ function cellStyle(item: Cell): React.CSSProperties {
  */
 export default function Rows({ columns, head, rows }: RowsProps) {
   return (
-    <div>
+    <div className="overflow-x-auto">
       {head ? (
         <div
           className="grid gap-[9px] border-b border-term-rule2 px-[10px] py-[5px] text-t9 tracking-tab text-term-muted2"

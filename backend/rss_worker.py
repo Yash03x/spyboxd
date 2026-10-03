@@ -15,6 +15,8 @@ import time
 from typing import Iterable, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from database import SessionLocal
 from database.models import Profile
@@ -57,6 +59,21 @@ def _positive_float(name: str, default: float) -> float:
 def _request_stop(_signum, _frame) -> None:
     global STOP_REQUESTED
     STOP_REQUESTED = True
+
+
+def create_session(user_agent: str) -> requests.Session:
+    """Reconnect once on an idle connection reset, never retry HTTP blocks.
+
+    HTTP 403/429/5xx still reach the normal persisted backoff policy. Only
+    idempotent GET transport failures get one fresh connection attempt.
+    """
+    session = requests.Session()
+    retry = Retry(total=1, connect=1, read=1, status=0, other=0,
+                  allowed_methods=frozenset({'GET'}), backoff_factor=0.5,
+                  respect_retry_after_header=False, raise_on_status=False)
+    session.mount('https://', HTTPAdapter(max_retries=retry))
+    session.headers.update({'Accept': 'application/rss+xml, application/xml;q=0.9', 'User-Agent': user_agent})
+    return session
 
 
 def _profile_ids_due(*, usernames: Optional[Iterable[str]], limit: int) -> list[int]:
@@ -180,13 +197,7 @@ def main() -> int:
         "Spyboxd/1.0 (+https://spyboxd.com)",
     ).strip()
 
-    session = requests.Session()
-    session.headers.update(
-        {
-            "Accept": "application/rss+xml, application/xml;q=0.9",
-            "User-Agent": user_agent,
-        }
-    )
+    session = create_session(user_agent)
 
     while not STOP_REQUESTED:
         summary = run_cycle(

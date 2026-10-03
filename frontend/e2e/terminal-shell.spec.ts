@@ -35,7 +35,7 @@ test('Overview renders the eight panels, each naming the table it reads', async 
     'THE LAST TWELVE MONTHS',
     'HOW THE GROUP RATES',
     'MARATHON DAYS',
-    'LEAVING SOON',
+    'EXPLORE BEYOND THE OVERVIEW',
   ]) {
     await expect(page.getByText(`▸ ${title}`, { exact: false }).first()).toBeVisible();
   }
@@ -81,15 +81,13 @@ test('what-changed rows link to the section that explains them', async ({ page }
   await expect(page).toHaveURL(/\/(people|analysis)/);
 });
 
-test('leaving soon refuses to invent a countdown it cannot read', async ({ page }) => {
+test('Overview offers useful routes into deeper statistics', async ({ page }) => {
   await page.goto('/overview');
 
-  await expect(page.getByText('Can’t answer this yet')).toBeVisible();
-  await expect(
-    page.getByText('The provider feed publishes which services carry a film today', {
-      exact: false,
-    }),
-  ).toBeVisible();
+  const guide = page.getByRole('region', { name: 'EXPLORE BEYOND THE OVERVIEW' });
+  await guide.getByRole('link', { name: /What defines this group/ }).click();
+  await expect(page).toHaveURL(/\/films\?tab=trends/);
+  await expect(page.getByRole('heading', { name: /THE GROUP OVER TIME/ })).toBeVisible();
 });
 
 test('the closeness control says "same day", not "gap days"', async ({ page }) => {

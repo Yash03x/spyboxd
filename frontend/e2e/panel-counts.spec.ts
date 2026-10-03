@@ -41,7 +41,7 @@ test('the tab row prints the same number the section definition holds', async ({
     // Addressed by href rather than by accessible name: the badge renders as
     // label and count run together ("ONE PERSON24"), and the name computation
     // inserts a separator that the visible text does not have.
-    const link = page.locator(`a[href="/people?tab=${tab.id}"]`).first();
+    const link = page.getByRole('tablist').locator(`a[href="/people?tab=${tab.id}"]`);
     await expect(link).toHaveText(`${tab.label}${tab.panels}`);
   }
 });

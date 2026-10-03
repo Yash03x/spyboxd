@@ -10,7 +10,9 @@
   }
 
   html {
-    scroll-behavior: smooth;
+    /* Keep focus, filter resets and route changes deterministic on touch
+       screens. Global animation can move a control underneath a tap. */
+    scroll-behavior: auto;
   }
 
   body {

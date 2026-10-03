@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import PanelCollection from '../../components/terminal/PanelCollection';
 import { localDate, formatDay } from '../../components/terminal/dates';
 import Bars from '../../components/terminal/bodies/Bars';
 import Diverge from '../../components/terminal/bodies/Diverge';
@@ -234,7 +235,7 @@ export default function OnePersonTab({ subject }: { subject: string }) {
   const timelinePoints = timelineQuery.data?.yearly ?? [];
 
   return (
-    <>
+    <PanelCollection pinParams={{ subject }} ready={enabled && [statsQuery, analysisQuery, favouritesQuery, obscurityQuery, crowdQuery, watchlistQuery, timelineQuery, unratedQuery, silentQuery, shiftsQuery, quietQuery].every((query) => query.isFetched)}>
       <Panel
         title={`@${subject.toUpperCase()}`}
         src="profiles · rollups"
@@ -1750,6 +1751,6 @@ export default function OnePersonTab({ subject }: { subject: string }) {
           ]}
         />
       </Panel>
-    </>
+    </PanelCollection>
   );
 }

@@ -87,8 +87,8 @@ test('Tonight refuses to invent a leaving countdown', async ({ page }) => {
   await page.goto('/tonight?tab=leaving');
 
   const panel = page.locator('.terminal-root section', { hasText: 'WHY THERE IS NO COUNTDOWN' }).first();
-  await expect(panel.getByRole('heading', { name: 'Can’t answer this yet' })).toBeVisible();
-  await expect(panel).toContainText('a guess wearing a number’s clothes');
+  await expect(panel.getByRole('heading', { name: 'Check the offer before movie night' })).toBeVisible();
+  await expect(panel).toContainText('leaving dates when the source does not publish them');
 
   // A stale region is greyed and labelled, never hidden.
   const freshness = page.locator('.terminal-root section', { hasText: 'HOW FRESH THIS IS' }).first();

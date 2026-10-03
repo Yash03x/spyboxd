@@ -10,9 +10,46 @@ from auth import ClerkUser, get_current_user
 from database.connection import get_db
 from services.insights import InsightRequestError, InsightsService
 from services.profile_access import accessible_profiles
+from services.research import build_research, evaluate_recommendations
 
 
 router = APIRouter(prefix="/api", tags=["insights"])
+
+
+@router.get("/research")
+def get_research(
+    profiles: List[str] = Query(...),
+    compare_profiles: Optional[List[str]] = Query(default=None),
+    from_date: Optional[date] = Query(default=None, alias="from"),
+    to_date: Optional[date] = Query(default=None, alias="to"),
+    basis: str = Query(default="watched", pattern="^(watched|logged)$"),
+    dimension: str = Query(default="genre", pattern="^(genre|director|language|country|decade)$"),
+    trait: str = Query(default="", max_length=200),
+    q: str = Query(default="", max_length=200),
+    sort: str = Query(default="newest", pattern="^(newest|oldest|title|rating)$"),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=10000),
+    db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
+):
+    try:
+        return build_research(_service(db, user), profiles, comparison=compare_profiles or [],
+                              start=from_date, end=to_date, basis=basis, dimension=dimension,
+                              trait=trait, search=q, sort=sort, offset=offset, limit=limit)
+    except InsightRequestError as exc:
+        raise _translate_request_error(exc) from exc
+
+
+@router.get("/recommendation-evaluation")
+def get_recommendation_evaluation(
+    profiles: List[str] = Query(...),
+    db: Session = Depends(get_db),
+    user: ClerkUser = Depends(get_current_user),
+):
+    try:
+        return evaluate_recommendations(_service(db, user), profiles)
+    except InsightRequestError as exc:
+        raise _translate_request_error(exc) from exc
 
 
 def _service(db: Session, user: ClerkUser) -> InsightsService:
@@ -103,6 +140,7 @@ def get_taste_dna(
         default="genre,director,actor,language,country,decade,keyword,runtime",
     ),
     limit: int = Query(default=12, ge=1, le=50),
+    sort: str = Query(default="alignment", pattern="^(alignment|watched)$"),
     db: Session = Depends(get_db),
     user: ClerkUser = Depends(get_current_user),
 ):
@@ -117,6 +155,7 @@ def get_taste_dna(
             profiles,
             dimensions=requested_dimensions,
             limit=limit,
+            sort_by=sort,
         )
     except InsightRequestError as exc:
         raise _translate_request_error(exc) from exc
@@ -178,6 +217,7 @@ def get_watch_together(
     max_runtime: Optional[int] = Query(default=None, ge=1, le=1000),
     genre: Optional[str] = Query(default=None, max_length=100),
     availability: Optional[str] = Query(default=None, max_length=100),
+    rewatch: str = Query(default="allow", pattern="^(allow|unseen)$"),
     limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
     user: ClerkUser = Depends(get_current_user),
@@ -191,6 +231,7 @@ def get_watch_together(
             max_runtime=max_runtime,
             genre=genre,
             availability=availability,
+            rewatch=rewatch,
             limit=limit,
             list_id=list_id,
         )

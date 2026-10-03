@@ -11,6 +11,8 @@ from sqlalchemy import engine_from_config, pool
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
+if str(BASE_DIR / "backend") not in sys.path:
+    sys.path.insert(0, str(BASE_DIR / "backend"))
 
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(BASE_DIR / "backend" / ".env", override=False)
@@ -22,7 +24,8 @@ config = context.config
 config.set_main_option("sqlalchemy.url", get_database_url())
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Programmatic migrations must not silence the API's existing error logger.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

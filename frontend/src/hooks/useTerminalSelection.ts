@@ -57,6 +57,9 @@ export function useTerminalSelection(options: TerminalSelectionOptions = {}) {
     (profiles: string[], extra: Record<string, string | null> = {}) => {
       const params = new URLSearchParams(searchParams.toString());
       params.delete('profiles');
+      // A different group may have fewer evidence pages. Preserve research
+      // filters, but never strand its results on the old group's last page.
+      params.delete('research_page');
       profiles.forEach((profile) => params.append('profiles', profile));
       Object.entries(extra).forEach(([key, value]) => {
         if (value === null) params.delete(key);

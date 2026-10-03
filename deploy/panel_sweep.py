@@ -55,6 +55,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 # the sweep fails on anything reaching a session that is not named here or
 # swept below.
 EXCLUDED: Dict[str, str] = {
+    "anime_export.import_snapshot": "writes private personal exports; parser and owner-scoped route tests cover this",
+    "anime_export.latest_snapshot": "requires the authenticated private owner; covered by Anime owner-isolation tests",
+    "anime_export.snapshot_response": "requires a private owner and snapshot; covered by real signed-in Anime QA and route tests",
+    "anime_metadata.refresh_title": "writes public catalogue metadata and performs network I/O; backfill job, not a panel",
+    "anime_metadata.add_metadata": "needs an already owner-authorized private snapshot; covered by Anime metadata and route tests",
     # --- writers: excluded because this sweep must not mutate production ---
     "letterboxd_ratings.sync_letterboxd_ratings": "writes ratings; scraping job, not a panel",
     "tmdb_enrichment.enrich_movies": "writes enrichment rows; batch job, not a panel",

@@ -45,6 +45,9 @@ def test_data_bearing_reads_require_a_clerk_user():
         "/api/rewatch-echoes",
         "/api/taste-dna",
         "/api/taste-timeline",
+        "/api/research",
+        "/api/anime",
+        "/api/recommendation-evaluation",
         "/api/public-lists",
         "/api/watch-together",
         "/api/watch-provider-regions",
@@ -85,6 +88,7 @@ def test_existing_mutations_keep_admin_or_ingestion_auth():
         _route("POST", "/api/films/letterboxd-ratings")
     )
     assert "get_current_user" in _dependency_names(_route("POST", "/profiles/{profile_id}/tracking"))
+    assert "get_current_user" in _dependency_names(_route("POST", "/api/anime/import"))
     # Writes an export-only surface that only an admin may touch; the handler
     # also rejects non-admins, but the dependency must be there regardless.
     assert "get_current_user" in _dependency_names(

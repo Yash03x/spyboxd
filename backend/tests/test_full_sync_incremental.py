@@ -343,6 +343,50 @@ def test_second_full_import_updates_rating_rows_in_place(database, tmp_path):
     assert arrival_rating.id != original_heat_rating_id
 
 
+def test_full_import_renames_retained_rating_after_removing_stale_title_collision(database, tmp_path):
+    profile = _create_profile(database)
+    first = tmp_path / "before-rename"
+    _write_full_html_bundle(
+        first,
+        films=[
+            _movie("Original Title", 2026, "retained-film", rating=4.0),
+            _movie("Updated Title", 2026, "stale-alias", rating=3.0),
+        ],
+    )
+    _import_bundle(database, profile, first)
+    retained_movie_id = _movie_id(database, "retained-film")
+    stale_movie_id = _movie_id(database, "stale-alias")
+    original_rating = database.query(Rating).filter_by(
+        profile_id=profile.id, movie_id=retained_movie_id,
+    ).one()
+    original_rating_id = original_rating.id
+    first_seen_sync_id = original_rating.first_seen_profile_sync_id
+
+    second = tmp_path / "after-rename"
+    _write_full_html_bundle(
+        second,
+        films=[_movie("Updated Title", 2026, "retained-film", rating=4.5)],
+    )
+    _import_bundle(database, profile, second)
+
+    refreshed_rating = database.query(Rating).filter_by(profile_id=profile.id).one()
+    assert refreshed_rating.id == original_rating_id
+    assert refreshed_rating.movie_id == retained_movie_id
+    assert refreshed_rating.movie_title == "Updated Title"
+    assert refreshed_rating.rating == 4.5
+    assert refreshed_rating.first_seen_profile_sync_id == first_seen_sync_id
+    retained_film = database.query(ProfileFilm).filter_by(
+        profile_id=profile.id, movie_id=retained_movie_id,
+    ).one()
+    assert retained_film.legacy_rating_id == original_rating_id
+    assert retained_film.removed_at is None
+    stale_film = database.query(ProfileFilm).filter_by(
+        profile_id=profile.id, movie_id=stale_movie_id,
+    ).one()
+    assert stale_film.legacy_rating_id is None
+    assert stale_film.removed_at is not None
+
+
 def test_second_full_import_updates_review_rows_in_place(database, tmp_path):
     profile = _create_profile(database)
 
@@ -455,6 +499,82 @@ def test_second_full_import_preserves_watchlist_added_date_omitted_by_html(datab
     ).one()
     assert refreshed_watchlist_item.added_date == date(2025, 12, 31)
     assert refreshed_watchlist_item.added_date_source_kind == "letterboxd_export:watchlist"
+
+
+@pytest.mark.parametrize("content_type,dataset", [("review", "liked_reviews"), ("list", "liked_lists")])
+def test_skipped_liked_content_preserves_prior_rows_and_reports_not_refreshed(
+    database, tmp_path, content_type, dataset,
+):
+    profile = _create_profile(database)
+    first, second = tmp_path / "first", tmp_path / "second"
+    _write_full_html_bundle(first, films=[_movie("Heat", 1995, "heat-id", rating=4.0)])
+    _import_bundle(database, profile, first)
+    like = MemberContentLike(
+        profile_id=profile.id,
+        content_type=content_type,
+        target_url=f"https://letterboxd.com/author/{'film' if content_type == 'review' else 'list'}/heat/",
+        liked_date=date(2026, 8, 1),
+        target_username="author",
+        last_seen_profile_sync_id=profile.last_profile_sync_id,
+    )
+    database.add(like)
+    database.commit()
+    previous_sync = like.last_seen_profile_sync_id
+
+    _write_full_html_bundle(second, films=[_movie("Heat", 1995, "heat-id", rating=3.5)])
+    manifest_path = second / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["unavailable_datasets"] = {dataset: "operator skipped blocked upstream pages"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _import_bundle(database, profile, second)
+
+    database.refresh(like)
+    assert like.removed_at is None
+    assert like.last_seen_profile_sync_id == previous_sync
+    assert like.liked_date == date(2026, 8, 1)
+    sync = database.get(ProfileSync, profile.last_profile_sync_id)
+    assert sync.id != previous_sync
+    assert sync.coverage["datasets"][dataset]["is_authoritative"] is False
+    assert any("not refreshed" in item for item in sync.coverage["limitations"])
+
+
+def test_skipped_tags_preserve_all_existing_tagged_surfaces(database, tmp_path):
+    profile = _create_profile(database)
+    first, second = tmp_path / "first", tmp_path / "second"
+    for root, rating in ((first, 4.0), (second, 3.5)):
+        heat = _movie("Heat", 1995, "heat-id", rating=rating)
+        _write_full_html_bundle(root, films=[heat], reviews=[{**heat, "Review": "Great film"}])
+        _write_frame(
+            root / "diary.csv",
+            [{**heat, "Watched Date": "2026-08-01", "Diary_Entry_ID": "heat-viewing"}],
+            ["Name", "Year", "Watched Date", "Rating", "Film_ID", "Slug", "Film_URL", "Diary_Entry_ID"],
+        )
+        _write_frame(
+            root / "lists.csv",
+            [{"Title": "Favourites", "Film_Count": 0, "URL": "https://letterboxd.com/viewer/list/favourites/"}],
+            ["Title", "Film_Count", "URL"],
+        )
+        manifest_path = root / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["counts"].update(diary=1, lists=1)
+        if root == second:
+            manifest["unavailable_datasets"] = {"tags": "operator skipped blocked upstream pages"}
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _import_bundle(database, profile, first)
+    tagged_models = (Rating, ProfileFilm, WatchEvent, Review, MovieList)
+    for model in tagged_models:
+        database.query(model).filter_by(profile_id=profile.id).one().tags = ["known-tag"]
+    database.commit()
+
+    _import_bundle(database, profile, second)
+
+    for model in tagged_models:
+        assert database.query(model).filter_by(profile_id=profile.id).one().tags == ["known-tag"]
+    assert database.query(Rating).filter_by(profile_id=profile.id).one().rating == 3.5
+    sync = database.get(ProfileSync, profile.last_profile_sync_id)
+    assert "tags" in sync.coverage["unavailable_datasets"]
+    assert any("Tags not refreshed" in item for item in sync.coverage["limitations"])
 
 
 def test_unavailable_optional_surfaces_preserve_rows_and_are_non_authoritative(database, tmp_path):

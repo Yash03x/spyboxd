@@ -37,6 +37,9 @@ export default defineConfig({
       ...process.env,
       NEXT_PUBLIC_API_BASE_URL: 'http://127.0.0.1:8000',
       SPYBOXD_E2E_AUTH_BYPASS: '1',
+      // A direct fixture build must not replace the local live .next. CI's
+      // reuse job instead downloads an already-built .next artifact.
+      ...(isCI ? { SPYBOXD_E2E_BUILD: process.env.SPYBOXD_E2E_BUILD ?? (reuseCiBuild ? '0' : '1') } : {}),
       ...(isCI ? {
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: `pk_live_${testClerkKey}`,
         CLERK_SECRET_KEY: `sk_live_${testClerkKey}`,

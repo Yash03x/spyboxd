@@ -1,5 +1,5 @@
 {
-  "api_base_url": "https://api.spyboxd.com",
+  "api_base_url": "http://localhost:8000",
   "output_root": "../data/local-sync-cache",
   "pause_seconds": 5,
   "continue_on_error": true,

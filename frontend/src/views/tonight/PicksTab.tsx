@@ -9,26 +9,49 @@ import Posters from '../../components/terminal/bodies/Posters';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { panelState } from '../../components/terminal/states';
 import { sectionHref } from '../../components/terminal/sections';
-import { insightsApi, tonightApi } from '../../services/api';
+import { insightsApi, tonightApi, type WatchTogetherCandidate } from '../../services/api';
+import type { PickPreferences } from './PickFilters';
+import RecommendationEvaluation from './RecommendationEvaluation';
+
+function availabilityLabel(candidate: WatchTogetherCandidate, region: string, compact = false): string {
+  const offers = candidate.movie.providers;
+  const label = (type: string) => {
+    const names = [...new Set(offers.filter((offer) => offer.type === type).map((offer) => offer.name))];
+    const limit = compact ? 2 : 5;
+    return `${names.slice(0, limit).join(', ')}${names.length > limit ? ` +${names.length - limit} more` : ''}`;
+  };
+  const subscription = label('flatrate');
+  const rent = label('rent');
+  const buy = label('buy');
+  const health = candidate.movie.availability_health;
+  const location = region === 'ALL' ? 'supported countries' : region;
+  const summary = compact && subscription ? `${subscription} (subscription)` : [subscription && `${subscription} (subscription)`, rent && `${rent} (rent)`, buy && `${buy} (buy)`].filter(Boolean).join('; ');
+  if (!summary) return health?.status === 'fresh' ? `No recorded offers in ${location}` : `Availability not verified in ${location}`;
+  return `${summary}${health?.status === 'stale' ? ' · stale — confirm offers' : health?.status !== 'fresh' ? ' · read date unknown' : ''}`;
+}
 
 export default function PicksTab({
   profiles,
   region,
   pick,
   pickHref,
+  preferences,
+  resetHref,
 }: {
   profiles: string[];
   region: string;
   /** Which shortlist row the explanation panel is unpacking. */
   pick: string | null;
   pickHref: (title: string) => string;
+  preferences: PickPreferences;
+  resetHref: string;
 }) {
   const ready = profiles.length >= 2;
 
   const shortlistQuery = useQuery({
-    queryKey: ['watch-together', profiles, region],
+    queryKey: ['watch-together', profiles, region, preferences],
     queryFn: () =>
-      insightsApi.getWatchTogether(profiles, { mode: 'watchlist_overlap', region }),
+      insightsApi.getWatchTogether(profiles, { mode: 'watchlist_overlap', region, ...preferences }),
     enabled: ready,
     staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
@@ -44,11 +67,18 @@ export default function PicksTab({
 
   const candidates = shortlistQuery.data?.recommendations ?? [];
   const summary = shortlistQuery.data?.summary;
+  const hasFilters = Boolean(preferences.maxRuntime || preferences.genre || preferences.availability || preferences.rewatch === 'unseen');
+  const coverageMessages = [...new Set([
+    ...(shortlistQuery.data?.coverage.blockers ?? []),
+    ...(shortlistQuery.data?.coverage.warnings ?? []),
+  ])];
   // The explanation unpacks whichever row was chosen, defaulting to the top.
   // Heading it "why this ranked first" for a row the reader clicked was the
   // old panel's one dishonest sentence.
   const top =
     candidates.find(
+      (candidate) => String(candidate.movie.movie_id) === pick,
+    ) ?? candidates.find(
       (candidate) => candidate.movie.title.toLowerCase() === (pick ?? '').toLowerCase(),
     ) ?? candidates[0];
 
@@ -64,7 +94,7 @@ export default function PicksTab({
         title="TONIGHT'S SHORTLIST"
         src="watchlist_items × profile_films × ratings"
         wide
-        blurb="Ranked by fit across whoever is in the room. Want is how many have it queued; seen is how many have already watched it and are being asked to rewatch."
+        blurb={`Ranked across the selected group's watchlists, with equal influence per person. ${preferences.rewatch === 'unseen' ? 'Only films nobody in the group has logged are included.' : 'Rewatches are welcome; SEEN tells you how many people would be rewatching.'}`}
         // Counted from the rows actually rendered rather than from the
         // server's summary. A header claiming more candidates than the table
         // below it holds is the one thing this panel must never do, and
@@ -110,12 +140,18 @@ export default function PicksTab({
           // two branches are finally distinguishable — the old copy claimed
           // "never cut from a larger set" against a total computed after the
           // cut, which could not disagree with the table it annotated.
-          `Fit was “group fit score”. It is a rank, not a rating — the number only means something against the other rows in this table.` +
+          `Fit is a ranking score, not a predicted rating. Compare it only with other films for this same group and filter selection.` +
           (summary && summary.candidates > candidates.length
             ? ` ${summary.candidates.toLocaleString()} candidates cleared the filters; the ${candidates.length.toLocaleString()} below are the best fits, and the count above is the length of this table.`
             : ` Every ranked candidate is rendered below — the count above is the length of this table, not a larger set it was cut from.`)
         }
       >
+        {coverageMessages.length ? (
+          <div role="status" className="border-b border-term-rule px-[10px] py-3 font-term-sans text-t11 text-term-ink3">
+            <strong className="text-term-accent">Some recommendations have limited evidence</strong>
+            <ul className="mb-0 mt-2 list-disc space-y-1 pl-4">{coverageMessages.map((message) => <li key={message}>{message}</li>)}</ul>
+          </div>
+        ) : null}
         {panelState({
           isLoading: shortlistQuery.isLoading,
           error: shortlistQuery.error,
@@ -126,7 +162,11 @@ export default function PicksTab({
             'The request failed. Adjust the selection or the region and try again — the message from the API is shown rather than an empty result.',
           onRetry: () => shortlistQuery.refetch(),
           empty: ready
-            ? {
+            ? hasFilters ? {
+                title: 'No films match these filters',
+                body: 'Try a longer runtime, another genre or watch option, or allow rewatches. Missing data may also limit the matches; check the coverage notes above.',
+                cta: { label: 'CLEAR FILTERS', href: resetHref },
+              } : {
                 title: 'Nothing on the selected watchlists yet',
                 // This mode ranks whatever is queued -- it never filters to
                 // films nobody has seen, and the region only decides where a
@@ -154,24 +194,8 @@ export default function PicksTab({
               // Subscription offers first and named as such; rent/buy are
               // real answers to "where can we watch this" but they are not
               // the same answer, and the panel used to merge them silently.
-              const streaming = candidate.movie.providers
-                .filter((provider) => provider.type === 'flatrate')
-                .map((provider) => provider.name);
-              const payToWatch = candidate.movie.providers
-                .filter((provider) => provider.type !== 'flatrate')
-                .map((provider) => provider.name);
-              const providers = streaming.length
-                ? streaming
-                : payToWatch.length
-                  ? [`${payToWatch.join(', ')} (rent or buy)`]
-                  : [];
-              // A film TMDB never matched has no provider row to be absent
-              // from, so "not carried" would be a checked negative we never
-              // checked.
-              const providersKnown = candidate.movie.tmdb_id !== null
-                && candidate.movie.tmdb_id !== undefined;
               return {
-                href: pickHref(candidate.movie.title),
+                href: pickHref(String(candidate.movie.movie_id ?? candidate.movie.title)),
                 cells: [
                   cell(
                     candidate.movie.year
@@ -181,7 +205,7 @@ export default function PicksTab({
                       font: 's',
                       size: '11.5px',
                       tone:
-                        candidate.movie.title === top?.movie.title
+                        candidate === top
                           ? 'var(--accent)'
                           : 'var(--ink)',
                     },
@@ -205,15 +229,11 @@ export default function PicksTab({
                   // "Not carried in this region" -- never "not streamable
                   // anywhere", which the provider feed cannot tell us.
                   cell(
-                    providers.length
-                      ? providers.join(', ')
-                      : providersKnown
-                        ? `not carried in ${region}`
-                        : 'never looked up',
+                    availabilityLabel(candidate, region, true),
                     {
                       font: 's',
                       size: '10px',
-                      tone: providers.length ? 'var(--ink3)' : 'var(--dim)',
+                      tone: candidate.movie.availability_health?.status === 'stale' ? 'var(--accent)' : 'var(--ink3)',
                       wrap: true,
                     },
                   ),
@@ -227,23 +247,26 @@ export default function PicksTab({
       <Panel
         title="WHO IS IN THE ROOM"
         src="session filters"
-        blurb="Everything on this tab recomputes from this row, including which films count as nobody's-seen-it."
+        blurb="Choose profiles above to change the group. Baseline reads below are separate from recent RSS updates; unread history is not proof that someone has never seen a film."
         caveat={
           shortlistQuery.data
-            ? `${shortlistQuery.data.coverage.blockers.length ? shortlistQuery.data.coverage.blockers.join(' ') : 'Every selected profile has an imported watchlist.'}`
+            ? `Recommendation data: ${shortlistQuery.data.coverage.status}. ${shortlistQuery.data.coverage.blockers.join(' ')}`
             : undefined
         }
       >
         <Rows
-          columns="minmax(0,1fr) minmax(0,1fr)"
-          head={['IN THE ROOM', 'REGION']}
-          rows={profiles.map((username, index) => ({
+          columns="minmax(0,1fr) minmax(0,1.6fr)"
+          head={['IN THE ROOM', 'DATA COVERAGE']}
+          rows={profiles.map((username) => ({
             cells: [
               cell(`@${username}`),
-              cell(index === 0 ? region : '', { size: '10px', tone: 'var(--muted)' }),
+              cell(shortlistQuery.data?.profile_coverage?.find((entry) => entry.username === username)?.surfaces.map((surface) =>
+                `${surface.surface}: ${surface.status}${surface.last_updated ? ` · read ${new Date(surface.last_updated).toLocaleDateString('en-GB')}` : ' · date unknown'}`
+              ).join('; ') || 'Coverage has not been verified', { size: '10px', tone: 'var(--muted)', wrap: true }),
             ],
           }))}
         />
+        <RecommendationEvaluation profiles={profiles} />
       </Panel>
 
       <Panel
@@ -278,7 +301,7 @@ export default function PicksTab({
                 label: `${top!.watched_by.length} in the room have seen it`,
                 text: top!.watched_by.length
                   ? `${top!.watched_by.map((name) => `@${name}`).join(', ')} would be rewatching.`
-                  : 'A genuine first for everybody in the room rather than a rewatch for one.',
+                  : 'No recorded watch among the selected profiles. Viewing that was never logged is unknown.',
               },
               {
                 label: 'Who has seen it, and who it is new to',
@@ -292,9 +315,13 @@ export default function PicksTab({
               },
               {
                 label: 'Where it can be watched',
-                text: top!.movie.providers.length
-                  ? `${top!.movie.providers.map((provider) => provider.name).join(', ')} in ${region}, as of the last provider reading.`
-                  : `Not carried by a subscription service in ${region} at the last reading. That is a fact about ${region}, not about the film.`,
+                text: `${availabilityLabel(top!, region)}.${top!.movie.availability_health?.checked_at ? ` Checked ${new Date(top!.movie.availability_health.checked_at).toLocaleDateString('en-GB')}.` : ''}${region === 'ALL' ? ' Worldwide means an offer exists in at least one supported country, not necessarily yours.' : ''}`,
+              },
+              {
+                label: 'How the group score works',
+                text: top!.score_breakdown
+                  ? `Shared watchlists: ${top!.score_breakdown.watchlist}/40; new to the group: ${top!.score_breakdown.unseen}/25; balanced ratings: ${top!.score_breakdown.ratings}/25; rating evidence: ${top!.score_breakdown.evidence}/10. ${top!.score_breakdown.rated_members} of ${top!.score_breakdown.members} people have rated it. Every person counts equally; unknown ratings are neutral, and the lowest member rating tempers the average. This is a transparent ranking heuristic, not a prediction of everyone's taste.`
+                  : 'The score ranks evidence held for this group; it is not a predicted star rating.',
               },
               {
                 label: 'How sure the fit is',
@@ -312,7 +339,7 @@ export default function PicksTab({
       <Panel
         title="FAVOURITES NOBODY ELSE HAS SEEN"
         src="ratings × profile_films absence"
-        blurb="A top rating from one person that nobody else in the room has logged. The strongest recommendation the data holds."
+        blurb="A top rating from one person that nobody else in the room has logged. These are separate discoveries, not filtered shortlist results."
         caveat={blindSpotsQuery.data?.caveat}
       >
         {panelState({

@@ -87,6 +87,25 @@ test('Overview renders the scoped data and links on to the rest of the product',
   await expect(page).toHaveURL(/\/(data|profiles)$/);
 });
 
+test('root layout keeps route transitions immediately positioned', async ({ page }) => {
+  const scrollWarnings: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'warning' && message.text().includes('data-scroll-behavior')) {
+      scrollWarnings.push(message.text());
+    }
+  });
+
+  await page.goto('/');
+  const html = page.locator('html');
+  await expect(html).toHaveCSS('scroll-behavior', 'auto');
+
+  await page.getByRole('link', { name: 'Open My Dashboard', exact: true }).click();
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
+  await expect(html).toHaveCSS('scroll-behavior', 'auto');
+  expect(scrollWarnings).toEqual([]);
+});
+
 test('private workspace sign out returns to the anonymous dashboard', async ({ page }) => {
   await page.goto('/overview');
 
@@ -410,7 +429,7 @@ test('Tonight offers Worldwide and every supported availability country', async 
   await expect(country).toHaveValue('ALL');
   await expect(country.locator('option')).toHaveCount(countries.length + 1);
   await expect(country.locator('option').first()).toHaveText(
-    'Worldwide (any supported availability country)',
+    'Worldwide (any supported country)',
   );
   await expect(country.locator('option[value="US"]')).toHaveCount(1);
   await expect(country.locator('option[value="ZA"]')).toHaveCount(1);

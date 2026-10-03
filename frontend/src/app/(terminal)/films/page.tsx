@@ -10,6 +10,8 @@ import { useTerminalSelection } from '../../../hooks/useTerminalSelection';
 import GapsTab from '../../../views/films/GapsTab';
 import LibraryTab from '../../../views/films/LibraryTab';
 import TasteMapTab from '../../../views/films/TasteMapTab';
+import GroupTrendsTab from '../../../views/films/GroupTrendsTab';
+import ResearchTab from '../../../views/films/ResearchTab';
 
 function FilmsSection() {
   const section = getSection('films');
@@ -24,6 +26,7 @@ function FilmsSection() {
       profiles={selection.available}
       selected={selection.selected}
       hrefFor={selection.toggleHref}
+      groupHrefFor={selection.urlFor}
       isLocked={selection.isLockedByMinimum}
     />
   );
@@ -33,6 +36,8 @@ function FilmsSection() {
       {tab.id === 'library' ? <LibraryTab profiles={selection.selected} /> : null}
       {tab.id === 'taste' ? <TasteMapTab profiles={selection.selected} /> : null}
       {tab.id === 'gaps' ? <GapsTab profiles={selection.selected} /> : null}
+      {tab.id === 'trends' ? <GroupTrendsTab profiles={selection.selected} /> : null}
+      {tab.id === 'research' ? <ResearchTab profiles={selection.selected} available={selection.available} /> : null}
     </TerminalShell>
   );
 }

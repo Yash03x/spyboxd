@@ -45,6 +45,17 @@ def main() -> int:
         help="Optional subset of usernames to sync from the config.",
     )
 
+    parser.add_argument(
+        "--skip-liked-content",
+        action="store_true",
+        help="Skip blocked liked-review/list pages, record unavailable coverage, and preserve prior imported likes.",
+    )
+    parser.add_argument(
+        "--skip-tags",
+        action="store_true",
+        help="Skip blocked tag pages, omit authoritative tag columns, and preserve prior imported tags.",
+    )
+
     args = parser.parse_args()
     config_path = Path(args.config).resolve()
     if not config_path.exists():
@@ -99,6 +110,8 @@ def main() -> int:
                 output_dir=str(output_root / username) if output_root is not None else None,
                 keep_zip=False,
                 timeout_seconds=timeout_seconds,
+                skip_liked_content=args.skip_liked_content,
+                skip_tags=args.skip_tags,
             )
             print(f"Completed @{username}: {payload}")
         except Exception as exc:

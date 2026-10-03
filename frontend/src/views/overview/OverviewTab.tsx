@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import PanelCollection from '../../components/terminal/PanelCollection';
 import Bars from '../../components/terminal/bodies/Bars';
 import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import Spark from '../../components/terminal/bodies/Spark';
@@ -241,12 +242,12 @@ export default function OverviewTab() {
   )[0];
 
   return (
-    <>
+    <PanelCollection customizable ready={[analyticsQuery, changesQuery, marathonsQuery].every((query) => query.isFetched || !usernames.length)}>
       <Panel
         title="THE GROUP, IN FIVE NUMBERS"
         src="rollups · profiles · movies"
         stats={groupStats}
-        caveat="Totals across everything imported, not this month. The store is append-only, so these only ever go up — a number falling means a bug, not a deletion."
+        caveat="Totals for the current monitoring scope, not just this month. Corrections, source removals and changes to the monitored profiles can change these totals."
       >
         {panelState({
           isLoading: analyticsQuery.isLoading,
@@ -293,7 +294,7 @@ export default function OverviewTab() {
                 }
               : {
                   title: 'No change detected yet',
-                  body: 'Every tracked surface has come back identical to the read before it. New rows appear here the moment a refresh finds one.',
+                  body: 'No changes are available in the recorded history. A first import, incomplete coverage or an overdue refresh can also leave this empty.',
                   cta: { label: 'OPEN REFRESH LEDGER', href: sectionHref('data', 'refreshes') },
                 },
         }) ?? (
@@ -303,7 +304,7 @@ export default function OverviewTab() {
             rows={(changesQuery.data?.changes ?? []).map((change) => {
               const described = describeChange(change);
               return {
-                href: described.href,
+                href: `${described.href}&subject=${encodeURIComponent(change.username)}&profiles=${encodeURIComponent(change.username)}`,
                 cells: [
                   cell(described.what, { font: 's', wrap: true }),
                   cell(`@${change.username}`, { align: 'right', size: '10px', tone: 'var(--muted)' }),
@@ -487,27 +488,17 @@ export default function OverviewTab() {
       </Panel>
 
       <Panel
-        title="LEAVING SOON"
-        src="movie_watch_providers.fetched_at"
-        blurb="Where a film can be streamed right now, and how recently we checked."
+        title="EXPLORE BEYOND THE OVERVIEW"
+        blurb="Start with one question, then drill into the evidence. Every detailed view lets you choose the profiles it describes."
       >
-        {/* Deliberately not a countdown. TMDB publishes which services carry a
-            film today, never the date it leaves one, so a "4 days left" figure
-            would be invented rather than read. The panel says what it is
-            waiting for instead of showing a number it cannot stand behind. */}
-        <div className="px-[10px] py-[14px]">
-          <p className="m-0 font-term-sans text-t115 font-semibold text-term-ink">
-            Can&rsquo;t answer this yet
-          </p>
-          <p className="m-0 mt-[5px] max-w-[42rem] font-term-sans text-t105 text-term-ink3">
-            A countdown needs an expiry date. The provider feed publishes which services carry a film
-            today and nothing about when that stops being true, so every &ldquo;days left&rdquo; figure
-            would be a guess wearing a number&rsquo;s clothes. Two consecutive reads of the same region
-            would let us infer a departure after the fact; until that history exists, availability is
-            shown in Tonight with its read date attached and no deadline claimed.
-          </p>
-        </div>
+        <Rows columns="minmax(0,1fr) minmax(0,1.5fr)" head={['QUESTION', 'EXPLORE']} rows={[
+          { href: sectionHref('people', 'one'), cells: [cell('What does this person watch?'), cell('Individual stats, rating habits and history', { wrap: true })] },
+          { href: sectionHref('overlaps', 'together'), cells: [cell('Which watches overlap?'), cell('Shared films, timing and group patterns', { wrap: true })] },
+          { href: sectionHref('films', 'trends'), cells: [cell('What defines this group?'), cell('Group trends, contributions and taste', { wrap: true })] },
+          { href: sectionHref('tonight', 'picks'), cells: [cell('What should we watch next?'), cell('Filtered group recommendations', { wrap: true })] },
+          { href: sectionHref('data', 'refreshes'), cells: [cell('Can I trust this result?'), cell('Source coverage and refresh history', { wrap: true })] },
+        ]} />
       </Panel>
-    </>
+    </PanelCollection>
   );
 }
