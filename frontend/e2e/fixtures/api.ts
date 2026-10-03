@@ -1,4 +1,6 @@
 import type { Page, Route } from '@playwright/test';
+import { researchFixture, evaluationFixture } from './research';
+import { animeFixture } from './anime';
 
 const PROFILE_NAMES = [
   'alpha',
@@ -1152,6 +1154,10 @@ async function handleApiRoute(route: Route, state: ApiFixtureState, isAdmin: boo
   }
 
   if (path === '/api/me') return json(route, state.currentUser);
+  if (path === '/api/anime') return json(route, animeFixture);
+  if (path === '/api/anime/import') return json(route, { ...animeFixture, created: true, message: 'Anime export imported privately.' });
+  if (path === '/api/research') return json(route, researchFixture(url));
+  if (path === '/api/recommendation-evaluation') return json(route, evaluationFixture(url.searchParams.getAll('profiles')));
   if (path === '/upload' && method === 'POST') {
     return json(route, {
       loaded_profiles: ['alpha', 'bravo'],

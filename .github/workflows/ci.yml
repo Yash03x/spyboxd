@@ -134,6 +134,9 @@ jobs:
       - name: Type-check frontend
         run: npm run typecheck
 
+      - name: Test frontend data transformations and saved workspace state
+        run: npm run test:unit
+
       - name: Test the production authentication canary
         run: node --test scripts/run-production-auth-canary.test.mjs
 
@@ -425,7 +428,9 @@ jobs:
   release_bundle:
     name: Release / Build and attest bundle
     # Only successful main pushes can build the artifact consumed below.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Localhost is the current deployment target. An explicit repository
+    # variable is required before a main merge may contact the retired host.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.SPYBOXD_ENABLE_HETZNER_DEPLOY == 'true'
     needs: release_gate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -570,7 +575,7 @@ jobs:
       group: spyboxd-production-deploy
       queue: max
       cancel-in-progress: false
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.SPYBOXD_ENABLE_HETZNER_DEPLOY == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment:

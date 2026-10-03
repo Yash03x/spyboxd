@@ -34,8 +34,8 @@ export default function AvailabilityTab({
     <>
       <Panel
         title="WHERE A QUEUED FILM CAN BE WATCHED"
-        src="movie_watch_providers × watchlist_items"
-        blurb={`Films somebody in the selection has queued that a subscription service carries in ${region} right now.`}
+        src="cached provider offers × watchlist_items"
+        blurb={`Queued films with recorded subscription offers ${region === 'ALL' ? 'in at least one supported country — choose your country for local results' : `in ${region}`}. Offers can change after the recorded check.`}
         caveat={
           availabilityQuery.data
             ? `${availabilityQuery.data.caveat}${
@@ -59,12 +59,12 @@ export default function AvailabilityTab({
           empty:
             availabilityQuery.data && !availabilityQuery.data.region_read
               ? {
-                  title: `${region} has never been read`,
+                  title: region === 'ALL' ? 'No country offers have been read' : `${region} has never been read`,
                   body: 'No provider reading exists for this region, so this is empty for want of a fetch rather than for want of availability. The panel below names the regions we do hold.',
                 }
               : {
-                  title: `Nothing queued is carried in ${region}`,
-                  body: 'That is a fact about this region at the last reading, not about the films. Another region may carry them.',
+                  title: 'No recorded subscription offers for this selection',
+                  body: 'This may reflect incomplete coverage or older provider data. It is not proof that the films are unavailable; try a different country and verify directly with the provider.',
                 },
         }) ?? (
           <Posters
@@ -83,7 +83,7 @@ export default function AvailabilityTab({
               // verdict comes from that same table's own row for this region
               // rather than from a clock read during render -- the server has
               // already decided, and it decides for every film here at once.
-              dim: regionIsStale,
+              dim: !film.checked_at || (film.stale ?? regionIsStale),
             }))}
           />
         )}
@@ -91,9 +91,9 @@ export default function AvailabilityTab({
 
       <Panel
         title="HOW FRESH THIS IS"
-        src="movie_watch_providers.fetched_at"
+        src="provider-specific read dates"
         blurb="Availability is the fastest-rotting data in the product. Anything not re-read within fourteen days is labelled stale rather than shown as fact."
-        caveat="Provider readings are per region, so a region we have never fetched has no rows rather than no availability."
+        caveat="Readings cover this group's queued films. The oldest contributing read sets the date; a fresh film cannot hide stale offers elsewhere. A country we have not read is not proof of no availability."
       >
         {panelState({
           isLoading: availabilityQuery.isLoading,
@@ -120,7 +120,9 @@ export default function AvailabilityTab({
                   tone: 'var(--muted)',
                 }),
                 cell(
-                  entry.stale
+                  entry.unknown
+                    ? 'Some read dates unknown — verify offers'
+                    : entry.stale
                     ? 'Stale — shown greyed, not hidden'
                     : entry.region === region
                       ? 'Fresh — everything on this tab'
@@ -128,7 +130,7 @@ export default function AvailabilityTab({
                   {
                     font: 's',
                     size: '10px',
-                    tone: entry.stale ? 'var(--accent)' : 'var(--ok)',
+                    tone: entry.stale || entry.unknown ? 'var(--accent)' : 'var(--ok)',
                     wrap: true,
                   },
                 ),
@@ -141,21 +143,20 @@ export default function AvailabilityTab({
       <Panel
         title="WHY THERE IS NO COUNTDOWN"
         src="the data ceiling"
-        blurb="The one panel this section was designed around, and the one the schema cannot support."
+        blurb="Provider data tells us where a film was offered, not when it will leave."
       >
         {/* Stated rather than quietly omitted. A reader who expected a
             "leaving soon" list is owed the reason it is not here. */}
         <div className="px-[10px] py-[14px]">
           <h3 className="m-0 font-term-sans text-t115 font-semibold text-term-ink">
-            Can&rsquo;t answer this yet
+            Check the offer before movie night
           </h3>
           <p className="m-0 mt-[5px] max-w-[42rem] font-term-sans text-t105 text-term-ink3">
-            A countdown needs an expiry date. The provider feed publishes which services carry a
-            film today and nothing about when that stops being true, so every &ldquo;4 days
-            left&rdquo; would be a guess wearing a number&rsquo;s clothes. Two consecutive readings
-            of the same region would let us report a departure <em>after</em> it happened, which is
-            a weaker but honest claim; until that history exists, availability is shown with its
-            read date attached and no deadline claimed.
+            Choose your country for local results. Worldwide means an offer exists somewhere,
+            not necessarily where you live. This page lists subscription offers; rentals and
+            purchases are separate options in Tonight&rsquo;s shortlist. Check the provider
+            before watching, especially when the read date is old or unknown. We do not invent
+            leaving dates when the source does not publish them.
           </p>
           <p className="m-0 mt-[8px] max-w-[42rem] font-term-sans text-t10 text-term-dim">
             The refresh ledger in{' '}

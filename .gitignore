@@ -38,6 +38,7 @@ frontend/.env.local
 frontend/.env.production.local
 frontend/build/
 frontend/.next/
+frontend/.next-e2e/
 *.tsbuildinfo
 
 # IDEs

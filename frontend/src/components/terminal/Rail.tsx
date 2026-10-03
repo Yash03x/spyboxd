@@ -12,6 +12,7 @@ import {
   Popcorn,
   Radio,
   UsersRound,
+  Tv,
 } from 'lucide-react';
 import { SECTIONS, type SectionDef, type SectionId } from './sections';
 
@@ -22,6 +23,7 @@ const ICONS = {
   popcorn: Popcorn,
   clapperboard: Clapperboard,
   database: Database,
+  tv: Tv,
 } as const;
 
 function initialsFor(name: string | null | undefined): string {
@@ -49,7 +51,7 @@ function RailItem({
       title={`${section.ordinal} · ${section.name}`}
       aria-label={`${section.ordinal} ${section.name}`}
       aria-current={active ? 'page' : undefined}
-      className="relative grid h-[34px] w-[38px] place-items-center rounded-[4px] no-underline hover:no-underline"
+      className="relative flex min-h-[48px] min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-[4px] px-1 no-underline hover:no-underline md:w-full md:flex-none md:flex-row md:justify-start md:gap-2 md:px-3"
       style={{
         background: active ? 'color-mix(in srgb, var(--accent) 16%, transparent)' : 'transparent',
         color: active ? 'var(--accent)' : 'var(--muted)',
@@ -60,13 +62,14 @@ function RailItem({
         style={{ background: active ? 'var(--accent)' : 'transparent' }}
       />
       <Icon size={17} aria-hidden />
+      <span className="font-term-sans text-[9px] font-medium md:text-t115">{section.name}</span>
     </Link>
   );
 }
 
 /**
- * The 52px icon rail. On viewports under 900px it becomes a bottom tab bar
- * with 44px hit targets -- see the `md:` breakpoints below and the matching
+ * A labelled desktop rail. Below the medium breakpoint it becomes a bottom
+ * tab bar with 48px hit targets -- see the matching
  * padding on the shell.
  */
 export default function Rail({ active }: { active: SectionId }) {
@@ -88,7 +91,7 @@ export default function Rail({ active }: { active: SectionId }) {
   return (
     <nav
       aria-label="Sections"
-      className="fixed inset-x-0 bottom-0 z-[60] flex h-[52px] flex-row items-center justify-around border-t border-term-rule bg-term-bg2 px-2 md:sticky md:top-0 md:h-screen md:w-[52px] md:shrink-0 md:flex-col md:justify-start md:gap-[2px] md:self-start md:border-r md:border-t-0 md:px-0 md:py-[10px]"
+      className="fixed inset-x-0 bottom-0 z-[60] flex min-h-[64px] flex-row items-center justify-around border-t border-term-rule bg-term-bg2 px-1 pb-[env(safe-area-inset-bottom)] md:sticky md:top-0 md:h-screen md:w-[132px] md:shrink-0 md:flex-col md:justify-start md:gap-[2px] md:self-start md:border-r md:border-t-0 md:px-2 md:py-[10px]"
     >
       <span className="hidden h-8 w-8 place-items-center rounded-[4px] bg-term-accent text-[15px] font-extrabold text-term-onaccent md:mb-3 md:grid">
         S
@@ -99,7 +102,7 @@ export default function Rail({ active }: { active: SectionId }) {
           key={section.id}
           section={section}
           active={section.id === active}
-          query={carried}
+          query={section.id === 'anime' || active === 'anime' ? '' : carried}
         />
       ))}
 

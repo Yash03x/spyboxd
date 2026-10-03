@@ -79,6 +79,8 @@ def sync_profile(
     output_dir: str | None = None,
     keep_zip: bool = False,
     timeout_seconds: int = 180,
+    skip_liked_content: bool = False,
+    skip_tags: bool = False,
 ) -> dict:
     if not validate_username(username):
         raise ValueError(
@@ -103,7 +105,15 @@ def sync_profile(
 
         print(f"[1/3] Scraping full Letterboxd HTML locally for @{username}...")
         scraper = EnhancedLetterboxdScraper(username, str(scrape_dir), debug=False)
-        scraper.scrape_all()
+        skip_options = {}
+        if skip_liked_content:
+            skip_options['skip_liked_content'] = True
+        if skip_tags:
+            skip_options['skip_tags'] = True
+        if skip_options:
+            scraper.scrape_all(**skip_options)
+        else:
+            scraper.scrape_all()
 
         print(f"[2/3] Packaging {scrape_dir}...")
         zip_directory(scrape_dir, zip_path)
@@ -164,6 +174,16 @@ def main() -> int:
         help="Keep the generated ZIP archive on disk after upload.",
     )
     parser.add_argument(
+        "--skip-liked-content",
+        action="store_true",
+        help="Skip blocked liked-review/list pages, record unavailable coverage, and preserve prior imported likes.",
+    )
+    parser.add_argument(
+        "--skip-tags",
+        action="store_true",
+        help="Skip blocked tag pages, omit authoritative tag columns, and preserve prior imported tags.",
+    )
+    parser.add_argument(
         "--timeout-seconds",
         type=int,
         default=180,
@@ -185,6 +205,8 @@ def main() -> int:
             output_dir=args.output_dir,
             keep_zip=args.keep_zip,
             timeout_seconds=args.timeout_seconds,
+            skip_liked_content=args.skip_liked_content,
+            skip_tags=args.skip_tags,
         )
 
         print("Upload completed successfully.")

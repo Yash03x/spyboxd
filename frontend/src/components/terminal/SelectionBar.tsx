@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import React from 'react';
+import { SaveGroup } from './SavedWorkspace';
 
 const CHIP_BASE = 'rounded-[3px] border px-2 py-[3px] text-t10 no-underline hover:no-underline';
 
@@ -24,6 +25,7 @@ export interface SelectionBarProps {
    * pushes the same URL does none of those.
    */
   hrefFor: (username: string) => string;
+  groupHrefFor?: (profiles: string[]) => string;
   /** Chips that would drop below the minimum render inert rather than 404. */
   isLocked?: (username: string) => boolean;
   children?: React.ReactNode;
@@ -39,16 +41,30 @@ export default function SelectionBar({
   profiles,
   selected,
   hrefFor,
+  groupHrefFor,
   isLocked,
   children,
 }: SelectionBarProps) {
+  const [search, setSearch] = React.useState('');
   const chosen = new Set(selected.map((name) => name.toLowerCase()));
+  const query = search.trim().replace(/^@/, '').toLowerCase();
+  const visibleProfiles = profiles.filter((username) => username.toLowerCase().includes(query));
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-term-rule bg-term-bg2 px-[14px] py-[7px]">
-      <span className="text-t9 tracking-tab text-term-muted2">{label}</span>
+      <span className="text-t9 tracking-tab text-term-muted2">{label} · {selected.length} selected</span>
+      {profiles.length > 8 ? (
+        <input
+          type="search"
+          aria-label="Find a profile to select"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder={`Find among ${profiles.length} profiles`}
+          className="max-w-full rounded-[3px] border border-term-rule bg-term-bg px-2 py-2 font-term-sans text-t11 text-term-ink"
+        />
+      ) : null}
       <div className="flex flex-wrap items-center gap-1">
-        {profiles.map((username) => {
+        {visibleProfiles.map((username) => {
           const active = chosen.has(username.toLowerCase());
           const locked = isLocked?.(username) ?? false;
           if (locked) {
@@ -77,7 +93,9 @@ export default function SelectionBar({
           );
         })}
       </div>
-      {children ? <div className="ml-auto flex items-center gap-3">{children}</div> : null}
+      {query ? <p role="status" className="m-0 font-term-sans text-t105 text-term-muted">{visibleProfiles.length} matching profiles. Searching does not change your selected group.</p> : null}
+      {children ? <div className="ml-auto flex max-w-full flex-wrap items-center gap-3">{children}</div> : null}
+      {groupHrefFor ? <SaveGroup selected={selected} available={profiles} hrefFor={groupHrefFor} /> : null}
     </div>
   );
 }

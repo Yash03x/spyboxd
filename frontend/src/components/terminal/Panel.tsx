@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { PinStatistic } from './SavedWorkspace';
 
 export interface PanelStat {
   /** The big number. Pre-formatted -- the panel does not format. */
@@ -11,6 +12,8 @@ export interface PanelStat {
 }
 
 export interface PanelProps {
+  panelId?: string;
+  pinParams?: Record<string, string | string[]>;
   title: string;
   /** The `SRC` line: the table and column this panel reads. */
   src?: string;
@@ -37,6 +40,8 @@ export interface PanelProps {
  * and no shadow anywhere.
  */
 export default function Panel({
+  panelId,
+  pinParams,
   title,
   src,
   blurb,
@@ -48,30 +53,34 @@ export default function Panel({
 }: PanelProps) {
   return (
     <section
-      className={`border bg-term-panel ${isNew ? 'border-term-accent' : 'border-term-rule'} ${
+      id={panelId}
+      aria-label={title}
+      tabIndex={panelId ? -1 : undefined}
+      className={`min-w-0 border bg-term-panel ${isNew ? 'border-term-accent' : 'border-term-rule'} ${
         wide ? 'col-span-full' : ''
       }`}
-      style={wide ? { gridColumn: '1 / -1' } : undefined}
+      style={{ ...(wide ? { gridColumn: '1 / -1' } : {}), scrollMarginTop: '7rem' }}
     >
       <header
-        className="flex items-center justify-between gap-[10px] border-b border-term-rule px-[10px] py-[7px]"
+        className="flex flex-col items-start justify-between gap-1 border-b border-term-rule px-[10px] py-[7px] sm:flex-row sm:items-center sm:gap-[10px]"
         style={{
           background: isNew
             ? 'color-mix(in srgb, var(--accent) 12%, var(--panelhd))'
             : 'var(--panelhd)',
         }}
       >
-        <span className="flex min-w-0 items-center gap-[6px] text-t10 font-bold uppercase tracking-title text-term-accent">
-          <span className="truncate">▸ {title}</span>
+        <h2 className="m-0 flex min-w-0 items-center gap-[6px] text-t10 font-bold uppercase tracking-title text-term-accent">
+          <span className="sm:truncate">▸ {title}</span>
           {isNew ? (
             <span className="shrink-0 rounded-[2px] bg-term-accent px-1 py-px text-term-onaccent">
               NEW
             </span>
           ) : null}
-        </span>
+        </h2>
         {src ? (
-          <span className="min-w-0 max-w-[46%] shrink truncate text-t9 text-term-dim">{src}</span>
+          <span className="min-w-0 max-w-full shrink truncate text-t9 text-term-dim sm:max-w-[46%]">{src}</span>
         ) : null}
+        {panelId ? <PinStatistic title={title} panelId={panelId} pinParams={pinParams} /> : null}
       </header>
 
       {blurb ? (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -31,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_REVISION = "20260313_0001"
 FOUNDATION_REVISION = "20260728_0002"
 BACKFILL_REVISION = "20260728_0003"
-HEAD_REVISION = "20260810_0020"
+HEAD_REVISION = "20261003_0022"
 TEST_DATABASE_NAME_PATTERN = re.compile(r"(?:^|[_-])(?:ci|test|testing)(?:$|[_-])")
 TEST_SCHEMA_NAME_PATTERN = re.compile(r"^spyboxd_migration_test_[0-9a-f]{24}$")
 
@@ -104,8 +105,10 @@ class AdditiveMigrationContractTests(unittest.TestCase):
 
         self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
-            script.get_revision(HEAD_REVISION).down_revision, "20260810_0019"
+            script.get_revision(HEAD_REVISION).down_revision, "20261003_0021"
         )
+        self.assertEqual(script.get_revision("20261003_0021").down_revision, "20260810_0020")
+        self.assertEqual(script.get_revision("20260810_0020").down_revision, "20260810_0019")
         self.assertEqual(
             script.get_revision("20260810_0019").down_revision, "20260809_0018"
         )
@@ -488,6 +491,16 @@ class AdditiveMigrationPostgresTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, migration_environment, clear=False):
             command.upgrade(_alembic_config(), revision)
+
+    def test_migrations_preserve_application_error_logging(self) -> None:
+        logger = logging.getLogger("spyboxd.api")
+        was_disabled = logger.disabled
+        self.addCleanup(setattr, logger, "disabled", was_disabled)
+        logger.disabled = False
+
+        self._upgrade(HEAD_REVISION)
+
+        self.assertFalse(logger.disabled)
 
     @classmethod
     def _seed_legacy_data(cls) -> None:

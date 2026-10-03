@@ -1465,6 +1465,11 @@ class EnhancedLetterboxdScraper:
     
     def _write_csv(self, file_path: str, data: List[Dict], fieldnames: List[str]):
         """Helper function to write data to a CSV file."""
+        if 'tags' in self.unavailable_datasets and 'Tags' in fieldnames:
+            # An absent column preserves known tags during ingestion. A blank
+            # Tags column would instead assert that every tag was removed.
+            fieldnames = [name for name in fieldnames if name != 'Tags']
+            data = [{key: value for key, value in row.items() if key != 'Tags'} for row in data]
         full_path = os.path.join(self.output_dir, file_path)
         # Export layout nests some surfaces (likes/reviews.csv), and the
         # directory will not exist on a fresh scrape.
@@ -1641,6 +1646,8 @@ class EnhancedLetterboxdScraper:
             'favorites': ('favorites.csv',),
             'following': ('following.csv',),
             'followers': ('followers.csv',),
+            'liked_reviews': ('likes/reviews.csv',),
+            'liked_lists': ('likes/lists.csv',),
         }
         output_root = Path(self.output_dir)
         for dataset_name in self.unavailable_datasets:
@@ -1931,7 +1938,7 @@ class EnhancedLetterboxdScraper:
             self.completed_datasets.add('liked_lists')
         return self.liked_lists_data
 
-    def scrape_all(self):
+    def scrape_all(self, *, skip_liked_content: bool = False, skip_tags: bool = False):
         """Main method to scrape all available data."""
         print(f"🎬 Starting comprehensive scrape for {self.username}")
         print("=" * 50)
@@ -1957,11 +1964,27 @@ class EnhancedLetterboxdScraper:
         # Public surfaces the crawl never touched. Liked reviews and lists name
         # their author in the path, so they answer whose writing a member rates
         # -- a question `likes.csv` (liked films) cannot reach.
-        self.scrape_liked_reviews()
-        self.scrape_liked_lists()
+        if skip_liked_content:
+            for dataset in ('liked_reviews', 'liked_lists'):
+                self._mark_unavailable(
+                    dataset,
+                    'operator skipped blocked upstream pages; prior imported state preserved',
+                )
+            print('⚠ Skipping liked reviews/lists by request; preserving prior imported state')
+        else:
+            self.scrape_liked_reviews()
+            self.scrape_liked_lists()
         # Tags ride the films/diary/reviews/lists CSVs as an authoritative
         # column, so the crawl runs after those surfaces are proven complete.
-        self.scrape_tags()
+        if skip_tags:
+            self.requested_datasets.add('tags')
+            self._mark_unavailable(
+                'tags',
+                'operator skipped blocked upstream pages; prior imported state preserved',
+            )
+            print('⚠ Skipping tags by request; preserving prior imported state')
+        else:
+            self.scrape_tags()
 
         # These source-of-truth counts are only known after their complete surfaces
         # have passed pagination and parse validation.

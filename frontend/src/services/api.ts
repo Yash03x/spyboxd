@@ -972,12 +972,17 @@ export interface WatchTogetherCandidate {
     genres: string[];
     certification: string | null;
     providers: WatchProvider[];
+    availability_health?: { status: 'fresh' | 'stale' | 'unknown'; checked_at: string | null };
   };
   on_watchlist_by: string[];
   watched_by: string[];
   unseen_by: string[];
   liked_by: string[];
   group_fit_score: number;
+  score_breakdown?: {
+    watchlist: number; unseen: number; ratings: number; evidence: number;
+    rated_members: number; members: number;
+  } | null;
   reasons: string[];
   blind_spot_source?: {
     username: string;
@@ -1001,6 +1006,7 @@ export interface WatchTogetherResponse {
   selected_list?: PublicMovieList | null;
   available_lists?: PublicMovieList[];
   coverage: FeatureCoverage;
+  profile_coverage?: Array<{ username: string; surfaces: SurfaceCoverage[] }>;
   summary: {
     candidates: number;
     on_every_watchlist: number;
@@ -1063,9 +1069,14 @@ export const insightsApi = {
     return response.data;
   },
 
-  getTasteDna: async (profiles: string[]): Promise<TasteDnaResponse> => {
+  getTasteDna: async (
+    profiles: string[],
+    options?: { dimensions?: TasteDimension[]; limit?: number; sort?: 'alignment' | 'watched' },
+  ): Promise<TasteDnaResponse> => {
     const params = selectedProfileParams(profiles);
-    params.set('dimensions', 'genre,director,actor,language,country,decade,keyword,runtime');
+    params.set('dimensions', options?.dimensions?.join(',') ?? 'genre,director,actor,language,country,decade,keyword,runtime');
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.sort) params.set('sort', options.sort);
     const response = await api.get('/api/taste-dna', { params });
     return response.data;
   },
@@ -1100,6 +1111,7 @@ export const insightsApi = {
       maxRuntime?: number;
       genre?: string;
       availability?: string;
+      rewatch?: 'allow' | 'unseen';
       listId?: number;
     },
   ): Promise<WatchTogetherResponse> => {
@@ -1113,6 +1125,7 @@ export const insightsApi = {
       params.set('availability', options.availability);
     }
     if (options.listId) params.set('list_id', String(options.listId));
+    if (options.rewatch) params.set('rewatch', options.rewatch);
     const response = await api.get('/api/watch-together', { params });
     return response.data;
   },
@@ -2421,12 +2434,15 @@ export interface AvailabilityResponse {
     usernames: string[];
     wanted_by: number;
     providers: string[];
+    stale?: boolean;
+    provider_regions?: string[];
     checked_at: string | null;
   }>;
   region: string;
   /** False when this region has never been fetched, which is not the same as carrying nothing. */
   region_read: boolean;
   regions: Array<{
+    unknown?: boolean;
     region: string;
     films: number;
     checked_at: string | null;

@@ -392,6 +392,81 @@ def _normalize_availability_filter(value: Optional[str]) -> Optional[str]:
     return None if normalized.casefold() in {"", "all", "any"} else normalized
 
 
+def _group_pick_score(
+    selected_ids: set[int], watchlist_ids: set[int], watched_rows: Sequence[StateRow],
+) -> Dict[str, Any]:
+    """Equal influence per member, not per watch; unknown opinions stay neutral.
+
+    Average and least-satisfied-member ratings share the rating component.
+    This is an explicit compromise heuristic, not a prediction of unrated tastes.
+    """
+    ratings = {row.profile_id: row.rating for row in watched_rows if row.rating is not None}
+    member_ratings = [ratings.get(profile_id, 2.5) for profile_id in selected_ids]
+    group_size = max(len(selected_ids), 1)
+    balanced_rating = ((sum(member_ratings) / group_size) + min(member_ratings, default=2.5)) / 2
+    return {
+        "watchlist": round(40 * len(watchlist_ids & selected_ids) / group_size, 2),
+        "unseen": round(25 * len(selected_ids - {row.profile_id for row in watched_rows}) / group_size, 2),
+        "ratings": round(25 * balanced_rating / 5, 2),
+        "evidence": round(10 * len(ratings.keys() & selected_ids) / group_size, 2),
+        "rated_members": len(ratings.keys() & selected_ids),
+        "members": len(selected_ids),
+    }
+
+
+def _availability_health(
+    enrichment: Optional[MovieEnrichment],
+    stored: Sequence[MovieWatchProvider],
+    region: str,
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """A TMDB match alone does not prove that a country's offers were read."""
+    now = now or datetime.now(timezone.utc)
+    results = _raw_watch_provider_results(enrichment.raw_payload if enrichment else None)
+    raw = enrichment.raw_payload if enrichment is not None and isinstance(enrichment.raw_payload, Mapping) else {}
+    metadata = raw.get('_spyboxd') if isinstance(raw.get('_spyboxd'), Mapping) else {}
+    def timestamp(value: Any) -> Optional[datetime]:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+        except (TypeError, ValueError):
+            return None
+    read_cached = bool(results) if region == WORLDWIDE_REGION else isinstance(results.get(region), Mapping)
+    dates = [row.fetched_at for row in stored if row.fetched_at is not None]
+    cached_checked = timestamp(metadata.get('provider_payload_fetched_at'))
+    if read_cached and cached_checked is None:
+        dated_offers = {
+            (row.provider_id, row.provider_type, str(row.region).upper())
+            for row in stored if row.fetched_at is not None
+        }
+        cached_offers = _providers_from_cached_tmdb(0, raw, region=region)
+        if any(
+            (offer.provider_id, offer.provider_type, country) not in dated_offers
+            for offer in cached_offers for country in offer.regions
+        ):
+            # A dated DE row cannot establish when extra raw-only IN offers
+            # were read. Do not give the merged result a misleading fresh date.
+            return {"status": "unknown", "checked_at": None}
+    if read_cached and cached_checked is not None:
+        dates.append(cached_checked)
+    dates = [value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value for value in dates]
+    checked = min(dates) if dates else None
+    region_expiries = metadata.get('provider_region_expires_at')
+    expires = timestamp(metadata.get('provider_payload_expires_at')) if read_cached else None
+    if expires is None and isinstance(region_expiries, Mapping):
+        expires = timestamp(region_expiries.get(region))
+    # The details timestamp is deliberately not a provider timestamp: those
+    # endpoints can refresh independently. Legacy raw-only offers stay undated.
+    # Same fourteen-day ceiling used by Tonight's availability view. The oldest
+    # contributing source wins, so a fresh region cannot hide stale merged offers.
+    stale = bool(checked and (now - checked > timedelta(days=14) or (expires and expires <= now)))
+    return {
+        "status": "unknown" if checked is None else "stale" if stale else "fresh",
+        "checked_at": _iso_datetime(checked),
+    }
+
+
 def _provider_for_availability_reason(
     providers: Sequence[Any],
     availability: Optional[str],
@@ -2576,7 +2651,10 @@ class InsightsService:
         *,
         dimensions: Sequence[str],
         limit: int,
+        sort_by: str = "alignment",
     ) -> Dict[str, Any]:
+        if sort_by not in {"alignment", "watched"}:
+            raise InsightRequestError({"message": "Taste order must be alignment or watched"})
         profiles = self._resolve_profiles(requested, minimum=1)
         invalid = sorted(set(dimensions) - ALLOWED_TASTE_DIMENSIONS)
         if invalid:
@@ -2710,7 +2788,10 @@ class InsightsService:
                     entry["rated_sample_size"] > 0 for entry in per_profile
                 ):
                     signature_candidates.append(trait)
-            traits.sort(key=lambda trait: self._alignment_sort_key(trait, len(profiles)))
+            if sort_by == "watched":
+                traits.sort(key=lambda trait: (-trait["sample_size"], trait["label"]))
+            else:
+                traits.sort(key=lambda trait: self._alignment_sort_key(trait, len(profiles)))
             dimension_payloads[dimension] = traits[:limit]
 
         # Ranked by agreement, using the same definition the dimension lists
@@ -3194,7 +3275,10 @@ class InsightsService:
         availability: Optional[str],
         limit: int,
         list_id: Optional[int] = None,
+        rewatch: str = "allow",
     ) -> Dict[str, Any]:
+        if rewatch not in {"allow", "unseen"}:
+            raise InsightRequestError({"message": "Rewatch preference must be allow or unseen"})
         mode = str(mode or "").strip().casefold()
         if mode not in WATCH_TOGETHER_MODES:
             raise InsightRequestError(
@@ -3470,6 +3554,7 @@ class InsightsService:
         recommendations: List[Dict[str, Any]] = []
         # Candidates dropped only because TMDB has never described them.
         unenriched_skipped = 0
+        unknown_availability_skipped = 0
         for movie_id in candidate_ids:
             candidate = watchlist_by_movie[movie_id]
             movie: Movie = candidate["movie"]
@@ -3482,6 +3567,10 @@ class InsightsService:
             runtime = (enrichment.runtime_minutes or None) if enrichment else None
             genres = _as_string_list(enrichment.genres) if enrichment else []
             providers = providers_by_movie.get(movie_id, [])
+            watched_rows = watched_by_movie.get(movie_id, [])
+            watched_ids = {row.profile_id for row in watched_rows}
+            if (mode == "unseen_pick" or rewatch == "unseen") and watched_ids:
+                continue
             # A film TMDB never enriched has no runtime and no genres, so both
             # filters drop it. That is the right call -- we cannot claim it is
             # under 90 minutes -- but silently, it reads as "no such film in
@@ -3498,18 +3587,14 @@ class InsightsService:
             if genre and genre.casefold() not in {value.casefold() for value in genres}:
                 continue
             if availability:
+                if _availability_health(enrichment, stored_providers_by_movie.get(movie_id, []), region)["status"] == "unknown":
+                    unknown_availability_skipped += 1
                 if not any(
                     _provider_matches_availability(provider, availability)
                     for provider in providers
                 ):
                     continue
 
-            watched_rows = watched_by_movie.get(movie_id, [])
-            watched_ids = {row.profile_id for row in watched_rows}
-            if mode == "unseen_pick" and watched_ids:
-                # This mode is presented as “Unseen by all”, so a watchlist
-                # entry must not leak an already-seen title into the results.
-                continue
             unseen_ids = selected_ids - watched_ids
             if mode == "list_mission" and not unseen_ids:
                 # A completed list item is not a remaining group mission.
@@ -3525,7 +3610,8 @@ class InsightsService:
             watchlist_component = len(watchlist_ids) / len(selected_ids)
             unseen_component = len(unseen_ids) / len(selected_ids)
             rating_component = (_average(evidence_ratings) or 2.5) / 5
-            evidence_component = min(len(evidence_rows) / 5, 1.0)
+            evidence_component = min(len(evidence_ratings) / 5, 1.0)
+            score_breakdown = None
             if mode == "collective_blind_spots" and blind_spot_source is not None:
                 source_rating_component = (
                     blind_spot_source.rating / 5
@@ -3563,6 +3649,9 @@ class InsightsService:
                         + 0.31 * watchlist_component
                         + 0.23 * rating_component
                     )
+            elif mode == "watchlist_overlap":
+                score_breakdown = _group_pick_score(selected_ids, watchlist_ids, watched_rows)
+                score = sum(score_breakdown[key] for key in ("watchlist", "unseen", "ratings", "evidence"))
             else:
                 # Preserve the established scoring contract for the original
                 # Watch Together modes.
@@ -3660,6 +3749,7 @@ class InsightsService:
                     ),
                     "list_context": list_context,
                     "group_fit_score": _round(score, 1) or 0,
+                    "score_breakdown": score_breakdown,
                     "reasons": reasons,
                 }
             )
@@ -3668,6 +3758,7 @@ class InsightsService:
                 -item["group_fit_score"],
                 -len(item["on_watchlist_by"]),
                 item["movie"]["title"],
+                item["movie"]["movie_id"],
             )
         )
         # Counted before the cut: the shortlist's caveat promises the reader
@@ -3740,6 +3831,9 @@ class InsightsService:
                 "runtime_minutes": (enrichment.runtime_minutes or None) if enrichment else None,
                 "genres": _as_string_list(enrichment.genres) if enrichment else [],
                 "certification": certification,
+                "availability_health": _availability_health(
+                    enrichment, returned_stored_providers.get(movie_id, []), region,
+                ),
                 "providers": [
                     {
                         "id": provider.provider_id,
@@ -3763,6 +3857,21 @@ class InsightsService:
             states=states,
             events=event_rows,
         )
+        stale_baselines = []
+        for entry in coverage_payload["profiles"]:
+            for surface in entry["surfaces"]:
+                if surface["surface"] not in {"ratings", "watchlist"} or not surface.get("last_updated"):
+                    continue
+                try:
+                    last_read = datetime.fromisoformat(surface["last_updated"].replace("Z", "+00:00"))
+                    if last_read.tzinfo is None:
+                        last_read = last_read.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                if datetime.now(timezone.utc) - last_read > timedelta(days=14):
+                    if surface["status"] == "complete":
+                        surface["status"] = "stale"
+                    stale_baselines.append(f"@{entry['profile']['username']} {surface['surface']} baseline is over 14 days old; a recent RSS update does not refresh that full history.")
         coverage = self._feature_coverage(
             profiles,
             "watch_together",
@@ -3831,6 +3940,7 @@ class InsightsService:
                         f"{surface['surface']} coverage is partial"
                         for surface in partial_surfaces
                     ),
+                    *stale_baselines,
                 ]
             )
         )
@@ -3841,23 +3951,32 @@ class InsightsService:
         # coverage on the strength of it.
         # Say when a filter hid films rather than letting an empty-looking
         # result imply the watchlists held nothing matching.
-        if unenriched_skipped:
+        if unenriched_skipped or unknown_availability_skipped:
             if coverage["status"] == "ready":
                 coverage["status"] = "partial"
+        if unknown_availability_skipped:
+            coverage["warnings"].append(f"Availability could not be verified for {unknown_availability_skipped} candidate(s); the availability filter may hide films whose offers were never read.")
+        if unenriched_skipped:
             coverage["warnings"].append(
                 f"{unenriched_skipped} candidate"
                 f"{'' if unenriched_skipped == 1 else 's'} could not be checked "
                 "against the runtime and genre filters because TMDB metadata "
                 "has not been imported for them."
             )
-        if providers_by_movie and not any(providers_by_movie.values()):
+        unknown_availability = sum(
+            item["movie"]["availability_health"]["status"] == "unknown" for item in recommendations
+        )
+        stale_availability = sum(
+            item["movie"]["availability_health"]["status"] == "stale" for item in recommendations
+        )
+        if unknown_availability or stale_availability:
             if coverage["status"] == "ready":
                 coverage["status"] = "partial"
                 coverage["score"] = min(coverage["score"], 75)
-            availability_scope = "any country" if region == WORLDWIDE_REGION else region
-            coverage["warnings"].append(
-                f"Streaming availability for {availability_scope} is unavailable in the cached TMDB data."
-            )
+            if unknown_availability:
+                coverage["warnings"].append(f"Availability has not been verified for {unknown_availability} returned film(s) in {region}.")
+            if stale_availability:
+                coverage["warnings"].append(f"Availability is stale for {stale_availability} returned film(s); confirm with the provider before watching.")
         if mode == "watchlist_overlap" and coverage["status"] == "blocked":
             coverage["blockers"] = list(
                 dict.fromkeys(
@@ -3877,6 +3996,7 @@ class InsightsService:
         return {
             "selected_profiles": [profile.username for profile in profiles],
             "mode": mode,
+            "rewatch": rewatch,
             "region": region,
             "region_scope": (
                 "worldwide" if region == WORLDWIDE_REGION else "country"
@@ -3884,6 +4004,13 @@ class InsightsService:
             "selected_list": selected_list,
             "available_lists": available_lists,
             "coverage": coverage,
+            "profile_coverage": [
+                {
+                    "username": entry["profile"]["username"],
+                    "surfaces": [surface for surface in entry["surfaces"] if surface["surface"] in {"ratings", "watchlist"}],
+                }
+                for entry in coverage_payload["profiles"]
+            ],
             "summary": {
                 "candidates": ranked_total,
                 "on_every_watchlist": sum(

@@ -4,6 +4,8 @@ import React from 'react';
 import Rail from './Rail';
 import StatusBar from './StatusBar';
 import TabRow from './TabRow';
+import ExploreGuide from './ExploreGuide';
+import SavedWorkspace from './SavedWorkspace';
 import { getTab, type SectionDef } from './sections';
 
 export interface TerminalShellProps {
@@ -32,7 +34,8 @@ export default function TerminalShell({ section, tabId, controls, children }: Te
   const tab = getTab(section, tabId);
 
   return (
-    <div className="terminal-root flex min-h-screen items-stretch pb-[52px] md:pb-0">
+    <div className="terminal-root flex min-h-screen items-stretch pb-[64px] md:pb-0">
+      <a href="#main-content" className="sr-only z-[100] rounded bg-term-bg px-4 py-3 text-term-accent focus:not-sr-only focus:fixed focus:left-2 focus:top-2">Skip to insights</a>
       <Rail active={section.id} />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -48,23 +51,26 @@ export default function TerminalShell({ section, tabId, controls, children }: Te
           <p className="m-0 mt-[6px] max-w-[54rem] font-term-sans text-t115 text-term-ink3">
             {section.blurb}
           </p>
+          <ExploreGuide />
+          <SavedWorkspace />
         </header>
 
         <TabRow section={section} active={tab} />
 
         {controls}
 
-        <div
+        <main
+          id="main-content"
+          tabIndex={-1}
           className="grid items-start gap-3 p-[14px]"
           style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(min(400px,100%),1fr))' }}
         >
           {children}
-        </div>
+        </main>
 
         <div className="px-[14px] pb-[18px]">
           <p className="m-0 max-w-[60rem] font-term-sans text-t10 text-term-dim">
-            Panels bordered in amber are new in this redesign. The SRC line on each header names the
-            table it reads, so nothing here is a claim without a source.
+            {section.id === 'anime' ? 'Anime insights use your private uploaded snapshot. Dates describe list entries, not an episode-by-episode viewing history. Source & Data Quality explains the limits.' : 'Insights describe recorded public-profile activity, not proof that people watched together or influenced one another. Source notes and Data explain coverage and freshness.'}
           </p>
         </div>
       </div>

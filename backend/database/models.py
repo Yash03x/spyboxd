@@ -1359,6 +1359,37 @@ class SystemMetrics(Base):
     metrics = Column(JSON, nullable=True)
 
 
+class PersonalAnimeImport(Base):
+    """Private, immutable MAL snapshots; never joined into public profile data."""
+
+    __tablename__ = "personal_anime_imports"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False)
+    source_hash = Column(String(64), nullable=False)
+    filename = Column(String(255), nullable=False)
+    mal_username = Column(String(64), nullable=False)
+    mal_user_id = Column(BigInteger, nullable=False)
+    payload = Column(_json_type(), nullable=False)
+    imported_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_hash", name="uq_personal_anime_import_source"),
+        Index("ix_personal_anime_import_owner", "user_id", "id"),
+    )
+
+
+class AnimeMetadataCache(Base):
+    """Public title facts only. Personal ratings/progress stay in private imports."""
+
+    __tablename__ = "anime_metadata_cache"
+    mal_id = Column(Integer, primary_key=True)
+    payload = Column(_json_type(), nullable=False)
+    fetched_at = Column(DateTime(timezone=True), nullable=True)
+    attempted_at = Column(DateTime(timezone=True), nullable=False)
+    last_error = Column(String(255), nullable=True)
+
+
 class Anime(Base):
     """The anime catalogue, keyed by MyAnimeList's own id.
 

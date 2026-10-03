@@ -529,6 +529,8 @@ def _persist_prepared(
         region_expiries = dict(_as_dict(metadata.get("provider_region_expires_at")))
         region_expiries[region] = expires_at.isoformat()
         metadata["provider_region_expires_at"] = region_expiries
+        metadata["provider_payload_fetched_at"] = fetched_at.isoformat()
+        metadata["provider_payload_expires_at"] = expires_at.isoformat()
         metadata["last_provider_region"] = region
         raw_payload["_spyboxd"] = metadata
 

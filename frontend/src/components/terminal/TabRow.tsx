@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import type { SectionDef, TabDef } from './sections';
 
 /**
@@ -12,6 +12,20 @@ import type { SectionDef, TabDef } from './sections';
 export default function TabRow({ section, active }: { section: SectionDef; active: TabDef }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const rowRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef<HTMLAnchorElement>(null);
+
+  useEffect(() => {
+    const row = rowRef.current;
+    const link = activeRef.current;
+    if (!row || !link) return;
+    const edge = row.getBoundingClientRect();
+    const tab = link.getBoundingClientRect();
+    // A directly linked Research tab can begin off-screen on a phone. Move
+    // only this horizontal strip, not the reader's vertical page position.
+    if (tab.left < edge.left) row.scrollLeft += tab.left - edge.left;
+    else if (tab.right > edge.right) row.scrollLeft += tab.right - edge.right;
+  }, [active.id]);
 
   if (section.tabs.length < 2) return null;
 
@@ -25,6 +39,7 @@ export default function TabRow({ section, active }: { section: SectionDef; activ
 
   return (
     <div
+      ref={rowRef}
       role="tablist"
       // The status bar is one 34px row only from `md` up; below that it
       // wraps onto a second line and is roughly 60px tall, so pinning the
@@ -38,6 +53,7 @@ export default function TabRow({ section, active }: { section: SectionDef; activ
         return (
           <Link
             key={tab.id}
+            ref={isActive ? activeRef : undefined}
             href={hrefFor(tab)}
             role="tab"
             aria-selected={isActive}

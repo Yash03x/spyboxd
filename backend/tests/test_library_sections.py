@@ -531,6 +531,62 @@ def test_a_region_never_fetched_is_not_a_region_that_carries_nothing(database: S
     assert "never been read" not in read["caveat"]
 
 
+def test_worldwide_availability_reads_cached_countries_not_only_materialized_rows(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    movie = _movie(database, "Cached worldwide offer")
+    _queued(database, viewer, movie, date(2025, 1, 1))
+    enrichment = database.get(MovieEnrichment, movie.id)
+    enrichment.fetched_at = datetime.now(timezone.utc)
+    enrichment.raw_payload = {"_spyboxd": {"provider_payload_fetched_at": datetime.now(timezone.utc).isoformat()}, "watch_providers": {"results": {
+            "DE": {"flatrate": [{"provider_id": 8, "provider_name": "Netflix"}]},
+            "IN": {"flatrate": [{"provider_id": 9, "provider_name": "Prime"}]},
+            "GB": {},
+        }}}
+    database.commit()
+    worldwide = build_availability(database, [viewer], region="ALL")
+    assert worldwide["region_read"] is True
+    assert worldwide["films"][0]["providers"] == ["Netflix", "Prime"]
+    assert worldwide["films"][0]["provider_regions"] == ["DE", "IN"]
+    assert build_availability(database, [viewer], region="IN")["films"][0]["providers"] == ["Prime"]
+    empty = build_availability(database, [viewer], region="GB")
+    assert empty["region_read"] is True
+    assert empty["films"] == []
+    assert build_availability(database, [viewer], region="FR")["region_read"] is False
+
+
+def test_one_fresh_provider_cannot_hide_another_stale_offer(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    movie = _movie(database, "Mixed age offers")
+    _queued(database, viewer, movie, date(2025, 1, 1))
+    for provider_id, days in ((8, 30), (9, 1)):
+        database.add(MovieWatchProvider(movie_id=movie.id, region="DE", provider_id=provider_id,
+            provider_name=f"Provider {provider_id}", provider_type="flatrate",
+            fetched_at=datetime.now(timezone.utc) - timedelta(days=days)))
+    database.commit()
+    result = build_availability(database, [viewer], region="DE")
+    assert result["films"][0]["stale"] is True
+    assert result["regions"][0]["stale"] is True
+
+
+def test_undated_cached_offers_are_known_but_not_presented_as_fresh(database: Session) -> None:
+    viewer = _profile(database, "viewer")
+    movie = _movie(database, "Undated offer")
+    _queued(database, viewer, movie, date(2025, 1, 1))
+    enrichment = database.get(MovieEnrichment, movie.id)
+    enrichment.fetched_at = datetime.now(timezone.utc)
+    enrichment.raw_payload = {"watch_providers": {"results": {
+        "DE": {"flatrate": [{"provider_id": 8, "provider_name": "Netflix"}]},
+    }}}
+    database.commit()
+
+    result = build_availability(database, [viewer], region="DE")
+    assert result["region_read"] is True
+    assert result["films"][0]["providers"] == ["Netflix"]
+    assert result["films"][0]["checked_at"] is None
+    assert result["regions"][0]["unknown"] is True
+    assert result["regions"][0]["checked_at"] is None
+
+
 def test_a_private_list_is_counted_for_its_owner_and_named_as_unshown(database: Session) -> None:
     """Curating is curating, but the other panels on the tab cannot see it.
 
@@ -659,6 +715,26 @@ def test_a_backing_off_feed_reports_why(database: Session) -> None:
 
     assert feed["tone"] == "bad"
     assert "429" in feed["why"]
+
+
+@pytest.mark.parametrize("minutes_from_now,expected_tone,reason", [
+    (-60, "warn", "Poll overdue"),
+    (-1, "ok", "poll scheduled"),
+    (20, "ok", "poll scheduled"),
+    (None, "warn", "No next poll scheduled"),
+])
+def test_feed_health_does_not_call_a_stopped_schedule_healthy(database: Session, minutes_from_now, expected_tone, reason) -> None:
+    viewer = _profile(database, "viewer")
+    database.add(ProfileFeedState(
+        profile_id=viewer.id,
+        feed_url="https://letterboxd.com/viewer/rss/",
+        consecutive_failures=0,
+        next_poll_at=datetime.now(timezone.utc) + timedelta(minutes=minutes_from_now) if minutes_from_now is not None else None,
+    ))
+    database.commit()
+    feed = build_feeds(database, [viewer])["feeds"][0]
+    assert feed["tone"] == expected_tone
+    assert reason in feed["why"]
 
 
 def test_latency_refuses_to_estimate_without_a_fulfilled_request(database: Session) -> None:

@@ -354,6 +354,7 @@ def _reconcile_legacy_rows(
     }
     seen_rating_ids = set()
     ratings_by_movie_id: Dict[int, Rating] = {}
+    pending_title_updates: List[Tuple[Rating, str, Optional[int]]] = []
     for payload in legacy_movies.values():
         identity = payload["identity"]
         movie = resolver.resolve(identity)
@@ -381,8 +382,16 @@ def _reconcile_legacy_rows(
         rating.movie_id = movie.id
         rating.last_seen_profile_sync_id = sync.id
         rating.removed_at = None
-        rating.movie_title = payload["movie_title"]
-        rating.movie_year = payload["movie_year"]
+        if created_rating or not films_authoritative:
+            rating.movie_title = payload["movie_title"]
+            rating.movie_year = payload["movie_year"]
+        else:
+            # A renamed canonical film may take the title/year of a stale
+            # compatibility row. Remove stale rows before applying renames so
+            # the unique title/year key does not abort an otherwise valid sync.
+            pending_title_updates.append(
+                (rating, payload["movie_title"], payload["movie_year"])
+            )
         rating.letterboxd_id = payload["letterboxd_id"] or rating.letterboxd_id
         if created_rating or rating_authoritative:
             rating.rating = payload["rating"]
@@ -413,6 +422,11 @@ def _reconcile_legacy_rows(
             db.query(Rating).filter(Rating.id.in_(stale_rating_ids)).delete(
                 synchronize_session=False
             )
+    db.flush()
+
+    for rating, title, year in pending_title_updates:
+        rating.movie_title = title
+        rating.movie_year = year
     db.flush()
 
     existing_reviews = db.query(Review).filter(Review.profile_id == profile_id).all()
@@ -1690,6 +1704,12 @@ def _build_coverage(
         )
     elif not authoritative.get("following") and not authoritative.get("followers"):
         limitations.append("Following/follower data was not included in this sync.")
+
+    for dataset, label in (("liked_reviews", "Liked reviews"), ("liked_lists", "Liked lists"), ("tags", "Tags")):
+        if unavailable.get(dataset):
+            limitations.append(
+                f"{label} not refreshed ({unavailable[dataset]}); prior imported state was preserved."
+            )
 
     history_available = bool(
         authoritative.get("films") or authoritative.get("ratings") or authoritative.get("watched")

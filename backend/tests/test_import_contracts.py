@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from scraper_html import EnhancedLetterboxdScraper, ScrapeValidationError
+from scraper_html import EnhancedLetterboxdScraper, ProfileInfo, ScrapeValidationError
 from database.models import Movie
 from services.import_contracts import (
     MovieIdentity,
@@ -1488,6 +1488,103 @@ class LikedContentScrapingTests(unittest.TestCase):
     They were never fetched, so `liked_authors` could only ever describe a
     profile whose owner had uploaded an official export -- one of twenty.
     """
+
+    @staticmethod
+    def _mock_full_scraper() -> EnhancedLetterboxdScraper:
+        scraper = EnhancedLetterboxdScraper.__new__(EnhancedLetterboxdScraper)
+        scraper.username = "viewer"
+        scraper.profile_info = ProfileInfo(username="viewer")
+        scraper.completed_datasets = set()
+        scraper.unavailable_datasets = {}
+        for attribute in (
+            "films_data", "diary_entries", "reviews_data", "watchlist_data", "lists_data", "list_items_data",
+        ):
+            setattr(scraper, attribute, [])
+        methods = {
+            "scrape_profile_info": {"profile", "favorites"},
+            "scrape_following": {"following"},
+            "scrape_followers": {"followers"},
+            "scrape_all_films": {"films"},
+            "scrape_diary_entries": {"diary"},
+            "scrape_reviews": {"reviews"},
+            "scrape_watchlist": {"watchlist"},
+            "scrape_custom_lists": {"lists", "list_items"},
+            "scrape_liked_reviews": {"liked_reviews"},
+            "scrape_liked_lists": {"liked_lists"},
+        }
+        for method, datasets in methods.items():
+            setattr(scraper, method, Mock(side_effect=lambda ds=datasets: scraper.completed_datasets.update(ds)))
+        scraper.scrape_stats = Mock()
+        scraper.scrape_tags = Mock()
+        scraper.save_all_data = Mock()
+        return scraper
+
+    def test_explicit_skip_records_unavailable_without_fetching_or_completing_likes(self) -> None:
+        scraper = self._mock_full_scraper()
+
+        scraper.scrape_all(skip_liked_content=True)
+
+        for dataset in ("liked_reviews", "liked_lists"):
+            self.assertIn(dataset, scraper.requested_datasets)
+            self.assertNotIn(dataset, scraper.completed_datasets)
+            self.assertIn("operator skipped", scraper.unavailable_datasets[dataset])
+        scraper.scrape_liked_reviews.assert_not_called()
+        scraper.scrape_liked_lists.assert_not_called()
+        scraper.save_all_data.assert_called_once()
+
+    def test_normal_full_sync_still_fetches_and_requires_liked_content(self) -> None:
+        scraper = self._mock_full_scraper()
+
+        scraper.scrape_all()
+
+        scraper.scrape_liked_reviews.assert_called_once_with()
+        scraper.scrape_liked_lists.assert_called_once_with()
+        self.assertTrue({"liked_reviews", "liked_lists"} <= scraper.completed_datasets)
+        self.assertEqual(scraper.unavailable_datasets, {})
+
+    def test_explicit_tag_skip_records_unavailable_without_crawling_tags(self) -> None:
+        scraper = self._mock_full_scraper()
+
+        scraper.scrape_all(skip_tags=True)
+
+        scraper.scrape_tags.assert_not_called()
+        self.assertIn('tags', scraper.requested_datasets)
+        self.assertIn('operator skipped', scraper.unavailable_datasets['tags'])
+        self.assertNotIn('tags', scraper.completed_datasets)
+        scraper.save_all_data.assert_called_once()
+
+    def test_tag_skip_omits_columns_on_every_tagged_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = self._mock_full_scraper()
+            scraper.output_dir = temp_dir
+            scraper.unavailable_datasets = {'tags': 'operator skipped blocked upstream pages'}
+            for filename in ('films_comprehensive.csv', 'diary.csv', 'reviews.csv', 'lists.csv'):
+                with self.subTest(filename=filename):
+                    scraper._write_csv(filename, [{'Name': 'Heat', 'Tags': '[]'}], ['Name', 'Tags'])
+                    frame = pd.read_csv(Path(temp_dir) / filename)
+                    self.assertEqual(list(frame.columns), ['Name'])
+                    self.assertEqual(frame.loc[0, 'Name'], 'Heat')
+
+            scraper.unavailable_datasets = {}
+            scraper._write_csv('normal.csv', [{'Name': 'Heat', 'Tags': '[]'}], ['Name', 'Tags'])
+            self.assertIn('Tags', pd.read_csv(Path(temp_dir) / 'normal.csv').columns)
+
+    def test_skipped_likes_remove_only_managed_cache_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "likes").mkdir()
+            for name in ("reviews.csv", "lists.csv", "films.csv", "notes.txt"):
+                (root / "likes" / name).write_text("prior content", encoding="utf-8")
+            scraper = EnhancedLetterboxdScraper.__new__(EnhancedLetterboxdScraper)
+            scraper.output_dir = temp_dir
+            scraper.unavailable_datasets = {"liked_reviews": "operator skipped", "liked_lists": "operator skipped"}
+
+            scraper._remove_stale_unavailable_files()
+
+            self.assertFalse((root / "likes" / "reviews.csv").exists())
+            self.assertFalse((root / "likes" / "lists.csv").exists())
+            self.assertTrue((root / "likes" / "films.csv").exists())
+            self.assertTrue((root / "likes" / "notes.txt").exists())
 
     def test_a_liked_entry_is_keyed_once_despite_repeated_links(self) -> None:
         """A page links each review three times: title, attribution, comments."""

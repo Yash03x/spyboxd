@@ -12,16 +12,23 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import case, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from database.models import (
     Movie,
+    MovieEnrichment,
     MovieList,
     MovieListItem,
     MovieWatchProvider,
     Profile,
     ProfileFilm,
     WatchlistItem,
+)
+from services.insights import (
+    _availability_health,
+    _merge_provider_availability,
+    _providers_from_cached_tmdb,
+    _raw_watch_provider_results,
 )
 
 
@@ -334,7 +341,7 @@ def build_availability(db: Session, profiles: Sequence[Profile], *, region: str 
 
     profile_ids = [profile.id for profile in profiles]
     if not profile_ids:
-        return {"films": [], "regions": [], "caveat": "No profiles selected."}
+        return {"films": [], "region": region, "region_read": False, "regions": [], "caveat": "No profiles selected."}
 
     queued = (
         db.query(WatchlistItem.movie_id, Movie, Profile.username)
@@ -353,8 +360,6 @@ def build_availability(db: Session, profiles: Sequence[Profile], *, region: str 
         db.query(MovieWatchProvider)
         .filter(
             MovieWatchProvider.movie_id.in_(list(wanted_by)),
-            MovieWatchProvider.region == region,
-            MovieWatchProvider.provider_type == "flatrate",
         )
         .all()
         if wanted_by
@@ -365,12 +370,30 @@ def build_availability(db: Session, profiles: Sequence[Profile], *, region: str 
     for provider in providers:
         by_movie[provider.movie_id].append(provider)
 
+    enrichments = {
+        row.movie_id: row for row in db.query(MovieEnrichment).options(load_only(
+            MovieEnrichment.movie_id, MovieEnrichment.raw_payload,
+            MovieEnrichment.fetched_at, MovieEnrichment.expires_at,
+        )).filter(MovieEnrichment.movie_id.in_(list(wanted_by))).all()
+    } if wanted_by else {}
+    region_health: Dict[str, Dict[int, Dict[str, Any]]] = defaultdict(dict)
+    for movie_id in wanted_by:
+        enrichment = enrichments.get(movie_id)
+        raw_regions = _raw_watch_provider_results(enrichment.raw_payload if enrichment else None)
+        codes = {str(code).upper() for code in raw_regions if len(str(code)) == 2 and str(code).isalpha()}
+        codes.update(provider.region.upper() for provider in by_movie.get(movie_id, []))
+        for code in codes:
+            health = _availability_health(enrichment, [row for row in by_movie.get(movie_id, []) if row.region.upper() == code], code)
+            region_health[code][movie_id] = health
+
     films = []
     for movie_id, entry in wanted_by.items():
-        carriers = by_movie.get(movie_id, [])
+        enrichment = enrichments.get(movie_id)
+        stored = [provider for provider in by_movie.get(movie_id, []) if region == 'ALL' or provider.region.upper() == region]
+        carriers = [provider for provider in _merge_provider_availability(movie_id, stored, _providers_from_cached_tmdb(movie_id, enrichment.raw_payload if enrichment else None, region=region)) if provider.provider_type == 'flatrate']
         if not carriers:
             continue
-        checked = max(_aware(provider.fetched_at) for provider in carriers)
+        health = _availability_health(enrichment, stored, region)
         films.append(
             {
                 "title": entry["movie"].title,
@@ -380,33 +403,28 @@ def build_availability(db: Session, profiles: Sequence[Profile], *, region: str 
                 "usernames": sorted(set(entry["usernames"])),
                 "wanted_by": len(set(entry["usernames"])),
                 "providers": sorted({provider.provider_name for provider in carriers}),
-                "checked_at": checked.isoformat() if checked else None,
+                "checked_at": health['checked_at'],
+                "stale": health['status'] == 'stale',
+                "provider_regions": sorted({code for provider in carriers for code in provider.regions}),
             }
         )
 
     films.sort(key=lambda item: (-item["wanted_by"], item["title"]))
 
-    region_rows = (
-        db.query(
-            MovieWatchProvider.region,
-            func.count(func.distinct(MovieWatchProvider.movie_id)),
-            func.max(MovieWatchProvider.fetched_at),
-        )
-        .group_by(MovieWatchProvider.region)
-        .all()
-    )
     now = datetime.now(timezone.utc)
     regions = []
-    for code, films_count, raw_checked in region_rows:
-        checked = _aware(raw_checked)
+    for code, observations in region_health.items():
+        dates = [datetime.fromisoformat(value['checked_at']) for value in observations.values() if value['checked_at']]
+        checked = min(dates) if dates else None
         regions.append(
             {
                 "region": code,
-                "films": films_count,
+                "films": len(observations),
                 "checked_at": checked.isoformat() if checked else None,
                 "days_ago": (now - checked).days if checked else None,
                 # Availability is the fastest-rotting data in the product.
-                "stale": bool(checked and (now - checked).days > 14),
+                "stale": any(value['status'] == 'stale' for value in observations.values()),
+                "unknown": any(value['status'] == 'unknown' for value in observations.values()),
             }
         )
     regions.sort(key=lambda item: (item["days_ago"] is None, item["days_ago"] or 0))
@@ -415,11 +433,12 @@ def build_availability(db: Session, profiles: Sequence[Profile], *, region: str 
     # fact as a region that was read and carries none of the queue. Reporting
     # the first as the second is the one thing this section is not allowed to
     # do, and the freshness panel beside it already says so in words.
-    region_read = any(entry["region"] == region for entry in regions)
+    region_read = bool(regions) if region == 'ALL' else any(entry["region"] == region for entry in regions)
+    region_label = "at least one supported country" if region == "ALL" else region
     if region_read:
         scope = (
-            f"{len(films)} queued film{'s are' if len(films) != 1 else ' is'} carried by a subscription service in {region} as of "
-            "the last reading."
+            f"{len(films)} queued film{'s have' if len(films) != 1 else ' has'} recorded subscription offers in {region_label}. "
+            "Missing offers may reflect incomplete coverage, not lack of availability."
         )
     else:
         others = ", ".join(entry["region"] for entry in regions[:5])

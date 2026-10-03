@@ -1,11 +1,11 @@
 /**
- * The information architecture of the redesign: six question-named sections,
- * nineteen tabs. This file is the single source of truth for the rail, the
+ * Question-named sections, including a private personal Anime workspace.
+ * This file is the single source of truth for the rail, the
  * status-bar breadcrumb, the tab row, the panel counts and the route map --
  * every one of those reads from here rather than repeating the list.
  */
 
-export type SectionId = 'overview' | 'overlaps' | 'people' | 'tonight' | 'films' | 'data';
+export type SectionId = 'overview' | 'overlaps' | 'people' | 'tonight' | 'films' | 'data' | 'anime';
 
 export interface TabDef {
   /** URL value, e.g. `?tab=echoes`. */
@@ -40,7 +40,7 @@ export interface SectionDef {
   ordinal: string;
   name: string;
   /** lucide-react icon name, resolved in Rail.tsx. */
-  icon: 'layout-grid' | 'radio' | 'users-round' | 'popcorn' | 'clapperboard' | 'database';
+  icon: 'layout-grid' | 'radio' | 'users-round' | 'popcorn' | 'clapperboard' | 'database' | 'tv';
   question: string;
   blurb: string;
   tabs: TabDef[];
@@ -61,7 +61,7 @@ export const SECTIONS: SectionDef[] = [
     icon: 'layout-grid',
     question: 'What happened while I was away?',
     blurb:
-      'The only screen that answers a question you did not ask. Everything here is either a change since your last visit or a number that frames the rest of the product.',
+      'Catch up on recorded changes and the key stats across your monitored profiles. Use the insight guide to explore one person, compare friends or investigate a group.',
     tabs: [{ id: 'now', label: 'EVERYTHING', panels: 8 }],
   },
   {
@@ -71,7 +71,7 @@ export const SECTIONS: SectionDef[] = [
     icon: 'radio',
     question: 'Who watched the same thing, and when?',
     blurb:
-      'Was Spy Signals. Same film, close in time — the core of the product, plus the honest account of how sure we are about each one.',
+      'Find shared films, nearby watch dates and recurring patterns in a selected group. Check the evidence before interpreting a coincidence as a connection.',
     tabs: [
       { id: 'together', label: 'TOGETHER', panels: 7 },
       { id: 'echoes', label: 'ECHOES', panels: 4 },
@@ -86,7 +86,7 @@ export const SECTIONS: SectionDef[] = [
     icon: 'users-round',
     question: 'What is this person like, and how do they relate?',
     blurb:
-      'Merges Analysis, Compare and Network. Three doors into the same subject become one destination with four tabs.',
+      'Explore one person in depth, compare two profiles, or follow the wider network. Change the selected subject or pair below.',
     tabs: [
       { id: 'one', label: 'ONE PERSON', panels: 33 },
       { id: 'two', label: 'TWO PEOPLE', panels: 11 },
@@ -101,11 +101,11 @@ export const SECTIONS: SectionDef[] = [
     icon: 'popcorn',
     question: 'What should we actually watch?',
     blurb:
-      'Was Watch Together. The only section with a deadline in it — everything here is meant to end in a decision within the next hour.',
+      'Choose a group and narrow its watchlists into a practical shortlist. See why each film fits and how current the supporting data is.',
     tabs: [
       { id: 'picks', label: 'PICKS', panels: 4 },
       { id: 'lists', label: 'LISTS', panels: 4 },
-      { id: 'leaving', label: 'LEAVING SOON', panels: 3 },
+      { id: 'leaving', label: 'WHERE TO WATCH', panels: 3 },
     ],
   },
   {
@@ -115,10 +115,12 @@ export const SECTIONS: SectionDef[] = [
     icon: 'clapperboard',
     question: 'What does this group actually watch?',
     blurb:
-      'What this group watches as a library rather than as people — previously scattered across Analysis, Watch Together and the signal indexes.',
+      'Browse a selected group’s films, explore its taste, and find gaps in the collection or metadata behind the statistics.',
     tabs: [
       { id: 'library', label: 'THE LIBRARY', panels: 5 },
       { id: 'taste', label: 'TASTE MAP', panels: 5 },
+      { id: 'trends', label: 'GROUP TRENDS', panels: 3 },
+      { id: 'research', label: 'RESEARCH', panels: 4 },
       { id: 'gaps', label: 'GAPS', panels: 2 },
     ],
   },
@@ -129,12 +131,27 @@ export const SECTIONS: SectionDef[] = [
     icon: 'database',
     question: 'Where did all this come from, and what is missing?',
     blurb:
-      'Was My Profiles. Choosing who you follow sits next to the sync health that decides what you actually get, and next to the honest inventory of what we cannot read.',
+      'Choose who you monitor, check when each source was refreshed, and understand what is missing before drawing conclusions.',
     tabs: [
       { id: 'profiles', label: 'PROFILES', panels: 8 },
       { id: 'refreshes', label: 'REFRESHES', panels: 4 },
       { id: 'missing', label: "WHAT'S MISSING", panels: 4 },
       { id: 'lost', label: 'LOST & FOUND', panels: 3 },
+    ],
+  },
+  {
+    id: 'anime',
+    ordinal: '07',
+    name: 'Anime',
+    icon: 'tv',
+    question: 'What does my anime list say about me?',
+    blurb: 'Your private MyAnimeList insights: rating habits, progress, recorded timelines and the exact titles behind every number. Separate from Letterboxd and group statistics.',
+    tabs: [
+      { id: 'overview', label: 'MY INSIGHTS', panels: 6 },
+      { id: 'timeline', label: 'MY TIMELINE', panels: 3 },
+      { id: 'taste', label: 'MY TASTE', panels: 4 },
+      { id: 'discover', label: 'MY NEXT WATCH', panels: 2 },
+      { id: 'library', label: 'MY LIBRARY', panels: 2 },
     ],
   },
 ];

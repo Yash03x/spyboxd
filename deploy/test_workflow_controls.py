@@ -37,6 +37,13 @@ def dependabot_block(ecosystem: str, directory: str) -> str:
 
 
 class WorkflowControlsTests(unittest.TestCase):
+    def test_hetzner_release_is_opt_in_while_localhost_is_the_target(self) -> None:
+        ci = read_repo_file('.github/workflows/ci.yml')
+        for job in ('release_bundle', 'deploy_production'):
+            header = ci.split(f'\n  {job}:\n', maxsplit=1)[1].split('\n    steps:', maxsplit=1)[0]
+            self.assertIn("vars.SPYBOXD_ENABLE_HETZNER_DEPLOY == 'true'", header)
+        self.assertIn('run: npm run test:unit', ci)
+
     def test_compose_smoke_is_bounded_disposable_and_semantic(self) -> None:
         ci = read_repo_file(".github/workflows/ci.yml")
         smoke = read_repo_file("deploy/run-compose-smoke.sh")

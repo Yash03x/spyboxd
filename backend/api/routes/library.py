@@ -258,7 +258,7 @@ def get_list_cadence(
 @router.get("/tonight/availability")
 def get_availability(
     profiles: Optional[List[str]] = Query(default=None),
-    region: str = Query(default="IN", min_length=2, max_length=2),
+    region: str = Query(default="ALL", pattern="^(?:[A-Za-z]{2}|[Aa][Ll][Ll])$"),
     db: Session = Depends(get_db),
     user: ClerkUser = Depends(get_current_user),
 ):

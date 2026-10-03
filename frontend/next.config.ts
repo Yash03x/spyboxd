@@ -2,6 +2,8 @@ import type { NextConfig } from 'next';
 import path from 'node:path';
 
 const nextConfig: NextConfig = {
+  // Keep fixture-auth test artifacts separate from the running local app.
+  distDir: process.env.SPYBOXD_E2E_BUILD === '1' ? '.next-e2e' : '.next',
   outputFileTracingRoot: path.resolve(__dirname),
   // The redesign renames the feature-named destinations to question-named
   // sections. The old paths are in people's history and their bookmarks, so

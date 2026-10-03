@@ -4,6 +4,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import Panel from '../../components/terminal/Panel';
+import PanelCollection from '../../components/terminal/PanelCollection';
 import Bars from '../../components/terminal/bodies/Bars';
 import Diverge from '../../components/terminal/bodies/Diverge';
 import Notes from '../../components/terminal/bodies/Notes';
@@ -129,7 +130,7 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
   const drift = driftQuery.data?.profiles ?? {};
 
   return (
-    <>
+    <PanelCollection pinParams={{ profiles: pair }} ready={ready && [dossierQuery, dnaQuery, timelineQuery, tagsQuery, driftQuery, blindSpotsQuery, reviewsQuery].every((query) => query.isFetched)}>
       <Panel
         title={ready ? `HEAD TO HEAD — @${left.toUpperCase()} vs @${right.toUpperCase()}` : 'HEAD TO HEAD'}
         src="ratings × profile_films"
@@ -671,6 +672,6 @@ export default function TwoPeopleTab({ profiles }: { profiles: string[] }) {
           />
         )}
       </Panel>
-    </>
+    </PanelCollection>
   );
 }

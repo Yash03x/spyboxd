@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from dotenv import dotenv_values
 
+from scripts import local_full_sync
 from scripts.local_full_sync import load_local_environment, validate_username
 
 
@@ -59,6 +61,33 @@ def test_local_sync_does_not_override_explicit_shell_values(
     load_local_environment(env_file)
 
     assert os.environ["INGESTION_API_TOKEN"] == "shell-token"
+
+
+@pytest.mark.parametrize("skip_liked_content,skip_tags", [(False, False), (True, False), (False, True), (True, True)])
+def test_local_sync_only_skips_liked_content_when_explicitly_requested(
+    monkeypatch, tmp_path: Path, skip_liked_content: bool, skip_tags: bool,
+) -> None:
+    scraper = Mock()
+    monkeypatch.setattr(local_full_sync, "EnhancedLetterboxdScraper", Mock(return_value=scraper))
+    monkeypatch.setattr(local_full_sync, "upload_archive", Mock(return_value={"status": "ok"}))
+
+    result = local_full_sync.sync_profile(
+        username="viewer",
+        api_base_url="http://localhost:8000",
+        upload_token="test-upload-token",
+        bearer_token=None,
+        output_dir=str(tmp_path),
+        skip_liked_content=skip_liked_content,
+        skip_tags=skip_tags,
+    )
+
+    assert result == {"status": "ok"}
+    expected_options = {}
+    if skip_liked_content:
+        expected_options['skip_liked_content'] = True
+    if skip_tags:
+        expected_options['skip_tags'] = True
+    scraper.scrape_all.assert_called_once_with(**expected_options)
 
 
 def test_root_example_covers_compose_and_residential_sync() -> None:

@@ -19,6 +19,7 @@ from api.routes.activity import router as activity_router
 from api.routes.film_ratings import router as film_ratings_router
 from api.routes.follow_graph import router as follow_graph_router
 from api.routes.insights import router as insights_router
+from api.routes.anime import router as anime_router
 from api.routes.library import router as library_router
 from api.routes.member_archive import router as member_archive_router
 from api.routes.obscurity import router as obscurity_router
@@ -401,6 +402,7 @@ app.add_middleware(
 
 # New insight surfaces are additive; all legacy endpoints above and below remain intact.
 app.include_router(insights_router)
+app.include_router(anime_router)
 app.include_router(activity_router)
 app.include_router(profile_access_router)
 app.include_router(follow_graph_router)
