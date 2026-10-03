@@ -339,7 +339,7 @@ def snapshot_response(db: Session, owner_id: int, *, snapshot_id: int | None = N
             "One row is one MAL title, including separate seasons and specials, not a unique franchise or an episode-watch event.",
             "Scores use MAL's 1–10 scale. Zero means unscored and is excluded from rating averages.",
             "Only complete, non-future start and finish dates enter the timeline. Completed titles without finish dates still count in totals.",
-            "Episodes are summed as exported, without adding assumed rewatches. No runtime, episode diary, genre, studio or community-score data is present.",
+            "Episode progress is summed as recorded, without adding assumed rewatches. Personal snapshots contain no episode-watch diary; runtimes, genres, studios and community scores are separate catalogue enrichment, not personal viewing history.",
             "Elapsed days span the recorded start and finish, including breaks; they are not watch time, binge speed or a viewing streak.",
             "Comments, tags and other private notes are not imported. This dataset is not shared with monitored-profile or group statistics.",
         ],

@@ -110,6 +110,25 @@ test('responsive library confines overflow to its keyboard-accessible table', as
   await expect(page.getByRole('link', { name: /65 titles · viewing/ })).toBeVisible();
 });
 
+test('source evidence distinguishes API snapshots from XML imports', async ({ page }) => {
+  await page.route('**/api/anime?*', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+    ...animeFixture, snapshot: { ...animeFixture.snapshot, source: 'MAL API', filename: 'MAL API sync' },
+  }) }));
+  await page.goto('/anime?tab=library');
+  const source = page.getByRole('region', { name: 'SOURCE & DATA QUALITY' });
+  await expect(source).toContainText('Validated public MAL API snapshot');
+  await expect(source).toContainText('all API pages fetched before saving');
+  await expect(source).toContainText('no separate list-total reconciliation');
+  await expect(source).not.toContainText('XML total');
+  await page.getByText('Import history & source fingerprint').click();
+  await expect(source).toContainText('SHA-256 (normalized list and predecessor snapshot)');
+  await expect(source).not.toContainText('SHA-256 (decompressed XML)');
+  await page.unroute('**/api/anime?*');
+  await page.reload();
+  await expect(source).toContainText('Validated MAL XML snapshot');
+  await expect(source).toContainText('XML total and supplied status counts validated');
+});
+
 test('taste metadata drills into the exact watched subset and preserves filters', async ({ page }) => {
   await page.goto('/anime?tab=taste');
   await expect(page.getByText('Metadata: 64 / 65 titles', { exact: false })).toBeVisible();
