@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_REVISION = "20260313_0001"
 FOUNDATION_REVISION = "20260728_0002"
 BACKFILL_REVISION = "20260728_0003"
-HEAD_REVISION = "20261003_0022"
+HEAD_REVISION = "20261003_0023"
 TEST_DATABASE_NAME_PATTERN = re.compile(r"(?:^|[_-])(?:ci|test|testing)(?:$|[_-])")
 TEST_SCHEMA_NAME_PATTERN = re.compile(r"^spyboxd_migration_test_[0-9a-f]{24}$")
 
@@ -105,8 +105,9 @@ class AdditiveMigrationContractTests(unittest.TestCase):
 
         self.assertEqual(script.get_heads(), [HEAD_REVISION])
         self.assertEqual(
-            script.get_revision(HEAD_REVISION).down_revision, "20261003_0021"
+            script.get_revision(HEAD_REVISION).down_revision, "20261003_0022"
         )
+        self.assertEqual(script.get_revision("20261003_0022").down_revision, "20261003_0021")
         self.assertEqual(script.get_revision("20261003_0021").down_revision, "20260810_0020")
         self.assertEqual(script.get_revision("20260810_0020").down_revision, "20260810_0019")
         self.assertEqual(
@@ -190,6 +191,9 @@ class AdditiveMigrationContractTests(unittest.TestCase):
             "app_users",
             "user_tracked_profiles",
             "profile_access_requests",
+            "personal_anime_imports",
+            "personal_anime_syncs",
+            "anime_metadata_cache",
         }
         self.assertTrue(expected_tables.issubset(Base.metadata.tables))
 

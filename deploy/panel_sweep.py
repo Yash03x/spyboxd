@@ -56,6 +56,12 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 # swept below.
 EXCLUDED: Dict[str, str] = {
     "anime_export.import_snapshot": "writes private personal exports; parser and owner-scoped route tests cover this",
+    "anime_export.save_snapshot": "private snapshot publication shared by XML and MAL sync; covered by isolation and atomic-publication tests",
+    "anime_export.compare_snapshots": "requires two authenticated owner-scoped snapshots; covered by private comparison and browser tests",
+    "personal_anime_sync.sync_status": "private owner sync state; covered by owner-isolation route tests",
+    "personal_anime_sync.set_enabled": "writes opt-in sync settings; covered by authenticated route and cancellation tests",
+    "personal_anime_sync.sync_owner": "network I/O and private writes, not a panel; covered by complete-list and failure-preservation tests",
+    "personal_anime_sync.due_owners": "background-worker schedule selection, not a panel; covered by opt-in and backoff tests",
     "anime_export.latest_snapshot": "requires the authenticated private owner; covered by Anime owner-isolation tests",
     "anime_export.snapshot_response": "requires a private owner and snapshot; covered by real signed-in Anime QA and route tests",
     "anime_metadata.refresh_title": "writes public catalogue metadata and performs network I/O; backfill job, not a panel",

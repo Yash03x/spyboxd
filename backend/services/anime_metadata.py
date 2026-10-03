@@ -63,6 +63,7 @@ def normalize_metadata(payload, mal_id):
     return {
         'source': 'Jikan / MyAnimeList',
         'community_source': 'MyAnimeList',
+        'release_status': {'Not yet aired': 'NOT_YET_RELEASED', 'Currently Airing': 'RELEASING', 'Finished Airing': 'FINISHED'}.get(data.get('status')),
         'genres': names(data.get('genres')),
         'themes': names(data.get('themes')),
         'studios': names(data.get('studios')),
@@ -73,6 +74,25 @@ def normalize_metadata(payload, mal_id):
         'episodes': bounded_number(data.get('episodes'), 1, 1_000_000),
         'airing_year': bounded_number(data.get('year'), 1900, 2200),
         'season': data.get('season') if data.get('season') in ('spring', 'summer', 'fall', 'winter') else None,
+    }
+
+
+def normalize_mal_metadata(data, mal_id):
+    if not isinstance(data, dict) or type(data.get('id')) is not int or data['id'] != mal_id:
+        raise MetadataError('MAL metadata did not match the requested title ID.')
+    sample = bounded_number(data.get('num_scoring_users'), 1, 1_000_000_000)
+    duration = bounded_number(data.get('average_episode_duration'), 1, 86400)
+    season = data.get('start_season') if isinstance(data.get('start_season'), dict) else {}
+    return {
+        'source': 'MyAnimeList API', 'community_source': 'MyAnimeList',
+        'release_status': {'not_yet_aired': 'NOT_YET_RELEASED', 'currently_airing': 'RELEASING', 'finished_airing': 'FINISHED'}.get(data.get('status')),
+        'genres': names(data.get('genres')), 'themes': [], 'studios': names(data.get('studios')),
+        'community_score': bounded_number(data.get('mean'), 1, 10) if sample else None,
+        'scored_by': sample, 'episode_minutes': duration / 60 if duration else None,
+        'duration_label': f'{duration / 60:g} min per ep' if duration else '',
+        'episodes': bounded_number(data.get('num_episodes'), 1, 1_000_000),
+        'airing_year': bounded_number(season.get('year'), 1900, 2200),
+        'season': season.get('season') if season.get('season') in ('spring', 'summer', 'fall', 'winter') else None,
     }
 
 

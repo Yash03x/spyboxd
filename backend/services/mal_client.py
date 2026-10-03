@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 import os
+import json
 import time
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 from urllib.parse import urlsplit
@@ -151,7 +152,7 @@ class MALClient:
         # Every URL this client fetches -- including a pagination cursor the
         # API handed back -- must be MAL's own host over HTTPS.
         parsed = urlsplit(url)
-        if parsed.scheme != "https" or parsed.hostname != API_HOST:
+        if parsed.scheme != "https" or parsed.netloc != API_HOST or parsed.fragment:
             raise MALRequestError("refusing to follow a URL outside the MyAnimeList API")
 
         self._throttle()
@@ -164,26 +165,67 @@ class MALClient:
                     "Accept": "application/json",
                 },
                 timeout=REQUEST_TIMEOUT_SECONDS,
+                allow_redirects=False,
+                stream=True,
             )
         except requests.RequestException as exc:
             raise MALRequestError("the MyAnimeList API could not be reached") from exc
 
-        if response.status_code == 404:
-            raise MALNotFoundError(
-                "MyAnimeList has no such user, or their list is not public"
-            )
-        if response.status_code >= 400:
-            raise MALRequestError(
-                f"the MyAnimeList API answered HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
         try:
-            payload = response.json()
+            if response.status_code == 404:
+                raise MALNotFoundError("MyAnimeList has no such user, or their list is not public")
+            if response.status_code != 200:
+                raise MALRequestError(
+                    f"the MyAnimeList API answered HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+            raw = bytearray()
+            for chunk in response.iter_content(64 * 1024):
+                raw.extend(chunk)
+                if len(raw) > 8 * 1024 * 1024:
+                    raise MALRequestError("the MyAnimeList API response exceeded the size limit")
+            payload = json.loads(raw)
         except ValueError as exc:
             raise MALRequestError("the MyAnimeList API returned invalid JSON") from exc
+        except requests.RequestException as exc:
+            raise MALRequestError("the MyAnimeList API response was interrupted") from exc
+        finally:
+            response.close()
         if not isinstance(payload, dict):
             raise MALRequestError("the MyAnimeList API returned an unexpected shape")
         return payload
+
+    def fetch_private_list(self, username: str) -> list[dict]:
+        """All-or-nothing list for a private workspace; never silently skip rows."""
+        path = f"/v2/users/{requests.utils.quote(username, safe='')}/animelist"
+        url = f"https://{API_HOST}{path}"
+        params = {"fields": LIST_FIELDS, "limit": 500, "nsfw": "true"}
+        result, seen_urls = [], set()
+        for _ in range(40):
+            if url in seen_urls or urlsplit(url).path != path:
+                raise MALRequestError("the MyAnimeList list cursor was invalid or repeated")
+            seen_urls.add(url)
+            payload = self._get(url, params)
+            rows, paging = payload.get("data"), payload.get("paging")
+            if not isinstance(rows, list) or not isinstance(paging, dict):
+                raise MALRequestError("the MyAnimeList list response was incomplete")
+            result.extend(rows)
+            if len(result) > 20000:
+                raise MALRequestError("the MyAnimeList list exceeded 20,000 titles")
+            following = paging.get("next")
+            if not following:
+                return result
+            if not isinstance(following, str) or not rows:
+                raise MALRequestError("the MyAnimeList list cursor was invalid")
+            url, params = following, None
+        raise MALRequestError("the MyAnimeList list cursor did not terminate")
+
+    def get_anime_metadata(self, mal_id: int) -> dict:
+        if type(mal_id) is not int or mal_id <= 0:
+            raise MALRequestError("a positive MAL title ID is required")
+        return self._get(f"https://{API_HOST}/v2/anime/{mal_id}", {
+            "fields": "id,mean,num_scoring_users,average_episode_duration,num_episodes,genres,studios,start_season,start_date,status"
+        })
 
     def iter_anime_list(
         self, username: str, *, limit: int = 500, max_pages: int = 40

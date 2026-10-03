@@ -152,6 +152,7 @@ export const SECTIONS: SectionDef[] = [
       { id: 'taste', label: 'MY TASTE', panels: 4 },
       { id: 'discover', label: 'MY NEXT WATCH', panels: 2 },
       { id: 'library', label: 'MY LIBRARY', panels: 2 },
+      { id: 'changes', label: 'MY CHANGES', panels: 2 },
     ],
   },
 ];

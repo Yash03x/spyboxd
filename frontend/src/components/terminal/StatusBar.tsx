@@ -103,7 +103,7 @@ export default function StatusBar({ section, tab }: { section: SectionDef; tab: 
       </div>
 
       <div className="order-3 flex w-full min-w-0 items-center gap-2 overflow-x-auto text-term-muted md:order-2 md:ml-auto md:w-auto">
-        {section.id === 'anime' ? <span className={CHIP}>PRIVATE MAL EXPORT · YOUR ACCOUNT ONLY</span> : <><AdminScopeChips />{counts}</>}
+        {section.id === 'anime' ? <span className={CHIP}>PRIVATE MAL LIST · YOUR ACCOUNT ONLY</span> : <><AdminScopeChips />{counts}</>}
       </div>
 
       <div className="order-2 flex shrink-0 items-center gap-2 text-term-muted md:order-3">

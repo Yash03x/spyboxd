@@ -15,6 +15,8 @@ import { getAnime, importAnime, type AnimeData, type AnimeEntry } from '../../se
 import { animeFilters, animeHref, ANIME_STATUSES, filterAnime, remainingEpisodes } from '../../lib/anime';
 import { toCsv } from '../../lib/csv';
 import { AnimeTaste, AnimeDiscover } from './AnimeTaste';
+import AnimeHistory from './AnimeHistory';
+import AnimeSyncControls from './AnimeSyncControls';
 
 const CONTROL = 'min-h-10 min-w-0 max-w-full rounded border border-term-rule bg-term-bg px-2 py-2 text-t115 text-term-ink';
 const BUTTON = 'min-h-10 rounded border border-term-rule px-3 py-2 text-t11 text-term-accent disabled:opacity-50';
@@ -55,7 +57,7 @@ function Overview({ data, pending, href }: { data?: AnimeData; pending: ReactNod
     || ((remainingEpisodes(a) ?? Infinity) - (remainingEpisodes(b) ?? Infinity))
     || a.title.localeCompare(b.title)).slice(0, 10) ?? [];
   return <PanelCollection ready={Boolean(data)}>
-    <Panel title="YOUR ANIME AT A GLANCE" wide src="MAL export · one row per title" blurb="Your own list, on its own scale. Anime stays separate from the film and group statistics." stats={summary ? [{ big: format(summary.total), unit: 'titles on your list' }, { big: format(summary.completed), unit: 'completed' }, { big: format(summary.episodes_watched), unit: 'episodes recorded' }, { big: summary.mean_score?.toFixed(2) ?? '—', unit: 'average / 10' }] : undefined} caveat="Episode progress is summed as exported, without inferred rewatches or runtime. Separate seasons and specials are separate titles.">
+    <Panel title="YOUR ANIME AT A GLANCE" wide src="Private MAL snapshot · one row per title" blurb="Your own list, on its own scale. Anime stays separate from the film and group statistics." stats={summary ? [{ big: format(summary.total), unit: 'titles on your list' }, { big: format(summary.completed), unit: 'completed' }, { big: format(summary.episodes_watched), unit: 'episodes recorded' }, { big: summary.mean_score?.toFixed(2) ?? '—', unit: 'average / 10' }] : undefined} caveat="Episode progress is summed as recorded, without inferred rewatches or runtime. Separate seasons and specials are separate titles.">
       {pending ?? <div className={`${TEXT} flex flex-wrap items-center justify-between gap-3`}><p className="m-0">{format(summary?.completion_percent)}% of your list is completed. {format(summary?.rated)} titles have a score.</p><Link className="text-term-accent" href={href({ tab: 'library' })}>Explore every title →</Link></div>}
     </Panel>
     <Panel title="YOUR LIST, BY STATUS" src="my_status" blurb="Select a status to explore its titles. Bar lengths compare counts, starting at zero.">
@@ -189,13 +191,14 @@ export default function AnimeWorkspace() {
     finally { setUploading(false); if (input.current) input.current.value = ''; }
   }
   const controls = <div className="mx-[14px] mt-3 border border-term-rule bg-term-panel p-3 font-term-sans">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><p className="m-0 text-t115 font-semibold text-term-ink">{data ? `${data.snapshot.username} · ${format(data.summary.total)} titles` : 'Your private MyAnimeList workspace'}</p><p className="m-0 mt-1 text-t105 text-term-muted">{data ? `Imported ${when(data.snapshot.imported_at)} · snapshot, not live sync${snapshotId ? ' · viewing a saved import' : ''}` : 'Upload a MAL anime export. No MAL password or API key needed.'}</p></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><p className="m-0 text-t115 font-semibold text-term-ink">{data ? `${data.snapshot.username} · ${format(data.summary.total)} titles` : 'Your private MyAnimeList workspace'}</p><p className="m-0 mt-1 text-t105 text-term-muted">{data ? `${data.snapshot.source === 'MAL API' ? 'MAL API snapshot saved' : 'XML imported'} ${when(data.snapshot.imported_at)}${snapshotId ? ' · viewing a saved snapshot' : ''}` : 'Upload a MAL anime export. No MAL password or API key needed.'}</p></div>
       <input ref={input} type="file" accept=".xml,.xml.gz,application/gzip,text/xml,application/xml" className="sr-only" tabIndex={-1} aria-label="MAL export file" onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); }} disabled={uploading} />
       <button type="button" className={BUTTON} disabled={uploading || !isSignedIn} onClick={() => input.current?.click()}>{uploading ? 'Importing…' : 'Import MAL export'}</button>
     </div>
     {data && data.summary.undated_completions > 0 ? <p className="mb-0 mt-2 text-t105 text-term-muted">Timeline: {data.summary.dated_completions} / {data.summary.completed} completions dated. <Link className="text-term-accent" href={href({ tab: 'library', anime_year: 'undated' })}>{data.summary.undated_completions} lack a full finish date.</Link></p> : null}
     {data?.metadata_coverage ? <p className="mb-0 mt-2 text-t105 text-term-muted">Metadata: {data.metadata_coverage.enriched} / {data.metadata_coverage.total} titles · {data.metadata_coverage.stale} stale. <button className="min-h-8 px-2 text-term-accent disabled:opacity-50" disabled={query.isFetching} onClick={() => query.refetch()}>Refresh insights</button></p> : null}
-    <details className="mt-1 text-t105 text-term-muted"><summary className="cursor-pointer py-2 text-term-accent">Privacy & catalogue sources</summary><p className="mt-1">Imports are saved on this app’s server for your account only. Public title IDs are looked up through AniList for catalogue metadata; your username, scores and watch history are never sent. Personal imports remain snapshots, not live MAL sync.</p>{data?.metadata_coverage?.latest_fetched_at ? <p>Latest catalogue fetch: {when(data.metadata_coverage.latest_fetched_at)}. This is not a personal-list refresh date. <a className="text-term-accent" href="https://anilist.co" target="_blank" rel="noopener noreferrer">Catalogue source: AniList ↗</a></p> : null}</details>
+    <details className="mt-1 text-t105 text-term-muted"><summary className="cursor-pointer py-2 text-term-accent">Privacy & catalogue sources</summary><p className="mt-1">Snapshots are saved for your account only, separate from group statistics. Catalogue providers receive public title IDs, never your scores, watch history or XML. Opt-in MAL sync sends your imported username to MAL to read that public list; it never modifies your MAL account.</p>{data?.metadata_coverage?.latest_fetched_at ? <p>Latest catalogue fetch: {when(data.metadata_coverage.latest_fetched_at)}. This is not a personal-list refresh date. Catalogue source: {data.metadata_coverage.source}.</p> : null}</details>
+    <AnimeSyncControls ownerId={isSignedIn ? userId : null} hasSnapshot={Boolean(data)} />
     {message ? <p role="status" className="mb-0 mt-2 text-t11 text-term-accent">{message}</p> : null}
     {uploadError ? <p role="alert" className="mb-0 mt-2 text-t11 text-term-accent">{uploadError}</p> : null}
   </div>;
@@ -205,5 +208,6 @@ export default function AnimeWorkspace() {
     {tab.id === 'taste' ? <AnimeTaste data={data} pending={pending} href={href} /> : null}
     {tab.id === 'discover' ? <AnimeDiscover data={data} pending={pending} href={href} /> : null}
     {tab.id === 'library' ? <Library data={data} pending={pending} href={href} /> : null}
+    {tab.id === 'changes' ? <AnimeHistory data={data} pending={pending} ownerId={userId} /> : null}
   </TerminalShell>;
 }

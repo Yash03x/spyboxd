@@ -10,7 +10,7 @@ test('Anime is a private parallel section with useful totals and no film scope',
   await page.goto('/overview?profiles=alpha&profiles=bravo');
   await page.getByRole('link', { name: '07 Anime', exact: true }).click();
   await expect(page).toHaveURL(/\/anime$/);
-  await expect(page.getByText('PRIVATE MAL EXPORT · YOUR ACCOUNT ONLY')).toBeVisible();
+  await expect(page.getByText('PRIVATE MAL LIST · YOUR ACCOUNT ONLY')).toBeVisible();
   await expect(page.getByText('anime_fixture · 65 titles')).toBeVisible();
   await expect(page.getByRole('region', { name: 'YOUR ANIME AT A GLANCE' })).toContainText('570');
   await expect(page.getByRole('region', { name: 'HOW YOU SCORE' })).toContainText('15');
@@ -113,7 +113,7 @@ test('responsive library confines overflow to its keyboard-accessible table', as
 test('taste metadata drills into the exact watched subset and preserves filters', async ({ page }) => {
   await page.goto('/anime?tab=taste');
   await expect(page.getByText('Metadata: 64 / 65 titles', { exact: false })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'YOUR SCORES VS THE COMMUNITY' })).toContainText('not MAL community scores');
+  await expect(page.getByRole('region', { name: 'YOUR SCORES VS THE COMMUNITY' })).toContainText('These are different communities');
   await expect(page.getByRole('region', { name: 'WATCH TIME, WITH THE LIMITS VISIBLE' })).toContainText('228');
   await page.getByLabel('Minimum titles per trait').selectOption('10');
   await page.reload();
@@ -146,5 +146,80 @@ test('backlog picks explain evidence, respect time filters and recover from no m
   await expect(page.getByText('1–1 of 1 titles', { exact: true })).toBeVisible();
   await expect(page.getByText('Exact title: MAL 56.', { exact: false })).toBeVisible();
   expect(errors).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+});
+
+test('snapshot comparisons show exact before-after evidence, filter and export', async ({ page }) => {
+  const earlier = { id: 6, imported_at: '2026-10-01T12:00:00Z', titles: 64, source: 'MAL XML export' };
+  const later = { ...animeFixture.history[0], source: 'MAL API' };
+  await page.route('**/api/anime?*', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ...animeFixture, history: [later, earlier] }) }));
+  const original = animeFixture.entries[0];
+  const changes = {
+    before: earlier, after: later, counts: { added: 1, removed: 0, changed: 1, unchanged: 63 }, episode_balance_delta: 12,
+    changes: [
+      { mal_id: original.mal_id, title: original.title, kind: 'changed', fields: ['score'], before: original, after: { ...original, score: 9 } },
+      { mal_id: 65, title: 'New title', kind: 'added', fields: [], before: null, after: animeFixture.entries[64] },
+    ], limitations: ['List states, not a watch-event diary.'],
+  };
+  await page.route('**/api/anime/compare?*', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify(changes) }));
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/anime?tab=changes');
+  await expect(page.getByRole('region', { name: 'YOUR LIST, BETWEEN SNAPSHOTS' })).toContainText('Recorded episode balance: +12');
+  await expect(page.getByLabel('Earlier snapshot')).toHaveValue('6');
+  await expect(page.getByLabel('Later snapshot')).toHaveValue('7');
+  await expect(page.getByText('6 → 9', { exact: true })).toBeVisible();
+  await page.getByLabel('Change type').selectOption('changed');
+  await expect(page.getByText('1 matching title changes', { exact: true })).toBeVisible();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export changes CSV' }).click();
+  const download = await downloadPromise;
+  const content = await readFile((await download.path())!, 'utf8');
+  expect(content).toContain('"\'=Formula, ""Anime"""');
+  expect(content).toContain('"Score / 10","6","9"');
+  await page.getByLabel('Earlier snapshot').selectOption('7');
+  await expect(page.getByRole('heading', { name: 'Choose an earlier and a later snapshot' }).first()).toBeVisible();
+  await page.getByLabel('Earlier snapshot').selectOption('6');
+  await page.reload();
+  await expect(page.getByLabel('Earlier snapshot')).toHaveValue('6');
+  const evidence = page.getByRole('region', { name: 'EVERY CHANGE, WITH EVIDENCE' });
+  await evidence.getByRole('link', { name: 'Earlier entry →' }).first().click();
+  await expect(page).toHaveURL(/anime_snapshot=6.*anime_id=1/);
+  expect(errors).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+});
+
+test('single-snapshot workspace explains the next step without an empty comparison', async ({ page }) => {
+  await page.goto('/anime?tab=changes');
+  await expect(page.getByRole('heading', { name: 'One more snapshot unlocks comparisons' }).first()).toBeVisible();
+  await page.getByText('MAL synchronization · setup needed', { exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Sync MAL now', exact: true })).toBeDisabled();
+  await expect(page.getByText('MAL_CLIENT_ID', { exact: true })).toBeVisible();
+});
+
+test('MAL sync controls enable, refresh, pause and preserve errors honestly', async ({ page }) => {
+  let enabled = false;
+  let checked = false;
+  let fail = false;
+  await page.route('**/api/anime/sync', async route => {
+    if (route.request().method() === 'PATCH') enabled = route.request().postDataJSON().enabled;
+    if (route.request().method() === 'POST') {
+      if (fail) return route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ detail: 'MAL is unavailable. Previous snapshots retained.' }) });
+      checked = true;
+    }
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ configured: true, enabled, interval_hours: 6, running: false, username: 'anime_fixture', last_attempt_at: checked ? '2026-10-03T12:00:00Z' : null, last_success_at: checked ? '2026-10-03T12:00:00Z' : null, next_sync_at: enabled ? '2026-10-03T18:00:00Z' : null, last_error: null, created: true, message: 'MAL list synced privately.' }) });
+  });
+  await page.goto('/anime');
+  await page.getByText('MAL synchronization · manual', { exact: true }).click();
+  await page.getByRole('button', { name: 'Enable automatic MAL sync' }).click();
+  await expect(page.getByRole('button', { name: 'Pause automatic MAL sync' })).toBeVisible();
+  await page.getByRole('button', { name: 'Sync MAL now', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'MAL list synced privately.' })).toBeVisible();
+  await expect(page.getByText('Last successful public-list check:', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Pause automatic MAL sync' }).click();
+  await expect(page.getByRole('button', { name: 'Enable automatic MAL sync' })).toBeVisible();
+  fail = true;
+  await page.getByRole('button', { name: 'Sync MAL now', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Previous snapshots retained' })).toBeVisible();
+  await expect(page.getByText('anime_fixture · 65 titles')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 });

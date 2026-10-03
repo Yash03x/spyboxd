@@ -8,6 +8,7 @@ cursor is handed back rather than constructed. Each is pinned here.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import json
 
 import pytest
 
@@ -34,6 +35,12 @@ class FakeResponse:
             raise ValueError("not json")
         return self._payload
 
+    def iter_content(self, size):
+        yield b'not json' if self._invalid_json else json.dumps(self._payload).encode()
+
+    def close(self):
+        pass
+
 
 class FakeSession:
     """Records what was asked for, so the request itself can be asserted."""
@@ -42,8 +49,8 @@ class FakeSession:
         self._responses = list(responses)
         self.calls = []
 
-    def get(self, url, params=None, headers=None, timeout=None):
-        self.calls.append({"url": url, "params": params, "headers": headers})
+    def get(self, url, params=None, headers=None, timeout=None, **options):
+        self.calls.append({"url": url, "params": params, "headers": headers, **options})
         if not self._responses:
             raise AssertionError("the client made more requests than the test provided")
         return self._responses.pop(0)

@@ -1379,6 +1379,20 @@ class PersonalAnimeImport(Base):
     )
 
 
+class PersonalAnimeSync(Base):
+    """No passwords or API secrets; the app-level client ID stays in the environment."""
+    __tablename__ = "personal_anime_syncs"
+    user_id = Column(Integer, ForeignKey("app_users.id", ondelete="CASCADE"), primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    last_attempt_at = Column(DateTime(timezone=True))
+    last_success_at = Column(DateTime(timezone=True))
+    next_sync_at = Column(DateTime(timezone=True))
+    lease_token = Column(String(64))
+    lease_expires_at = Column(DateTime(timezone=True))
+    last_error = Column(String(255))
+    __table_args__ = (Index("ix_personal_anime_sync_due", "enabled", "next_sync_at"),)
+
+
 class AnimeMetadataCache(Base):
     """Public title facts only. Personal ratings/progress stay in private imports."""
 

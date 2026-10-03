@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from database.models import AnimeMetadataCache
 from services.anime_metadata import (
     AniListClient, MetadataError, add_metadata, build_taste, duration_minutes,
-    normalize_anilist, normalize_metadata, refresh_title,
+    normalize_anilist, normalize_metadata, normalize_mal_metadata, refresh_title,
 )
 
 
@@ -53,6 +53,19 @@ def test_jikan_identity_must_match_and_score_needs_sample():
         normalize_metadata({'data': {'mal_id': 2}}, 1)
     result = normalize_metadata({'data': {'mal_id': 1, 'score': 8, 'scored_by': 0}}, 1)
     assert result['community_score'] is None
+
+
+def test_official_mal_metadata_has_exact_identity_and_honest_units():
+    data = {'id': 5, 'status': 'not_yet_aired', 'mean': 8.2, 'num_scoring_users': 50,
+            'average_episode_duration': 1440, 'genres': [{'name': 'Drama'}], 'studios': [],
+            'start_season': {'year': 2027, 'season': 'spring'}}
+    result = normalize_mal_metadata(data, 5)
+    assert result['community_source'] == 'MyAnimeList' and result['community_score'] == 8.2
+    assert result['episode_minutes'] == 24
+    assert result['release_status'] == 'NOT_YET_RELEASED'
+    assert normalize_mal_metadata({**data, 'num_scoring_users': 0}, 5)['community_score'] is None
+    with pytest.raises(MetadataError):
+        normalize_mal_metadata(data, 6)
 
 
 class Response:

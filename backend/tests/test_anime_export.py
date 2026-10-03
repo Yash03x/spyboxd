@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from api.routes.anime import router
 from auth import ClerkUser, get_current_user
 from database.connection import get_db
-from database.models import AppUser, PersonalAnimeImport, AnimeMetadataCache
+from database.models import AppUser, PersonalAnimeImport, AnimeMetadataCache, PersonalAnimeSync
 from services.anime_export import (
     AnimeImportError, MAX_UPLOAD_BYTES, MAX_XML_BYTES, import_snapshot, parse_export,
     snapshot_response, summarize,
@@ -118,6 +118,7 @@ def db():
     AppUser.__table__.create(engine)
     PersonalAnimeImport.__table__.create(engine)
     AnimeMetadataCache.__table__.create(engine)
+    PersonalAnimeSync.__table__.create(engine)
     with Session(engine, expire_on_commit=False) as session:
         session.add_all([AppUser(id=1, clerk_user_id='owner', primary_profile_required=False), AppUser(id=2, clerk_user_id='other', primary_profile_required=False)])
         session.commit()

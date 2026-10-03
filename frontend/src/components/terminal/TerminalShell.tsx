@@ -70,7 +70,7 @@ export default function TerminalShell({ section, tabId, controls, children }: Te
 
         <div className="px-[14px] pb-[18px]">
           <p className="m-0 max-w-[60rem] font-term-sans text-t10 text-term-dim">
-            {section.id === 'anime' ? 'Anime insights use your private uploaded snapshot. Dates describe list entries, not an episode-by-episode viewing history. Source & Data Quality explains the limits.' : 'Insights describe recorded public-profile activity, not proof that people watched together or influenced one another. Source notes and Data explain coverage and freshness.'}
+            {section.id === 'anime' ? 'Anime insights use your private saved snapshot. Dates describe list entries, not an episode-by-episode viewing history. Source & Data Quality explains the limits.' : 'Insights describe recorded public-profile activity, not proof that people watched together or influenced one another. Source notes and Data explain coverage and freshness.'}
           </p>
         </div>
       </div>
