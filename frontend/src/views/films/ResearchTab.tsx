@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import Panel from '../../components/terminal/Panel';
@@ -19,6 +19,13 @@ function ComparisonProfiles({ available, value, onChange }: { available: string[
   // Native history notifies useSearchParams asynchronously; using that value
   // directly briefly restored the old checkbox state after every click.
   const [selected, setSelected] = useState(value);
+  useEffect(() => {
+    // Back can arrive before Next commits the preceding search-param update.
+    // Read the restored URL even when the parent key never changed meanwhile.
+    const restore = () => setSelected(new URLSearchParams(window.location.search).getAll('compare_profiles'));
+    window.addEventListener('popstate', restore);
+    return () => window.removeEventListener('popstate', restore);
+  }, []);
   return <div className="flex flex-wrap gap-3">{available.map(name => <label key={name} className="flex items-center gap-1 text-t11"><input type="checkbox" aria-label={`Compare @${name}`} checked={selected.includes(name)} onChange={event => {
     const current = new Set(new URLSearchParams(window.location.search).getAll('compare_profiles'));
     if (event.target.checked) current.add(name); else current.delete(name);
