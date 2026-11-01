@@ -215,15 +215,32 @@ viewing hours or binge speed. The XML has no genres, studios, runtimes or commun
 ratings. Comments/tags/private notes are not imported. Tests use synthetic exports,
 never a committed personal dataset.
 
-**My Taste** adds genre/studio rankings, personal-vs-community score differences
+**My Taste** adds genre/studio/theme/microgenre rankings, personal-vs-community score differences
 and explicitly estimated runtime coverage. **My Next Watch** ranks unstarted
 plan-to-watch entries using the owner's scored watched history. It shows sample
-sizes and shrunk genre/studio contributions, not predicted ratings or
-probabilities. Genre/studio drilldowns preserve the exact watched-title scope;
+sizes and shrunk genre/theme/studio contributions, not predicted ratings or
+probabilities. Trait drilldowns preserve the exact watched-title scope;
 library CSV exports include metadata provenance. Filters and recommendation
 time/format controls survive reloads and can be pinned.
 Confirmed unreleased or cancelled titles are excluded from next-watch picks;
 unknown release status is not treated as proof of availability.
+
+**Films → Microgenres** explores individual and selected-group plot themes with
+viewer counts, scored samples, exact film examples and optional taste-alignment
+ordering. Plot themes use TMDB keywords with common production labels removed;
+microgenres combine one recorded genre with one theme. The minimum category
+size counts distinct films, independently of how many profiles watched them.
+These are inspectable Spyboxd categories, independent of Nanocrowd's licensed
+audience-reaction dataset; they do not infer emotional reactions from a synopsis.
+Group Trends also offers these two dimensions.
+
+Anime themes retain AniList tag IDs, categories and relevance ranks. Only tags
+ranked at least 60/100 with explicit non-spoiler and non-adult flags are retained.
+Missing or ambiguous catalogue matches remain missing. Anime microgenres use
+the same genre-plus-theme rule; both dimensions filter the private library and
+appear in its CSV exports. Detailed theme affinities contribute to backlog
+ranking only with at least three scored watched examples. Microgenre names are
+not separate training signals, avoiding another count of the same genre/tag.
 
 Public metadata is a separate cache, never a modification of an imported
 snapshot. Backfill/resume it with:

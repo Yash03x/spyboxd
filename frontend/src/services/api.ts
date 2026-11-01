@@ -792,6 +792,8 @@ export type TasteDimension =
   | 'country'
   | 'decade'
   | 'keyword'
+  | 'theme'
+  | 'microgenre'
   | 'runtime';
 
 export interface TasteTraitProfileScore {
@@ -816,6 +818,8 @@ export interface TasteTrait {
   watch_share: number;
   per_profile: TasteTraitProfileScore[];
   top_movies: MovieSummary[];
+  unique_films?: number;
+  examples?: Array<{ movie: MovieSummary; watched_by: string[] }>;
 }
 
 export interface TasteDnaResponse {
@@ -836,6 +840,7 @@ export interface TasteDnaResponse {
   shared_signature: TasteTrait[];
   contrasts: TasteTrait[];
   dimensions: Partial<Record<TasteDimension, TasteTrait[]>>;
+  trait_coverage?: Partial<Record<TasteDimension, { films: number; total_films: number }>>;
   semantic_neighbors?: Array<{
     movie: MovieSummary;
     reason: string;
@@ -1071,12 +1076,13 @@ export const insightsApi = {
 
   getTasteDna: async (
     profiles: string[],
-    options?: { dimensions?: TasteDimension[]; limit?: number; sort?: 'alignment' | 'watched' },
+    options?: { dimensions?: TasteDimension[]; limit?: number; sort?: 'alignment' | 'watched'; neighbors?: boolean },
   ): Promise<TasteDnaResponse> => {
     const params = selectedProfileParams(profiles);
     params.set('dimensions', options?.dimensions?.join(',') ?? 'genre,director,actor,language,country,decade,keyword,runtime');
     if (options?.limit) params.set('limit', String(options.limit));
     if (options?.sort) params.set('sort', options.sort);
+    if (options?.neighbors !== undefined) params.set('neighbors', String(options.neighbors));
     const response = await api.get('/api/taste-dna', { params });
     return response.data;
   },

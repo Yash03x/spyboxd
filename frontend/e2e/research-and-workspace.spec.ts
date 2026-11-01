@@ -39,6 +39,24 @@ test('research filters and second group reach the API, with uncertainty and relo
   expect(await page.getByRole('region', { name: 'COMPARE PERIODS AND GROUPS', exact: true }).locator('.overflow-x-auto').evaluateAll((tables) => tables.every((table) => table.scrollWidth <= table.clientWidth + 1))).toBe(true);
 });
 
+test('comparison checkboxes keep successive selections and restore browser history', async ({ page }) => {
+  await page.goto(RESEARCH);
+  await page.getByText('Compare a second group · 0 selected', { exact: true }).click();
+  await page.getByLabel('Compare @bravo', { exact: true }).check();
+  await page.getByLabel('Compare @charlie', { exact: true }).check();
+  await expect(page.getByLabel('Compare @bravo', { exact: true })).toBeChecked();
+  await expect(page).toHaveURL(/compare_profiles=bravo&compare_profiles=charlie/);
+  await page.getByLabel('Compare @bravo', { exact: true }).uncheck();
+  await expect(page).not.toHaveURL(/compare_profiles=bravo/);
+  await page.goBack();
+  await expect(page.getByLabel('Compare @bravo', { exact: true })).toBeChecked();
+  await expect(page.getByLabel('Compare @charlie', { exact: true })).toBeChecked();
+  await page.reload();
+  await page.getByText('Compare a second group · 2 selected', { exact: true }).click();
+  await expect(page.getByLabel('Compare @bravo', { exact: true })).toBeChecked();
+  await expect(page.getByLabel('Compare @charlie', { exact: true })).toBeChecked();
+});
+
 test('CSV contains all pages exactly once and neutralizes spreadsheet formulas', async ({ page }) => {
   await page.goto(RESEARCH);
   await expect(page.getByText('1–50 of 60 events', { exact: true })).toBeVisible();

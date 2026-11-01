@@ -26,10 +26,19 @@ export const animeFixture: AnimeData = {
 };
 
 const watched = entries.filter(row => row.status !== 'plan_to_watch');
+for (const row of entries) {
+  if (row.metadata) {
+    row.metadata.themes = ['Coming of Age'];
+    row.metadata.microgenres = row.metadata.genres.map(genre => `${genre} · Coming of Age`);
+    row.metadata.tag_source = 'AniList';
+  }
+}
 animeFixture.metadata_coverage = { total: 65, enriched: 64, missing: 1, stale: 0, oldest_fetched_at: '2026-10-03T10:00:00Z', latest_fetched_at: '2026-10-03T10:00:00Z', source: 'AniList', cache_days: 7 };
 animeFixture.taste = {
   genres: ['Action', 'Drama'].map(label => { const rows = watched.filter(row => row.metadata?.genres.includes(label)); const rated = rows.filter(row => row.score !== null); return { label, titles: rows.length, completed: rows.filter(row => row.status === 'completed').length, rated: rated.length, mean_score: rated.reduce((sum, row) => sum + row.score!, 0) / rated.length }; }),
-  studios: [{ label: 'Fixture Studio', titles: 55, completed: 45, rated: 50, mean_score: 8 }], themes: [],
+  studios: [{ label: 'Fixture Studio', titles: 55, completed: 45, rated: 50, mean_score: 8 }],
+  themes: [{ label: 'Coming of Age', titles: 55, completed: 45, rated: 50, mean_score: 8 }],
+  microgenres: ['Action', 'Drama'].map(label => ({ label: `${label} · Coming of Age`, titles: label === 'Action' ? 28 : 27, completed: label === 'Action' ? 23 : 22, rated: 25, mean_score: 8 })), theme_titles: 55,
   watched_titles: 55, training_titles: 50, training_mean: 8, community_sample: 50, mean_community_delta: .5,
   higher_than_community: [{ mal_id: 5, title: 'Fixture Anime 05', score: 10, community_score: 7.5, community_source: 'AniList', scored_by: 100, delta: 2.5 }],
   lower_than_community: [{ mal_id: 1, title: entries[0].title, score: 6, community_score: 7.5, community_source: 'AniList', scored_by: 100, delta: -1.5 }],
