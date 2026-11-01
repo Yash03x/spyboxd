@@ -10,7 +10,7 @@ export const EMPTY_WORKSPACE: WorkspacePreferences = { version: 1, groups: [], s
 const ROUTES = new Set(['/overview', '/overlaps', '/people', '/films', '/tonight', '/data', '/anime']);
 const QUERY_KEYS = new Set(['tab', 'profiles', 'subject', 'region', 'close', 'gap_days', 'tier', 'pick', 'rewatch', 'max_runtime', 'genre', 'availability', 'trait', 'trait_order', 'trait_rows', 'trend_year', 'compare_profiles', 'research_from', 'research_to', 'research_basis', 'research_dimension', 'research_trait', 'research_q', 'research_sort', 'research_page']);
 for (const key of ['anime_snapshot', 'anime_q', 'anime_id', 'anime_status', 'anime_format', 'anime_score', 'anime_year', 'anime_issue', 'anime_sort', 'anime_page', 'anime_timeline_year']) QUERY_KEYS.add(key);
-for (const key of ['anime_genre', 'anime_studio', 'anime_scope', 'anime_trait_min', 'anime_pick_format', 'anime_pick_max_minutes']) QUERY_KEYS.add(key);
+for (const key of ['anime_genre', 'anime_studio', 'anime_theme', 'anime_microgenre', 'anime_scope', 'anime_trait_min', 'anime_pick_format', 'anime_pick_max_minutes', 'category', 'category_q', 'category_min', 'category_order', 'category_id', 'category_rows']) QUERY_KEYS.add(key);
 
 export function safeWorkspaceHref(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 6000 || !value.startsWith('/') || value.startsWith('//')) return null;

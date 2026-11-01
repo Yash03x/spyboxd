@@ -11,6 +11,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from sqlalchemy import false, func
 from sqlalchemy.orm import Session, load_only
 
+from services.content_traits import film_themes, microgenres
+
 from database.models import (
     Movie,
     MovieEnrichment,
@@ -36,6 +38,8 @@ ALLOWED_TASTE_DIMENSIONS = {
     "country",
     "decade",
     "keyword",
+    "theme",
+    "microgenre",
     "runtime",
 }
 
@@ -853,6 +857,7 @@ class InsightsService:
         *,
         lightweight_enrichment: bool = False,
         analytical_enrichment: bool = False,
+        content_only: bool = False,
     ) -> List[StateRow]:
         profile_ids = [profile.id for profile in profiles]
         if not profile_ids:
@@ -867,7 +872,12 @@ class InsightsService:
                 ProfileFilm.removed_at.is_(None),
             )
         )
-        if lightweight_enrichment:
+        if content_only:
+            query = query.options(load_only(
+                MovieEnrichment.movie_id, MovieEnrichment.poster_path,
+                MovieEnrichment.genres, MovieEnrichment.keywords,
+            ))
+        elif lightweight_enrichment:
             # Coverage needs only enrichment presence, while rewatch cards also
             # need the poster. Avoid repeatedly deserializing the much larger
             # TMDB JSON payloads for every profile-film row on these paths.
@@ -2471,6 +2481,10 @@ class InsightsService:
             return _as_string_list(enrichment.production_countries)
         if dimension == "keyword" and enrichment:
             return _as_string_list(enrichment.keywords)
+        if dimension == "theme" and enrichment:
+            return film_themes(enrichment.keywords)
+        if dimension == "microgenre" and enrichment:
+            return microgenres(enrichment.genres, film_themes(enrichment.keywords))
         # TMDB stores an unfilled runtime as 0, not null — 55 films in the
         # tracked library carry it — and `is not None` read that as a known
         # length, filing them under "Under 90 min". The user was then told they
@@ -2652,6 +2666,7 @@ class InsightsService:
         dimensions: Sequence[str],
         limit: int,
         sort_by: str = "alignment",
+        include_neighbors: bool = True,
     ) -> Dict[str, Any]:
         if sort_by not in {"alignment", "watched"}:
             raise InsightRequestError({"message": "Taste order must be alignment or watched"})
@@ -2662,7 +2677,8 @@ class InsightsService:
                 {"message": "Unsupported taste dimension", "unsupported_dimensions": invalid}
             )
         selected_dimensions = list(dict.fromkeys(dimensions)) or ["decade"]
-        states = self._state_rows(profiles, analytical_enrichment=True)
+        content_only = not include_neighbors and set(selected_dimensions) <= {"genre", "theme", "microgenre"}
+        states = self._state_rows(profiles, analytical_enrichment=True, content_only=content_only)
         events = self._event_rows(profiles)
         by_movie: Dict[int, List[StateRow]] = defaultdict(list)
         for row in states:
@@ -2677,10 +2693,15 @@ class InsightsService:
             dimension: defaultdict(list) for dimension in selected_dimensions
         }
         labels: Dict[Tuple[str, str], str] = {}
+        # Public catalogue traits are identical across holders of the same
+        # movie. Derive each movie/dimension once within this request.
+        values_by_movie: Dict[Tuple[int, str], List[Tuple[str, str]]] = {}
         for row in states:
             for dimension in selected_dimensions:
-                for label in self._trait_values(row, dimension):
-                    key = label.casefold()
+                cache_key = (row.movie_id, dimension)
+                if cache_key not in values_by_movie:
+                    values_by_movie[cache_key] = [(label.casefold(), label) for label in self._trait_values(row, dimension)]
+                for key, label in values_by_movie[cache_key]:
                     labels[(dimension, key)] = label
                     trait_rows[dimension][key].append(row)
 
@@ -2690,6 +2711,9 @@ class InsightsService:
         for dimension, values in trait_rows.items():
             traits: List[Dict[str, Any]] = []
             for key, rows in values.items():
+                rows_by_profile: Dict[int, List[StateRow]] = defaultdict(list)
+                for row in rows:
+                    rows_by_profile[row.profile_id].append(row)
                 per_profile = []
                 present_profiles = set()
                 all_ratings = []
@@ -2700,14 +2724,16 @@ class InsightsService:
                 # best row per movie put films only one profile had seen into a
                 # panel headed "Shared taste, real examples".
                 rated_by: Dict[int, Dict[int, float]] = defaultdict(dict)
+                movie_viewers: Dict[int, List[str]] = defaultdict(list)
                 for profile in profiles:
-                    profile_rows = [row for row in rows if row.profile_id == profile.id]
+                    profile_rows = rows_by_profile.get(profile.id, [])
                     ratings = [row.rating for row in profile_rows if row.rating is not None]
                     average_rating = _average(ratings)
                     present_profiles.update(row.profile_id for row in profile_rows)
                     all_ratings.extend(ratings)
                     liked_count += sum(row.liked for row in profile_rows)
                     for row in profile_rows:
+                        movie_viewers[row.movie_id].append(profile.username)
                         current = top_movies.get(row.movie_id)
                         if current is None or (row.rating or 0) > (current.rating or 0):
                             top_movies[row.movie_id] = row
@@ -2768,6 +2794,15 @@ class InsightsService:
                         for row in top_rows
                     ],
                 }
+                if dimension in {"theme", "microgenre"}:
+                    # Evidence can include films watched by only part of the
+                    # group; name each actual viewer instead of calling them shared.
+                    trait["unique_films"] = len(top_movies)
+                    trait["examples"] = [
+                        {"movie": self._movie_summary(row.movie, row.enrichment),
+                         "watched_by": movie_viewers[row.movie_id]}
+                        for row in sorted(top_movies.values(), key=lambda item: (item.movie.title.casefold(), item.movie_id))[:8]
+                    ]
                 traits.append(trait)
                 # A profile with nothing rated in this trait holds no opinion to
                 # differ from. Counting its 0 as a position produced the widest
@@ -2880,7 +2915,12 @@ class InsightsService:
             "shared_signature": signature_candidates[:limit],
             "contrasts": [item[1] for item in contrast_candidates[:limit]],
             "dimensions": dimension_payloads,
-            "semantic_neighbors": self._semantic_neighbors(profiles, states, limit),
+            "trait_coverage": {
+                dimension: {"films": len({row.movie_id for rows in values.values() for row in rows}),
+                            "total_films": len(by_movie)}
+                for dimension, values in trait_rows.items() if dimension in {"theme", "microgenre"}
+            },
+            "semantic_neighbors": self._semantic_neighbors(profiles, states, limit) if include_neighbors else [],
         }
 
     @staticmethod

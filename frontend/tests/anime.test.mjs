@@ -56,3 +56,11 @@ test('exact-title drilldowns cannot include another title with the same number i
   assert.equal(safeWorkspaceHref('/anime?tab=library&anime_id=1'), '/anime?tab=library&anime_id=1');
   assert.equal(animeFilters(new URLSearchParams('anime_id=-1')).id, null);
 });
+
+test('theme and microgenre drilldowns retain their exact intersection and snapshot', () => {
+  const metadata = { genres: ['Drama'], studios: [], themes: ['Coming of Age'], microgenres: ['Drama · Coming of Age'] };
+  const input = [{ ...rows[0], metadata }, rows[1], { ...rows[2], metadata: { ...metadata, microgenres: [] } }];
+  const href = animeHref({ tab: 'library', anime_theme: 'Coming of Age', anime_microgenre: 'Drama · Coming of Age', anime_scope: 'watched' }, '7');
+  assert.equal(safeWorkspaceHref(href), href);
+  assert.deepEqual(filterAnime(input, animeFilters(new URL(href, 'https://test').searchParams), '2026-01-01').map(row => row.mal_id), [1]);
+});

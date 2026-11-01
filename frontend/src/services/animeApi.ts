@@ -11,6 +11,8 @@ export interface AnimeEntry {
 }
 export interface AnimeMetadata {
   source: string; community_source: string; genres: string[]; studios: string[]; themes: string[];
+  tags?: Array<{ id: number; name: string; rank: number; category: string }>;
+  tag_source?: string; tag_min_rank?: number; microgenres?: string[];
   community_score: number | null; scored_by: number | null; episode_minutes: number | null;
   duration_label: string; episodes: number | null; airing_year: number | null; season: string | null;
   fetched_at: string; stale: boolean; refresh_failed: boolean;
@@ -26,6 +28,7 @@ export interface AnimePick {
 }
 export interface AnimeTaste {
   genres: AnimeTrait[]; studios: AnimeTrait[]; themes: AnimeTrait[];
+  microgenres?: AnimeTrait[]; theme_titles?: number;
   watched_titles: number; training_titles: number; training_mean: number | null;
   community_sample: number; mean_community_delta: number | null;
   higher_than_community: AnimeComparison[]; lower_than_community: AnimeComparison[];

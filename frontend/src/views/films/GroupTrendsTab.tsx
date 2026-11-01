@@ -7,7 +7,7 @@ import Rows, { cell } from '../../components/terminal/bodies/Rows';
 import { panelState } from '../../components/terminal/states';
 import { insightsApi, type TasteDimension } from '../../services/api';
 
-const DIMENSIONS: TasteDimension[] = ['genre', 'director', 'language', 'country', 'decade'];
+const DIMENSIONS: TasteDimension[] = ['genre', 'theme', 'microgenre', 'director', 'language', 'country', 'decade'];
 const TRAIT_LIMIT = 50;
 const languageNames = new Intl.DisplayNames(['en'], { type: 'language' });
 const countryNames = new Intl.DisplayNames(['en'], { type: 'region' });
@@ -28,6 +28,7 @@ export default function GroupTrendsTab({ profiles }: { profiles: string[] }) {
   const params = useSearchParams();
   const sort = params.get('trait_order') === 'alignment' ? 'alignment' : 'watched';
   const showAll = params.get('trait_rows') === 'all';
+  const dimension = DIMENSIONS.find((value) => value === params.get('trait')) ?? 'genre';
   const timeline = useQuery({
     queryKey: ['taste-timeline', profiles],
     queryFn: () => insightsApi.getTasteTimeline(profiles),
@@ -35,15 +36,14 @@ export default function GroupTrendsTab({ profiles }: { profiles: string[] }) {
     staleTime: 300_000,
   });
   const taste = useQuery({
-    queryKey: ['group-taste-trends', profiles, sort],
-    queryFn: () => insightsApi.getTasteDna(profiles, { dimensions: DIMENSIONS, limit: TRAIT_LIMIT, sort }),
+    queryKey: ['group-taste-trends', profiles, sort, dimension],
+    queryFn: () => insightsApi.getTasteDna(profiles, { dimensions: [dimension], limit: TRAIT_LIMIT, sort, neighbors: false }),
     enabled: profiles.length > 0,
     staleTime: 300_000,
   });
   const yearly = timeline.data?.yearly ?? [];
   const requestedYear = Number(params.get('trend_year'));
   const selectedYear = yearly.find((point) => point.year === requestedYear) ?? [...yearly].sort((a, b) => b.year - a.year)[0];
-  const dimension = DIMENSIONS.find((value) => value === params.get('trait')) ?? 'genre';
   const traits = taste.data?.dimensions[dimension] ?? [];
   const shownTraits = showAll ? traits : traits.slice(0, 12);
   const update = (key: string, value: string) => {
@@ -76,7 +76,7 @@ export default function GroupTrendsTab({ profiles }: { profiles: string[] }) {
       {panelState({ isLoading: timeline.isLoading, error: timeline.error, isEmpty: !selectedYear, onRetry: () => timeline.refetch(), empty: { title: 'No period to compare', body: 'Imported diary dates are needed for a year-by-year comparison.' } }) ?? <Rows columns="minmax(0,1fr) 62px 70px 72px" head={['PROFILE', 'WATCHES', 'RATED', 'AVG']} rows={(selectedYear?.per_profile ?? []).map((point) => ({ cells: [cell(`@${point.username}`, { wrap: true }), cell(String(point.watch_events)), cell(String(point.rated_events)), cell(point.average_rating === null ? '—' : `${point.average_rating.toFixed(2)}★`)] }))} />}
     </Panel>
     <Panel title="THE GROUP'S TASTE, WITH SAMPLE SIZES" src="profile_films × movie_enrichments"
-      blurb="Explore genres, directors, languages, countries and decades across the whole selected library. This all-history view is independent of the year selector above."
+      blurb="Explore genres, plot themes, microgenres, directors, languages, countries and decades across the selected library. This all-history view is independent of the year selector above."
       caveat={`Up to ${TRAIT_LIMIT} traits per dimension, ordered by ${sort === 'watched' ? 'most watched profile-film pairs' : 'taste alignment, not viewing volume'}. Sample counts profile-film pairs, not unique films. Rated is the sample behind the average; prolific raters have more weight in that average. A film can have several traits, so rows overlap. ${[...(taste.data?.coverage.blockers ?? []), ...(taste.data?.coverage.warnings ?? [])].join(' ')}`}>
       <div className="flex flex-wrap gap-3 px-[10px] py-3 font-term-sans text-t11 text-term-ink3">
         <label className="flex flex-wrap items-center gap-2">Taste dimension

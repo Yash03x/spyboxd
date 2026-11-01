@@ -12,6 +12,7 @@ import LibraryTab from '../../../views/films/LibraryTab';
 import TasteMapTab from '../../../views/films/TasteMapTab';
 import GroupTrendsTab from '../../../views/films/GroupTrendsTab';
 import ResearchTab from '../../../views/films/ResearchTab';
+import MicrogenresTab from '../../../views/films/MicrogenresTab';
 
 function FilmsSection() {
   const section = getSection('films');
@@ -35,6 +36,7 @@ function FilmsSection() {
     <TerminalShell section={section} tabId={tab.id} controls={controls}>
       {tab.id === 'library' ? <LibraryTab profiles={selection.selected} /> : null}
       {tab.id === 'taste' ? <TasteMapTab profiles={selection.selected} /> : null}
+      {tab.id === 'microgenres' ? <MicrogenresTab profiles={selection.selected} /> : null}
       {tab.id === 'gaps' ? <GapsTab profiles={selection.selected} /> : null}
       {tab.id === 'trends' ? <GroupTrendsTab profiles={selection.selected} /> : null}
       {tab.id === 'research' ? <ResearchTab profiles={selection.selected} available={selection.available} /> : null}

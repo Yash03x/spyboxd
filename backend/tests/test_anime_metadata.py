@@ -10,6 +10,7 @@ from database.models import AnimeMetadataCache
 from services.anime_metadata import (
     AniListClient, MetadataError, add_metadata, build_taste, duration_minutes,
     normalize_anilist, normalize_metadata, normalize_mal_metadata, refresh_title,
+    safe_anilist_tags,
 )
 
 
@@ -41,6 +42,39 @@ def test_normalization_preserves_provider_scale_sample_and_identity():
     for value in (0, -1, True, '1'):
         with pytest.raises(MetadataError):
             normalize_anilist(public_row(value))
+
+
+def tag(name='Time Travel', **changes):
+    return {'id': 10, 'name': name, 'rank': 90, 'category': 'Theme',
+            'isGeneralSpoiler': False, 'isMediaSpoiler': False, 'isAdult': False, **changes}
+
+
+def test_anilist_themes_are_relevant_non_spoiler_and_non_adult_with_evidence():
+    values = [tag(), tag(rank=95), tag('Weak', rank=59), tag('Spoiler', isMediaSpoiler=True),
+              tag('General spoiler', isGeneralSpoiler=True), tag('Adult', isAdult=True),
+              tag('Unknown flags', isMediaSpoiler=None), tag('Bad rank', rank=True), tag(id=True)]
+    result = normalize_anilist(public_row(tags=values))
+    assert result['themes'] == ['Time Travel']
+    assert result['tags'][0] == {'id': 10, 'name': 'Time Travel', 'rank': 95, 'category': 'Theme'}
+    assert result['tag_source'] == 'AniList' and result['tag_min_rank'] == 60
+    assert safe_anilist_tags(None) == []
+    with pytest.raises(MetadataError):
+        safe_anilist_tags('invalid provider payload')
+
+
+def test_themes_affect_picks_using_only_scored_watched_evidence():
+    training = [entry(i, score=10 if i <= 5 else 6,
+                      metadata=normalize_anilist(public_row(i, tags=[tag('Time Travel' if i <= 5 else 'School')])) ) for i in range(1, 11)]
+    candidates = [entry(i, score=score, status='plan_to_watch', episodes_watched=0,
+                        metadata=normalize_anilist(public_row(i, tags=[tag(label)])))
+                  for i, label, score in [(11, 'Time Travel', 1), (12, 'School', 10)]]
+    result = build_taste(training + candidates)
+    assert [row['mal_id'] for row in result['recommendations']] == [11, 12]
+    assert any(trait['kind'] == 'themes' and trait['sample'] == 5 for trait in result['recommendations'][0]['traits'])
+    assert result['theme_titles'] == 10
+    assert result['microgenres'][0]['titles'] == 5
+    candidates[0]['score'] = 10
+    assert build_taste(training + candidates)['recommendations'] == result['recommendations']
 
 
 @pytest.mark.parametrize('raw,expected', [('24 min per ep', 24), ('1 hr. 30 min.', 90), ('Unknown', None), ('0 min', None), ('24 min junk', None)])

@@ -119,6 +119,7 @@ export const SECTIONS: SectionDef[] = [
     tabs: [
       { id: 'library', label: 'THE LIBRARY', panels: 5 },
       { id: 'taste', label: 'TASTE MAP', panels: 5 },
+      { id: 'microgenres', label: 'MICROGENRES', panels: 2 },
       { id: 'trends', label: 'GROUP TRENDS', panels: 3 },
       { id: 'research', label: 'RESEARCH', panels: 4 },
       { id: 'gaps', label: 'GAPS', panels: 2 },
@@ -149,7 +150,7 @@ export const SECTIONS: SectionDef[] = [
     tabs: [
       { id: 'overview', label: 'MY INSIGHTS', panels: 6 },
       { id: 'timeline', label: 'MY TIMELINE', panels: 3 },
-      { id: 'taste', label: 'MY TASTE', panels: 4 },
+      { id: 'taste', label: 'MY TASTE', panels: 6 },
       { id: 'discover', label: 'MY NEXT WATCH', panels: 2 },
       { id: 'library', label: 'MY LIBRARY', panels: 2 },
       { id: 'changes', label: 'MY CHANGES', panels: 2 },

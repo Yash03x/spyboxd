@@ -3,7 +3,7 @@ import type { AnimeEntry, AnimeStatus } from '../services/animeApi.ts';
 export const ANIME_STATUSES: Record<AnimeStatus, string> = {
   watching: 'Watching', completed: 'Completed', on_hold: 'On hold', dropped: 'Dropped', plan_to_watch: 'Plan to watch',
 };
-export interface AnimeFilters { q: string; id: number | null; status: string; format: string; score: string; year: string; issue: string; sort: string; page: number; genre: string; studio: string; scope: string }
+export interface AnimeFilters { q: string; id: number | null; status: string; format: string; score: string; year: string; issue: string; sort: string; page: number; genre: string; studio: string; theme: string; microgenre: string; scope: string }
 export function animeFilters(params: Pick<URLSearchParams, 'get'>): AnimeFilters {
   const number = Number(params.get('anime_page'));
   const status = params.get('anime_status') ?? '';
@@ -16,6 +16,7 @@ export function animeFilters(params: Pick<URLSearchParams, 'get'>): AnimeFilters
     q: (params.get('anime_q') ?? '').slice(0, 200),
     id: Number.isSafeInteger(id) && id > 0 ? id : null,
     genre: (params.get('anime_genre') ?? '').slice(0, 100), studio: (params.get('anime_studio') ?? '').slice(0, 100),
+    theme: (params.get('anime_theme') ?? '').slice(0, 100), microgenre: (params.get('anime_microgenre') ?? '').slice(0, 220),
     scope: params.get('anime_scope') === 'watched' ? 'watched' : '',
     status: Object.hasOwn(ANIME_STATUSES, status) ? status : '', format: (params.get('anime_format') ?? '').slice(0, 32),
     score: /^(unrated|[1-9]|10)$/.test(score) ? score : '',
@@ -36,6 +37,8 @@ export function filterAnime(entries: AnimeEntry[], filters: AnimeFilters, asOf: 
     && (!filters.format || row.media_type === filters.format)
     && (!filters.genre || Boolean(row.metadata?.genres.includes(filters.genre)))
     && (!filters.studio || Boolean(row.metadata?.studios.includes(filters.studio)))
+    && (!filters.theme || Boolean(row.metadata?.themes.includes(filters.theme)))
+    && (!filters.microgenre || Boolean(row.metadata?.microgenres?.includes(filters.microgenre)))
     && (!filters.scope || (row.status !== 'plan_to_watch' && (row.status === 'completed' || row.episodes_watched > 0)))
     && (!filters.score || (filters.score === 'unrated' ? row.score === null : row.score === Number(filters.score)))
     && (!filters.year || (row.status === 'completed' && (filters.year === 'undated' ? !row.finished_date : Boolean(row.finished_date && row.finished_date <= asOf && row.finished_date.startsWith(filters.year)))))

@@ -141,6 +141,7 @@ def get_taste_dna(
     ),
     limit: int = Query(default=12, ge=1, le=50),
     sort: str = Query(default="alignment", pattern="^(alignment|watched)$"),
+    neighbors: bool = Query(default=True),
     db: Session = Depends(get_db),
     user: ClerkUser = Depends(get_current_user),
 ):
@@ -156,6 +157,7 @@ def get_taste_dna(
             dimensions=requested_dimensions,
             limit=limit,
             sort_by=sort,
+            include_neighbors=neighbors,
         )
     except InsightRequestError as exc:
         raise _translate_request_error(exc) from exc
