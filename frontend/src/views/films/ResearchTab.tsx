@@ -14,6 +14,20 @@ const BUTTON = 'rounded border border-term-rule px-3 py-2 text-t11 text-term-acc
 const rating = (value: number | null) => value === null ? '—' : `${value.toFixed(2)}★`;
 const signed = (value: number) => `${value > 0 ? '+' : ''}${value}`;
 
+function ComparisonProfiles({ available, value, onChange }: { available: string[]; value: string[]; onChange: (profiles: string[]) => void }) {
+  // Controlled inputs must acknowledge a click in the same React update.
+  // Native history notifies useSearchParams asynchronously; using that value
+  // directly briefly restored the old checkbox state after every click.
+  const [selected, setSelected] = useState(value);
+  return <div className="flex flex-wrap gap-3">{available.map(name => <label key={name} className="flex items-center gap-1 text-t11"><input type="checkbox" aria-label={`Compare @${name}`} checked={selected.includes(name)} onChange={event => {
+    const current = new Set(new URLSearchParams(window.location.search).getAll('compare_profiles'));
+    if (event.target.checked) current.add(name); else current.delete(name);
+    const next = [...current];
+    setSelected(next);
+    onChange(next);
+  }} />@{name}</label>)}</div>;
+}
+
 export default function ResearchTab({ profiles, available }: { profiles: string[]; available: string[] }) {
   const params = useSearchParams();
   const [exporting, setExporting] = useState(false);
@@ -97,7 +111,7 @@ export default function ResearchTab({ profiles, available }: { profiles: string[
       <details className="mt-3 border-y border-term-rule py-3">
         <summary className="cursor-pointer text-t115 text-term-accent">Compare a second group · {options.compareProfiles.length} selected</summary>
         <p className="text-t11 text-term-muted">Group A is the profile selection above. Group B uses the same dates and filters; shared members are labelled, not treated as independent evidence.</p>
-        <div className="flex flex-wrap gap-3">{available.map((name) => <label key={name} className="flex items-center gap-1 text-t11"><input type="checkbox" aria-label={`Compare @${name}`} checked={options.compareProfiles.includes(name)} onChange={(event) => update({ compare_profiles: event.target.checked ? [...options.compareProfiles, name] : options.compareProfiles.filter((value) => value !== name) })} />@{name}</label>)}</div>
+        <ComparisonProfiles key={options.compareProfiles.join(',')} available={available} value={options.compareProfiles} onChange={members => update({ compare_profiles: members })} />
         <button className={`${BUTTON} mt-3`} type="button" onClick={() => update({ compare_profiles: [] })}>Clear comparison group</button>
       </details>
       {options.trait ? <p className="text-t115">Filtering all summaries and evidence to {options.dimension}: <strong>{options.trait}</strong>. <button className={BUTTON} onClick={() => update({ research_trait: null })}>Clear trait filter</button></p> : null}
