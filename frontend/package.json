@@ -12,7 +12,7 @@
     "axios": "^1.20.0",
     "chart.js": "^4.5.1",
     "lucide-react": "^1.28.0",
-    "next": "^16.3.8",
+    "next": "^16.4.1",
     "react": "^19.2.8",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.8"
@@ -46,14 +46,14 @@
     "@types/react-dom": "^19.2.4",
     "autoprefixer": "^10.5.4",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.3.8",
+    "eslint-config-next": "^16.4.1",
     "postcss": "8.5.25",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3"
   },
   "overrides": {
     "postcss": "8.5.25",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "nanoid": "3.3.18"
   }
 }
