@@ -71,6 +71,10 @@ export default function ProfileSnapshotPage() {
                     [profile.location, profile.bio].filter(Boolean).join(' — ') ||
                     'No public bio on the profile.',
                 },
+                {
+                  label: 'Opinion coverage',
+                  text: `${profile.rated_films.toLocaleString()} rated · ${profile.liked_films.toLocaleString()} liked`,
+                },
               ]}
             />
           ) : null)}
